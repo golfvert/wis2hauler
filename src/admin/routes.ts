@@ -60,7 +60,8 @@ export function registerAdminRoutes(router: HttpRouter, deps: AdminRouteDeps): v
 		} catch {
 			return jsonResponse(400, { changes: {}, errors: ['Body must be valid JSON.'] });
 		}
-		const result = await buildSetResponse(body, deps.activeRoles, { store: deps.store, credentialsStore: deps.credentialsStore, debug: deps.debug, warn });
+		const globalCacheMode = deps.config.global['global-cache'] ?? false;
+		const result = await buildSetResponse(body, deps.activeRoles, { store: deps.store, credentialsStore: deps.credentialsStore, debug: deps.debug, warn, globalCacheMode });
 		// "Change ?" -- one Info log per key the patch actually changed,
 		// matching the original's own "Change ?" switch (7b0525ef3667eb54)
 		// only routing a key onward to logging when its {value,changed}

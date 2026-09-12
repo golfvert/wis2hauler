@@ -20,6 +20,10 @@ A "replica" is one running instance of the `wis2hauler` binary, configured with 
 
 ## Docker
 
+### Obtaining pre-defined images
+
+Check existing images in https://github.com/golfvert/wis2hauler/pkgs/container/wis2hauler
+
 ### Building the image
 
 **This repository's `Dockerfile` never runs `bun install` or `bun build` itself.** It only copies in an already-compiled binary. Build that binary first:
@@ -47,12 +51,12 @@ The image expects three mount points:
 |---|---|
 | `/configuration.yml` | The config file, mounted directly (not a directory) — required, no default baked in. |
 | `/downloads` | Must be the **same** directory aria2 itself writes into (`aria2.conf`'s `dir=`), and must match `downloader.aria-download` in the config file exactly — same host, same case. This app's embedded-content fast path also writes here directly, bypassing aria2 entirely. |
-| `/logs` | Only used when a role's `global.log.to` is `file` rather than the `stdout` default. |
+| `/logs` | Only used when `global.log-to` is `file` rather than the `stdout` default. |
 
 ```yaml
 services:
   wis2hauler:
-    image: wis2hauler:latest
+    image: ghcr.io/golfvert/wis2hauler:2026.09.1
     user: "1000:1000"          # or bake a different default at build time with --build-arg UID=/--build-arg GID=
     volumes:
       - ./configuration.yml:/configuration.yml:ro
@@ -62,26 +66,42 @@ services:
       - "8080:8080"             # global.http-port — admin API + whichever of /reporter/primary, /replayer/primary, /caddy apply
     restart: unless-stopped
     networks:
-      - wis2
+      - wis2hauler
 
   aria2:
-    image: p3terx/aria2-pro     # any aria2 image with RPC enabled works
+    image: golfvert/aria2:1.0.7
+    environment:
+      - TZ=Europe/Paris
+      - RPC_SECRET=secret
+      - CONCURRENT_DOWNLOADS=32
+      - CONNECTIONS_PER_SERVER=12
+      - MAX_TRIES=5
+      - QUIET=false
     volumes:
       - ./downloads:/downloads
     networks:
-      - wis2
+      - wis2hauler
 
-  redis:
-    image: redis:7
+  valkey:
+    image: valkey/valkey:9.0.6-alpine3.24
     networks:
-      - wis2
+      - wis2hauler
 
 networks:
-  wis2:
+  wis2hauler:
     external: true
 ```
 
-There is no CLI flag for debug categories — toggle them at runtime through the admin API instead: `POST /set {"debug": ["SUBSCRIBER"]}` against whichever port `global.http-port` binds to.
+Debug can be toggled at runtime through the admin API: `POST /set {"debug": ["SUBSCRIBER"]}` against whichever port `global.http-port` binds to.
+
+With the docker-compose.yml above, use:
+
+```  
+  aria-secret: secret
+  aria-url: ws://aria2:6800/jsonrpc
+```
+
+in the configuration file, in the `global.downloader` section.
 
 ### Non-root user
 
@@ -108,13 +128,11 @@ services:
       - "traefik.http.services.wis2hauler.loadbalancer.server.port=8080"
 ```
 
-This is the same label-based pattern the old Node-RED deployment used at the infrastructure level. It is *not* the same thing as an app-level self-registration mechanism (announcing an OS-assigned port to a Traefik file-provider on startup) — that mechanism existed at one point during this port and was deliberately removed: `global.http-port` is now always a fixed, manually-chosen value, exactly like aria2's own RPC port, with no auto-registration step at all. Set it explicitly for any real deployment.
-
 ---
 
 ## Running without Docker
 
-Nothing about wis2hauler requires a container. A compiled binary (built with the plain, non-musl target on the host's own libc) or `bun src/main.ts` directly both work fine on any machine with network access to Redis and aria2:
+Nothing about wis2hauler requires a container. A compiled binary (either from the github repository ot built with the plain, non-musl target on the host's own libc) or `bun src/main.ts` directly both work fine on any machine with network access to Redis and aria2:
 
 ```bash
 bun build --compile src/main.ts --outfile wis2hauler

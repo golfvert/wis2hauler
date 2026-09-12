@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 import { readFileSync } from 'node:fs';
-import { load as parseYaml } from 'js-yaml';
+import { load as parseYaml, dump as dumpYaml } from 'js-yaml';
 import { validateConfig } from '../validate.ts';
 import { parseConfig, ConfigError } from '../load.ts';
 
@@ -172,5 +172,38 @@ describe('validateConfig — a leftover global.traefik block (removed feature) w
 		const result = validateConfig(cfg);
 		expect(result.valid).toBe(true);
 		expect(result.warnings).toContain('global.traefik: present in config but not used by the flow');
+	});
+});
+
+// WIS2 core/cache rule (../topics.ts's enforceCoreCacheRule), applied
+// once at config-load time by ../load.ts's parseConfig -- see that
+// file's applyCoreCacheRule for why it lives there (mutates the parsed
+// config and folds its message into result.warnings, which every
+// caller already logs) rather than in validateConfig above, which
+// stays pure/non-mutating. The identical rule, applied to a live POST
+// /set patch instead, is covered in ../__tests__/runtime.test.ts.
+describe('parseConfig — WIS2 core/cache rule (subscriber.mqtt.whitelist/blacklist)', () => {
+	test('rewrites an origin/.../core/... whitelist entry to cache/... and warns, when global-cache is not set', () => {
+		const cfg = parseYaml(validYaml) as Record<string, any>;
+		cfg.global['global-cache'] = false;
+		cfg.subscriber.mqtt.whitelist.push('origin/a/wis2/fr-meteofrance/data/core/weather/surface');
+		cfg.subscriber.mqtt.blacklist.push('origin/a/wis2/fr-meteofrance/data/core/#');
+
+		const { config, result } = parseConfig(dumpYaml(cfg));
+		expect(result.valid).toBe(true);
+		expect(config.subscriber?.mqtt.whitelist).toContain('cache/a/wis2/fr-meteofrance/data/core/weather/surface');
+		expect(config.subscriber?.mqtt.whitelist).not.toContain('origin/a/wis2/fr-meteofrance/data/core/weather/surface');
+		expect(config.subscriber?.mqtt.blacklist).toContain('cache/a/wis2/fr-meteofrance/data/core/#');
+		expect(result.warnings.some((w) => w.includes('subscriber.mqtt') && w.includes('core/weather/surface'))).toBe(true);
+	});
+
+	test('leaves origin/.../core/... alone when global-cache IS set (the fixture default)', () => {
+		const cfg = parseYaml(validYaml) as Record<string, any>;
+		expect(cfg.global['global-cache']).toBe(true); // sanity-check the fixture's own assumption
+		cfg.subscriber.mqtt.whitelist.push('origin/a/wis2/fr-meteofrance/data/core/weather/surface');
+
+		const { config, result } = parseConfig(dumpYaml(cfg));
+		expect(config.subscriber?.mqtt.whitelist).toContain('origin/a/wis2/fr-meteofrance/data/core/weather/surface');
+		expect(result.warnings.some((w) => w.includes('core/weather/surface'))).toBe(false);
 	});
 });

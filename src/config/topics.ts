@@ -86,3 +86,44 @@ const TOPIC_PATTERN_CHARS = /^[a-zA-Z0-9\-/+#]+$/;
 export function isValidTopicPattern(topic: unknown): boolean {
 	return typeof topic === 'string' && TOPIC_PATTERN_CHARS.test(topic);
 }
+
+// Per the WIS2 spec, "core" data (level 6 == 'core') must always be
+// discovered via a Global Cache's cache/... topic — subscribing to it
+// directly at its origin/... topic is reserved for a Global Cache
+// itself (global.global-cache: true in the static config), which is
+// the only kind of consumer meant to pull core data straight from
+// origin in order to then republish it under cache/.... Anyone else
+// subscribing to origin/.../core/... is bypassing every Global Cache
+// in between, which is exactly what the cache/... topic exists to
+// avoid.
+//
+// Applied identically to whitelist (what's subscribed) and blacklist
+// (what's excluded) so the two stay consistent with each other — a
+// blacklist entry still naming 'origin/.../core/...' after a matching
+// whitelist entry above it was rewritten to 'cache/...' would quietly
+// stop matching anything at all.
+//
+// Only rewrites an EXACT 'origin' at level 1 and an EXACT 'core' at
+// level 6 (both 0-indexed as level1=parts[0], level6=parts[5], per
+// this file's topic-grammar comment above) — a wildcard ('+'/'#') at
+// either position isn't known to mean "core specifically" or "origin
+// specifically", so it's left alone rather than guessed at.
+export function enforceCoreCacheRule(
+	topics: readonly string[],
+	globalCacheMode: boolean,
+	log: (message: string) => void,
+): string[] {
+	if (globalCacheMode) return [...topics];
+
+	return topics.map((topic) => {
+		const parts = topic.split('/');
+		if (parts[0] !== 'origin' || parts[5] !== 'core') return topic;
+
+		const corrected = ['cache', ...parts.slice(1)].join('/');
+		log(
+			`'${topic}' subscribes to core data directly from origin, but global.global-cache is not set` +
+				` — per the WIS2 spec, core data must be discovered via a Global Cache; replacing with '${corrected}'`,
+		);
+		return corrected;
+	});
+}

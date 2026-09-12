@@ -24,6 +24,11 @@ export interface SetContext {
 	// folded into the same {value,changed} response shape.
 	debug: DebugController;
 	warn: (message: string) => void;
+	// global.global-cache from the static config -- see ../config/
+	// topics.ts's enforceCoreCacheRule, applied below to whitelist/
+	// blacklist patches the same way it's applied to the static config
+	// at startup (../main.ts).
+	globalCacheMode: boolean;
 }
 
 export interface SetResult {
@@ -63,7 +68,7 @@ async function applyCredentialsOp(store: DownloaderStore | null, op: CredentialO
 }
 
 export async function buildSetResponse(body: unknown, activeRoles: ReadonlySet<Role>, ctx: SetContext): Promise<SetResult> {
-	const patch = validatePatch(body, activeRoles);
+	const patch = validatePatch(body, activeRoles, { globalCacheMode: ctx.globalCacheMode, warn: ctx.warn });
 	const changes = ctx.store.applyPatch(patch.values);
 
 	if (patch.values.credentials) {

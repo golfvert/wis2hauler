@@ -33,9 +33,9 @@ See [`docs/configuration-and-roles.md`](docs/configuration-and-roles.md) for the
 
 ## Quick start
 
-**Option A — from source, with Bun:**
+### Option A — from source, with Bun:**
 
-### 1. Install Bun
+#### 1. Install Bun
 
 wis2hauler runs on [Bun](https://bun.sh). Install it with:
 
@@ -45,14 +45,14 @@ curl -fsSL https://bun.sh/install | bash
 
 (see [bun.sh/docs/installation](https://bun.sh/docs/installation) for other platforms/package managers). You can skip this step entirely if you only want to run a prebuilt binary — Option B below needs no Bun install at all.
 
-### 2. Get the code
+#### 2. Get the code
 
 ```bash
 git clone https://github.com/golfvert/wis2hauler.git
 cd wis2hauler
 ```
 
-### 3. Run it
+#### 3. Run it
 
 ```bash
 bun install
@@ -60,7 +60,7 @@ cp fixtures/example.valid.yaml my-config.yaml   # edit to taste
 bun src/main.ts my-config.yaml
 ```
 
-**Option B — a prebuilt binary, no Bun or source build required.** Every release publishes a compiled standalone executable for each supported platform on this repo's [Releases](https://github.com/golfvert/wis2hauler/releases) page. Download the asset matching your OS/architecture, make it executable, and run it directly against a config file:
+### Option B — a prebuilt binary, no Bun or source build required.** Every release publishes a compiled standalone executable for each supported platform on this repo's [Releases](https://github.com/golfvert/wis2hauler/releases) page. Download the asset matching your OS/architecture, make it executable, and run it directly against a config file:
 
 ```bash
 # check the Releases page for the exact asset name for your platform
