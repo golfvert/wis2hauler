@@ -1,12 +1,19 @@
 # wis2hauler
 
-This is a single-binary [WIS2](https://community.wmo.int/en/activity-areas/wis) downloader. It subscribes to WIS2 Global Brokers, downloads the data files referenced by incoming notification messages, verifies and (optionally) relocates them, republishes completion notifications, cleans up expired files, exposes Prometheus metrics, and can replay historical notifications on demand — all from one process, one Redis (or Redis Cluster) backing store, and one YAML configuration file.
+This is a single-binary [WIS2](https://community.wmo.int/en/activity-areas/wis) downloader. It subscribes to WIS2 Global Brokers, downloads the data files referenced by incoming notification messages, verifies and (optionally) relocates them, republishes completion notifications, cleans up expired files, exposes Prometheus metrics, and can use WIS2 replayer for access to missed notifications on demand — all from one process, one Redis (or Redis Cluster) backing store, and one YAML configuration file.
 
 Built with [Bun](https://bun.sh) and TypeScript. Ships as a single compiled executable. 
 
-## Why this exists
+It requires two off-the-shelf tools to work:
+- Resis/Valkey either as a standalone version or as a cluster used as a K/V store 
+- Aria2c a very efficient and scalable downloader
 
-The original implementation was a Node-RED flow. This project is a from-scratch TypeScript port of that flow's behavior, built role by role and function node by function node, with the goal of being a drop-in behavioral replacement that's easier to test, deploy, and operate: one binary instead of a Node-RED runtime plus a large flow graph, ordinary `git diff`-able source instead of a JSON flow export, and a real test suite (`bun test`) instead of manual flow re-testing.
+In its simplest form one wis2hauler, one valkey node, one aria2 is sufficient to download (many) files from WIS2.
+It can also be deployed in a redundant, scalable manner with multiple wis2hauler on multiple hosts, a redis cluster - minimum 6  nodes for redundancy -, one aria2 instance per DOWNLOADER.
+
+It is also a reference implementation of a Global Cache and can be used operationally if needed.
+
+Last, it can be deployed on bare metal linux hosts (same for redis/valkey and aria2) or on docker (search for golfvert/wis2hauler on hub.docker.com).
 
 ## Roles
 
