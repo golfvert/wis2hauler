@@ -20,13 +20,23 @@
 # command, different --target, two output files. Multi-arch (x64 +
 # arm64) means one musl-targeted build per architecture.
 #
-# Build (from wherever CI places the compiled musl binary, e.g. a
-# `dist/` directory containing just `wis2hauler`):
-#   docker build -t wis2hauler:latest dist/
-# Or, from the repo root, with the binary copied into repo root first:
-#   docker build -t wis2hauler:latest .
+# CI (.github/workflows/release.yml) lays the two musl binaries out as
+# dist/amd64/wis2hauler and dist/arm64/wis2hauler, then runs a single
+# `docker buildx build --platform linux/amd64,linux/arm64 .` -- buildx
+# builds each platform separately and sets TARGETARCH (to "amd64" or
+# "arm64") for each one, which the COPY below uses to pick the matching
+# binary. For a manual single-arch build, lay out just the one
+# subdirectory you need and pass --build-arg TARGETARCH=amd64 (or
+# arm64) explicitly, since without buildx nothing sets it for you:
+#   docker build -t wis2hauler:latest --build-arg TARGETARCH=amd64 .
 
 FROM alpine:3.24
+
+# Populated automatically per-platform by `docker buildx build
+# --platform ...`; must be declared (not just implicitly available)
+# to be read by the COPY below. See the CI note above for a manual,
+# non-buildx build.
+ARG TARGETARCH
 
 # ca-certificates: needed for TLS verification -- global.local-broker
 # entries and GB1/GB2 both commonly use mqtts://, and Redis Cluster/TLS
@@ -89,7 +99,7 @@ RUN addgroup -g "${GID}" wis2 \
 RUN mkdir -p /downloads /logs \
 	&& chown -R wis2:wis2 /downloads /logs
 
-COPY --chmod=0755 wis2hauler /usr/local/bin/wis2hauler
+COPY --chmod=0755 dist/${TARGETARCH}/wis2hauler /usr/local/bin/wis2hauler
 
 USER wis2:wis2
 

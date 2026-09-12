@@ -13,7 +13,7 @@ It can also be deployed in a redundant, scalable manner with multiple wis2hauler
 
 It is also a reference implementation of a Global Cache and can be used operationally if needed.
 
-Last, it can be deployed on bare metal linux hosts (same for redis/valkey and aria2) or on docker (search for golfvert/wis2hauler on hub.docker.com).
+Last, it can be deployed on bare metal linux hosts (same for redis/valkey and aria2) or on docker (search for golfvert/wis2hauler on GHCR).
 
 ## Roles
 

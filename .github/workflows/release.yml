@@ -1,0 +1,206 @@
+name: Build & release binaries
+
+# Builds standalone wis2hauler executables for every supported platform
+# and publishes them, plus a multi-arch (amd64/arm64) Alpine-based Docker
+# image on GHCR, under a single version tag: YYYY.MM.X (X starting at 1,
+# incrementing per release cut within a calendar month). The tag itself
+# is NOT computed here -- it's read verbatim from the repo-root VERSION
+# file, which you bump manually and deliberately before pushing:
+#
+#   bun scripts/bump-version.ts   # updates VERSION, prints the new tag
+#   git add VERSION && git commit -m "release: <tag>" && git push
+#
+# See scripts/bump-version.ts for the full rationale. If VERSION hasn't
+# changed since the last successful release (e.g. a push that only
+# touched code, without bumping it first), the release/docker jobs
+# detect the tag already exists and skip publishing -- build+test still
+# run on every push, but nothing gets force-republished under a reused
+# tag.
+#
+# Bun's `--compile` cross-compiles every target from a single Linux
+# runner -- no macOS or ARM hardware needed in CI (see docs/deployment.md).
+
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+  workflow_dispatch: {}
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Test & typecheck
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - run: bun install
+
+      - run: bun test
+
+      - run: bun run typecheck
+
+  version:
+    name: Read release version
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.read.outputs.tag }}
+      already-released: ${{ steps.check.outputs.already-released }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - id: read
+        name: Read VERSION
+        run: |
+          tag="$(tr -d '[:space:]' < VERSION)"
+          if ! [[ "$tag" =~ ^[0-9]{4}\.[0-9]{2}\.[0-9]+$ ]]; then
+            echo "VERSION does not contain a YYYY.MM.X tag (got: '$tag')." >&2
+            echo "Run 'bun scripts/bump-version.ts' and commit the result." >&2
+            exit 1
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+      - id: check
+        name: Check whether ${{ steps.read.outputs.tag }} is already released
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view "${{ steps.read.outputs.tag }}" --repo "${{ github.repository }}" >/dev/null 2>&1; then
+            echo "already-released=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "already-released=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  build:
+    name: Build (${{ matrix.name }})
+    needs: test
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Standard glibc binaries, for the GitHub Release / direct downloads.
+          - name: linux-x64
+            target: bun-linux-x64
+          - name: linux-arm64
+            target: bun-linux-arm64
+          - name: darwin-x64
+            target: bun-darwin-x64
+          - name: darwin-arm64
+            target: bun-darwin-arm64
+          # musl binaries: required for the Alpine Docker image (see
+          # Dockerfile's header comment) -- also published as release
+          # assets for anyone running wis2hauler directly on musl-based
+          # Linux (Alpine, etc.) outside Docker.
+          - name: linux-x64-musl
+            target: bun-linux-x64-musl
+          - name: linux-arm64-musl
+            target: bun-linux-arm64-musl
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - run: bun install
+
+      - name: Compile standalone binary
+        run: |
+          mkdir -p dist
+          bun build --compile --target=${{ matrix.target }} \
+            --outfile dist/wis2hauler-${{ matrix.name }} src/main.ts
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wis2hauler-${{ matrix.name }}
+          path: dist/wis2hauler-${{ matrix.name }}
+          if-no-files-found: error
+
+  release:
+    name: Publish GitHub release
+    needs: [build, version]
+    if: needs.version.outputs.already-released != 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          pattern: wis2hauler-*
+
+      - name: Flatten artifacts into release-assets/
+        run: |
+          mkdir -p release-assets
+          find artifacts -type f -name 'wis2hauler-*' -exec cp {} release-assets/ \;
+          chmod +x release-assets/*
+          ls -la release-assets
+
+      - name: Create release ${{ needs.version.outputs.tag }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${{ needs.version.outputs.tag }}" release-assets/* \
+            --repo "${{ github.repository }}" \
+            --title "wis2hauler ${{ needs.version.outputs.tag }}" \
+            --notes "Automatically built from commit ${{ github.sha }}. See the commit history for what changed." \
+            --target "${{ github.sha }}"
+
+  docker:
+    name: Build & push Docker image
+    needs: [build, version]
+    if: needs.version.outputs.already-released != 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      # The Docker image needs the musl-targeted binaries (see the
+      # Dockerfile's own header comment) -- one per architecture, laid
+      # out as dist/<arch>/wis2hauler so the Dockerfile's TARGETARCH-aware
+      # COPY can pick the right one per platform during the multi-arch build.
+      - uses: actions/download-artifact@v4
+        with:
+          name: wis2hauler-linux-x64-musl
+          path: dist/amd64
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: wis2hauler-linux-arm64-musl
+          path: dist/arm64
+
+      - name: Lay out binaries as the Dockerfile expects
+        run: |
+          mv dist/amd64/wis2hauler-linux-x64-musl dist/amd64/wis2hauler
+          mv dist/arm64/wis2hauler-linux-arm64-musl dist/arm64/wis2hauler
+          chmod +x dist/amd64/wis2hauler dist/arm64/wis2hauler
+
+      - uses: docker/setup-qemu-action@v3
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ghcr.io/${{ github.repository }}:${{ needs.version.outputs.tag }}
