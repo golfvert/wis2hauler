@@ -5,10 +5,10 @@ This is a single-binary [WIS2](https://community.wmo.int/en/activity-areas/wis) 
 Built with [Bun](https://bun.sh) and TypeScript. Ships as a single compiled executable. 
 
 It requires two off-the-shelf tools to work:
-- Resis/Valkey either as a standalone version or as a cluster used as a K/V store 
-- Aria2c a very efficient and scalable downloader
+- redis/alkey either as a standalone version or as a cluster used as a K/V store 
+- aria2c a very efficient and scalable downloader
 
-In its simplest form one wis2hauler, one valkey node, one aria2 is sufficient to download (many) files from WIS2.
+In its simplest form one wis2hauler, one redis/valkey node, one aria2 is sufficient to download (many) files from WIS2.
 It can also be deployed in a redundant, scalable manner with multiple wis2hauler on multiple hosts, a redis cluster - minimum 6  nodes for redundancy -, one aria2 instance per DOWNLOADER.
 
 It is also a reference implementation of a Global Cache and can be used operationally if needed.
