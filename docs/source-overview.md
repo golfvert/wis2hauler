@@ -12,19 +12,19 @@ A recurring convention worth knowing up front: almost every file's header commen
 
 ### `src/main.ts`
 
-The process entrypoint and orchestrator. Parses the CLI (`<config.yaml> [-d role[,role...]]...`), loads and validates the config, and then owns the whole process's lifecycle:
+The process entrypoint and orchestrator. Parses the CLI (`<config.yaml>`), loads and validates the config, and then owns the whole process's lifecycle:
 
 - Builds the shared `RuntimeConfigStore` (per-process live state backing `GET /get`/`POST /set`) and the log sink.
 - Opens the **one** shared HTTP server for the process (always, regardless of active roles) and registers the admin routes on it.
 - Opens every MQTT connection this process needs itself, rather than letting each role open its own: `PUB1`/`PUB2` (local broker) once, shared between `SUBSCRIBER` and `DOWNLOADER` when both are active; `GB1`/`GB2` (global broker) inside `SUBSCRIBER`'s own try/catch, so a bad broker only fails that one role.
-- Starts every active role's runner concurrently (`Promise.allSettled`, not a sequential chain — an earlier version awaited each role in sequence, which meant a replica combining two roles only ever actually ran the first one), plus the always-on heartbeat.
+- Starts every active role's runner concurrently (`Promise.allSettled`, not a sequential chain — an earlier version awaited each role in sequence, which meant a instance combining two roles only ever actually ran the first one), plus the always-on heartbeat.
 - Wires a `SIGINT`/`SIGTERM` handler with a bounded 10-second shutdown grace period, so one hung teardown can't make Ctrl-C do nothing.
 
 The `RoleRunners` interface (which every role's `run*` function implements, plus `connectMqtt`/`connectMqttBestEffort`) is what makes this file's own tests possible without dialing real infrastructure: `defaultRunners` wires up the real implementations, and `main.test.ts` swaps in fakes that resolve immediately.
 
 ### `src/debug.ts`
 
-`DebugController`: a static (CLI `-d`) baseline unioned with a dynamic set controlled entirely through `GET /get?key=debug` / `POST /set {"debug": [...]}`. Replaces an earlier live-reloaded `--debug-file` mechanism that was deliberately removed — debug toggling now goes through the exact same one live-mutation channel as everything else.
+`DebugController`: a dynamic set controlled entirely through `GET /get?key=debug` / `POST /set {"debug": [...]}`. Replaces an earlier `debug`mechanism that was deliberately removed — debug toggling now goes through the exact same one live-mutation channel as everything else.
 
 ---
 
@@ -56,19 +56,19 @@ The WIS2 topic grammar (`isValidMqttTopic`), a looser blacklist/overridelist pat
 
 ### `src/election/elect.ts`
 
-The pure decision logic, shared by all three singleton roles: `parseElectionHash` (flat HGETALL array → `{worker: {field: value}}`), `decideElection` (lowest-UUID-among-alive-holders-of-a-role wins primary), `findStaleFields` (which fields to reap), `buildHeartbeatFields` (what a replica writes about itself every tick), and `computeCleaningNeeded` (CLEANER's own extra cluster-wide-S3-awareness rule). Exports the four timing constants: 8s alive threshold, 60s stale threshold.
+The pure decision logic, shared by all three singleton roles: `parseElectionHash` (flat HGETALL array → `{worker: {field: value}}`), `decideElection` (lowest-UUID-among-alive-holders-of-a-role wins primary), `findStaleFields` (which fields to reap), `buildHeartbeatFields` (what a instance writes about itself every tick), and `computeCleaningNeeded` (CLEANER's own extra cluster-wide-S3-awareness rule). Exports the four timing constants: 8s alive threshold, 60s stale threshold.
 
 ### `src/election/elector.ts`
 
-The per-role election poll loop (10-second interval) shared by `CLEANER`/`REPORTER`/`REPLAYER`: reads the shared hash, decides this role's primary/secondary status, hands the result to a caller-supplied `onResult`, then reaps stale fields. Each role-carrying replica runs its own independent copy of this loop concurrently.
+The per-role election poll loop (10-second interval) shared by `CLEANER`/`REPORTER`/`REPLAYER`: reads the shared hash, decides this role's primary/secondary status, hands the result to a caller-supplied `onResult`, then reaps stale fields. Each role-carrying instance runs its own independent copy of this loop concurrently.
 
 ### `src/election/heartbeat.ts`
 
-The always-on heartbeat writer: one loop per replica process (not per role), writing this replica's own fields into the shared hash every 2 seconds after an initial 3-second delay. Runs regardless of which roles this replica carries.
+The always-on heartbeat writer: one loop per instance process (not per role), writing this instance's own fields into the shared hash every 2 seconds after an initial 3-second delay. Runs regardless of which roles this instance carries.
 
 ### `src/election/run.ts`
 
-Top-level wiring for the heartbeat loop: derives this replica's role flags and its currently-subscribed topics (`deriveHeartbeatTopics` — only non-empty on a replica carrying `SUBSCRIBER`) from the config, opens its own Redis connection, and runs `heartbeat.ts`'s loop until the process's shutdown signal fires.
+Top-level wiring for the heartbeat loop: derives this instance's role flags and its currently-subscribed topics (`deriveHeartbeatTopics` — only non-empty on a instance carrying `SUBSCRIBER`) from the config, opens its own Redis connection, and runs `heartbeat.ts`'s loop until the process's shutdown signal fires.
 
 ### `src/election/store.ts`
 
@@ -78,7 +78,7 @@ The narrow `ElectionStore` interface (`readElectionHash`/`writeHeartbeat`/`delet
 
 ## `src/http/router.ts` — the shared HTTP server
 
-One `Bun.serve()` instance per process, always created (not gated behind any role check), with routes registered onto it by whichever of the admin API, `REPORTER`, and `REPLAYER` are relevant to this replica. Exists because the original Node-RED flow's REPORTER/REPLAYER/admin routes all bound to Node-RED's own single admin server — two independent `Bun.serve()` calls on the same port would otherwise collide.
+One `Bun.serve()` instance per process, always created (not gated behind any role check), with routes registered onto it by whichever of the admin API, `REPORTER`, and `REPLAYER` are relevant to this instance. Exists because the original Node-RED flow's REPORTER/REPLAYER/admin routes all bound to Node-RED's own single admin server — two independent `Bun.serve()` calls on the same port would otherwise collide.
 
 ---
 
@@ -212,9 +212,9 @@ A singleton (elected) role that deletes expired cached files.
 - **`gc.ts`** — the periodic (6-hour) Redis-side garbage-collection sweep for stale downloader bookkeeping hashes, independent of file cleanup itself.
 - **`schedule.ts`** — schedules a file's future deletion (ZADD into a pending sorted set) off the cache-reporter record `finishing.ts` publishes, honoring `cleaner.keep-in-cache`.
 - **`sweep.ts`** — the 2-second poll that finds due entries in both the pending-deletion and cancel sorted sets and turns each into a worker command.
-- **`errors.ts`** — a 5-second poll that drains this replica's error stream and logs each entry.
+- **`errors.ts`** — a 5-second poll that drains this instance's error stream and logs each entry.
 - **`store.ts`** — the `CleanerStore` interface. Real implementation: `redis/ioredis-cleaner-store.ts`.
-- **`run.ts`** — top-level wiring: runs election, schedule, sweep, error-polling, and GC concurrently, each gated on this replica currently being the elected CLEANER primary (schedule/sweep additionally gated on the cluster-wide `cleaning-needed` flag).
+- **`run.ts`** — top-level wiring: runs election, schedule, sweep, error-polling, and GC concurrently, each gated on this instance currently being the elected CLEANER primary (schedule/sweep additionally gated on the cluster-wide `cleaning-needed` flag).
 
 ---
 
@@ -243,7 +243,7 @@ A singleton (elected) role that replays historical WIS2 notifications on request
 - **`discovery.ts`** — reads the same shared election hash to discover every distinct topic currently subscribed to across the whole deployment (using its own, more generous 60-second alive threshold — deliberately distinct from the 8-second election threshold).
 - **`request.ts`** — validates a `POST /replayer` body and turns a `{from, to}` minutes-ago pair into ISO datetime bounds.
 - **`replay.ts`** — builds and rate-limits (one request per 10 seconds) the actual outbound replay requests to `replayer.global-replay-url`, one per discovered topic.
-- **`run.ts`** — top-level wiring: runs election and registers `GET /replayer/primary` + `POST /replayer` (403 for non-primary replicas) on the shared HTTP router. `POST /replayer` writes `global-replay` onto the same `RuntimeConfigStore` instance `GET /get`/`POST /set` use, so a value set here is visible there too, and fires `replay.ts` for an actual `{from, to}` request.
+- **`run.ts`** — top-level wiring: runs election and registers `GET /replayer/primary` + `POST /replayer` (403 for non-primary instances) on the shared HTTP router. `POST /replayer` writes `global-replay` onto the same `RuntimeConfigStore` instance `GET /get`/`POST /set` use, so a value set here is visible there too, and fires `replay.ts` for an actual `{from, to}` request.
 
 ---
 
