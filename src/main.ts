@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 // Process entrypoint. Usage:
 //
-//   bun src/main.ts <config.yaml> [-d role[,role...]]...
+//   bun src/main.ts <config.yaml>
 //
 // The config file path is a required positional argument (per
 // the maintainer's "the configuration file should be given as a parameter"
@@ -9,22 +9,18 @@
 // "./common.env"+"./<centre_id>.env" convention, since this project's
 // config is one YAML file, not a pair of env files.
 //
-// -d works like antiloop's: repeatable and/or comma-separated,
-// setting the static debug baseline (see debug.ts). Granularity is
-// ROLES (SUBSCRIBER/DOWNLOADER/CLEANER/REPORTER/REPLAYER) plus the
-// "ALL" shorthand — not free-form category strings — so a typo is a
-// hard CLI usage error (exit 2) rather than a silently-ignored no-op.
-//
-// DELIBERATE CHANGE, 2026-09-12: there used to also be a live-
-// reloadable --debug-file, polled on a timer, for changing debug
-// categories without a restart. the maintainer had it removed outright ("No
-// need to read a debug file. Everything is /get /set, and nothing
-// else."): that's now GET /get?key=debug / POST /set {"debug":[...]}
-// instead (../admin/get.ts, ../admin/set.ts, ../config/runtime.ts),
-// the exact same channel every other piece of live-mutable state
-// already goes through. -d itself is untouched — it's a startup-only
-// baseline, not a second live-mutation path, so it doesn't compete
-// with /get /set the way the file did.
+// DELIBERATE CHANGE, 2026-09-12: two earlier debug-toggling mechanisms
+// are both gone now. antiloop's own approach (and this port's first
+// pass at it) reloaded a dynamic set from a live-watched file on disk,
+// polled every 10s -- the maintainer rejected that outright ("No need to
+// read a debug file. Everything is /get /set, and nothing else."). A
+// later static, startup-only -d CLI flag (a repeatable/comma-separated
+// per-role baseline) was removed too, for the same reason: the
+// maintainer wants exactly ONE channel for every piece of runtime-patchable
+// state, debug categories included -- GET /get?key=debug / POST /set
+// {"debug":[...]} (../admin/get.ts, ../admin/set.ts, ../config/
+// runtime.ts, ../debug.ts). There is no CLI flag and no file for
+// debug toggling any more, only that one admin-API channel.
 //
 // Which role(s) this process actually runs comes from the config
 // file's global.roles, not a CLI flag — matches how the system is
@@ -33,8 +29,8 @@
 import { randomUUID } from 'node:crypto';
 import { parseArgs } from 'node:util';
 import { ConfigError, loadConfig } from './config/load.ts';
-import { DebugController, DEBUG_CATEGORIES, type DebugCategory } from './debug.ts';
-import { VALID_ROLES, type Role, type Config, type BrokerConfig } from './config/schema.ts';
+import { DebugController } from './debug.ts';
+import { type Role, type Config, type BrokerConfig } from './config/schema.ts';
 import { runSubscriber } from './subscriber/run.ts';
 import { runDownloader } from './downloader/run.ts';
 import { runCleaner } from './cleaner/run.ts';
@@ -55,7 +51,6 @@ import { WinstonLogSink, type LogSink } from './logging/sink.ts';
 
 export interface Cli {
 	configPath: string;
-	debugCategories: DebugCategory[];
 }
 
 export class CliUsageError extends Error {}
@@ -147,35 +142,19 @@ export const defaultRunners: RoleRunners = {
 // aria2's own RPC port -- this default is only a fallback.
 const DEFAULT_HTTP_PORT = 8080;
 
-function parseDebugCategory(raw: string): DebugCategory {
-	const normalized = raw.trim().toUpperCase();
-	if (!DEBUG_CATEGORIES.has(normalized)) {
-		throw new CliUsageError(
-			`unknown -d value '${raw}' — expected one of: ${[...VALID_ROLES].join(', ')}, ALL`,
-		);
-	}
-	return normalized as DebugCategory;
-}
-
 export function parseCli(argv: string[]): Cli {
-	const { values, positionals } = parseArgs({
+	const { positionals } = parseArgs({
 		args: argv,
-		options: {
-			debug: { type: 'string', short: 'd', multiple: true },
-		},
+		options: {},
 		allowPositionals: true,
 	});
 
 	const configPath = positionals[0];
 	if (!configPath) {
-		throw new CliUsageError('usage: bun src/main.ts <config.yaml> [-d role[,role...]]...');
+		throw new CliUsageError('usage: bun src/main.ts <config.yaml>');
 	}
 
-	const debugCategories = (values.debug ?? []).flatMap((v) =>
-		v.split(',').map((s) => s.trim()).filter((s) => s.length > 0).map(parseDebugCategory),
-	);
-
-	return { configPath, debugCategories };
+	return { configPath };
 }
 
 // Returns the process exit code rather than calling process.exit
@@ -198,7 +177,7 @@ export async function main(
 		throw err;
 	}
 
-	const debug = new DebugController({ staticCategories: cli.debugCategories });
+	const debug = new DebugController();
 
 	let loaded: ReturnType<typeof loadConfig>;
 	try {

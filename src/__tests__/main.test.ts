@@ -86,26 +86,6 @@ describe('parseCli', () => {
 	test('takes the config path as the first positional', () => {
 		const cli = parseCli(['config.yaml']);
 		expect(cli.configPath).toBe('config.yaml');
-		expect(cli.debugCategories).toEqual([]);
-	});
-
-	test('-d is repeatable and comma-separated, and both combine', () => {
-		const cli = parseCli(['config.yaml', '-d', 'SUBSCRIBER', '-d', 'DOWNLOADER,CLEANER']);
-		expect(cli.debugCategories).toEqual(['SUBSCRIBER', 'DOWNLOADER', 'CLEANER']);
-	});
-
-	test('-d accepts role names case-insensitively and normalizes to uppercase', () => {
-		const cli = parseCli(['config.yaml', '-d', 'subscriber', '-d', 'downloader,Cleaner']);
-		expect(cli.debugCategories).toEqual(['SUBSCRIBER', 'DOWNLOADER', 'CLEANER']);
-	});
-
-	test('-d accepts the ALL shorthand', () => {
-		const cli = parseCli(['config.yaml', '-d', 'all']);
-		expect(cli.debugCategories).toEqual(['ALL']);
-	});
-
-	test('-d rejects a value that is not a known role or ALL', () => {
-		expect(() => parseCli(['config.yaml', '-d', 'bogus'])).toThrow(CliUsageError);
 	});
 });
 
@@ -115,13 +95,6 @@ describe('main', () => {
 		const code = await main([], log);
 		expect(code).toBe(2);
 		expect(lines.error[0]).toMatch(/usage:/);
-	});
-
-	test('exits 2 on an unrecognized -d value', async () => {
-		const { log, lines } = fakeLog();
-		const code = await main([validConfig, '-d', 'bogus'], log);
-		expect(code).toBe(2);
-		expect(lines.error[0]).toMatch(/unknown -d value/);
 	});
 
 	test('exits 1 and reports errors for an invalid config', async () => {
@@ -179,27 +152,11 @@ describe('main', () => {
 		expect(reporterCalls[0]!.router).toBe(replayerCalls[0]!.router);
 	});
 
-	test('config infos are printed unconditionally, without needing -d', async () => {
+	test('config infos are printed unconditionally, on every run', async () => {
 		const { log, lines } = fakeLog();
 		const { runners } = fakeRunners();
 		await main([validConfig], log, runners);
 		expect(lines.log.some((l) => l.startsWith('config: '))).toBe(true);
-	});
-
-	test('the SUBSCRIBER debug role is enabled on the DebugController passed to the runner when -d SUBSCRIBER is given', async () => {
-		const { log } = fakeLog();
-		const { runners, subscriberCalls } = fakeRunners();
-		await main([validConfig, '-d', 'SUBSCRIBER'], log, runners);
-		expect(subscriberCalls[0]!.debug.has('SUBSCRIBER')).toBe(true);
-		expect(subscriberCalls[0]!.debug.has('DOWNLOADER')).toBe(false);
-	});
-
-	test('the DOWNLOADER debug role is enabled on the DebugController passed to the runner when -d DOWNLOADER is given', async () => {
-		const { log } = fakeLog();
-		const { runners, downloaderCalls } = fakeRunners();
-		await main([validConfig, '-d', 'DOWNLOADER'], log, runners);
-		expect(downloaderCalls[0]!.debug.has('DOWNLOADER')).toBe(true);
-		expect(downloaderCalls[0]!.debug.has('SUBSCRIBER')).toBe(false);
 	});
 
 	test('active roles run concurrently, not sequentially: a slow DOWNLOADER does not block CLEANER from starting and finishing', async () => {

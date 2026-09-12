@@ -1,14 +1,14 @@
 # wis2hauler
 
-This is a single-binary [WIS2](https://community.wmo.int/en/activity-areas/wis) downloader. It subscribes to WIS2 Global Brokers, downloads the data files referenced by incoming notification messages, verifies and (optionally) relocates them, republishes completion notifications, cleans up expired files, exposes Prometheus metrics, and can use WIS2 replayer for access to missed notifications on demand — all from one process, one Redis (or Redis Cluster) backing store, and one YAML configuration file.
+This is a [WIS2](https://community.wmo.int/en/activity-areas/wis) downloader. It subscribes to WIS2 Global Brokers, downloads the data files referenced by incoming notification messages, verifies and (optionally) relocates them, republishes completion notifications, cleans up expired files, exposes Prometheus metrics, and can use WIS2 replayer for access to missed notifications on demand — all from one process, one Redis (or Redis Cluster) backing store, and one YAML configuration file.
 
-Built with [Bun](https://bun.sh) and TypeScript. Ships as a single compiled executable. 
+Built with [Bun](https://bun.sh) and TypeScript. Also available as a single compiled executable or as a Docker container. 
 
 It requires two off-the-shelf tools to work:
-- redis/alkey either as a standalone version or as a cluster used as a K/V store 
+- redis/valkey either as a standalone version or as a cluster used as a K/V store 
 - aria2c a very efficient and scalable downloader
 
-In its simplest form one wis2hauler, one redis/valkey node, one aria2 is sufficient to download (many) files from WIS2.
+In its simplest form one wis2hauler, one redis/valkey node, one aria2 is sufficient to download files from WIS2.
 It can also be deployed in a redundant, scalable manner with multiple wis2hauler on multiple hosts, a redis cluster - minimum 6  nodes for redundancy -, one aria2 instance per DOWNLOADER.
 
 It is also a reference implementation of a Global Cache and can be used operationally if needed.
@@ -33,13 +33,45 @@ See [`docs/configuration-and-roles.md`](docs/configuration-and-roles.md) for the
 
 ## Quick start
 
+**Option A — from source, with Bun:**
+
+### 1. Install Bun
+
+wis2hauler runs on [Bun](https://bun.sh). Install it with:
+
+```bash
+curl -fsSL https://bun.sh/install | bash
+```
+
+(see [bun.sh/docs/installation](https://bun.sh/docs/installation) for other platforms/package managers). You can skip this step entirely if you only want to run a prebuilt binary — Option B below needs no Bun install at all.
+
+### 2. Get the code
+
+```bash
+git clone https://github.com/golfvert/wis2hauler.git
+cd wis2hauler
+```
+
+### 3. Run it
+
 ```bash
 bun install
 cp fixtures/example.valid.yaml my-config.yaml   # edit to taste
 bun src/main.ts my-config.yaml
 ```
 
-A config file is a required positional argument — there is no default path. See [`docs/configuration-and-roles.md`](docs/configuration-and-roles.md) for every option, and `fixtures/*.yaml` for worked examples (a full multi-role config, a minimal single-role one, and one that fails validation on purpose).
+**Option B — a prebuilt binary, no Bun or source build required.** Every release publishes a compiled standalone executable for each supported platform on this repo's [Releases](https://github.com/golfvert/wis2hauler/releases) page. Download the asset matching your OS/architecture, make it executable, and run it directly against a config file:
+
+```bash
+# check the Releases page for the exact asset name for your platform
+curl -LO https://github.com/golfvert/wis2hauler/releases/latest/download/<asset-name>
+chmod +x <asset-name>
+./<asset-name> my-config.yaml
+```
+
+Want to produce that binary yourself instead of downloading it (e.g. for a platform without a published release, or a musl target for the Docker image)? See "Building a standalone binary" below.
+
+A config file is a required argument either way — there is no default path. See [`docs/configuration-and-roles.md`](docs/configuration-and-roles.md) for every option, and `fixtures/*.yaml` for working examples (a full multi-role config, a minimal single-role one, and one that fails validation on purpose).
 
 Every running instance exposes a small HTTP admin API (`GET /get`, `POST /set`, plus role-specific routes) on `global.http-port` (default `8080`), regardless of which roles it carries — the same API a Node-RED admin UI used to expose. See the "Runtime admin API" section of the configuration doc.
 
@@ -78,7 +110,7 @@ The test suite (55+ test files under `src/**/__tests__/`) exercises the pure dec
 ```
 src/
   main.ts          # process entrypoint / orchestrator — owns every MQTT connection and the HTTP server
-  debug.ts         # runtime debug-category toggling (static CLI baseline + dynamic admin-API set)
+  debug.ts         # runtime debug-category toggling, entirely via the admin API (no CLI flag, no file)
   admin/           # GET /get, POST /set — the runtime admin API
   config/          # YAML loading, schema, validation, the small live-patchable subset
   election/        # shared leader-election + always-on heartbeat primitive

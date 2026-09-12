@@ -254,7 +254,7 @@ Without `key`, returns every field the instance's active roles are allowed to se
 | `queue` | any | `global.queue` |
 | `whitelist` / `blacklist` | `SUBSCRIBER` | the active topic lists |
 | `global-replay` | any | the active replay topic, or `null` |
-| `debug` | any | the dynamically-set debug categories (the `-d` CLI baseline is not reported — it can't change) |
+| `debug` | any | the currently-set debug categories |
 | `credentials` | `DOWNLOADER` | the current in-memory `{topic: {username, password}}` map |
 
 ### `POST /set`

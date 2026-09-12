@@ -24,7 +24,7 @@ The `RoleRunners` interface (which every role's `run*` function implements, plus
 
 ### `src/debug.ts`
 
-`DebugController`: a dynamic set controlled entirely through `GET /get?key=debug` / `POST /set {"debug": [...]}`. Replaces an earlier `debug`mechanism that was deliberately removed — debug toggling now goes through the exact same one live-mutation channel as everything else.
+`DebugController`: the set of roles currently logging at debug level, controlled entirely through `GET /get?key=debug` / `POST /set {"debug": [...]}`. Replaces two earlier mechanisms that were deliberately removed — a live-reloaded `--debug-file` and, later, a static `-d` CLI flag — so debug toggling now goes through the exact same one live-mutation channel as everything else, with no CLI flag and no file at all.
 
 ---
 

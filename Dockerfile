@@ -102,14 +102,13 @@ EXPOSE 8080
 
 # ENTRYPOINT is the fixed binary; CMD is just its default argument
 # (this app's positional <config.yaml> arg -- see main.ts's parseCli),
-# so a compose service can override just the `command:` (a different
-# mount path, or added `-d role[,role...]` flags) without needing to
-# touch ENTRYPOINT at all.
+# so a compose service can override just the `command:` (e.g. a
+# different mount path) without needing to touch ENTRYPOINT at all.
 #
-# Debug logging has no file and no CLI flag of its own beyond -d's
-# startup baseline -- it's turned on/off at runtime purely through
-# this same admin API (POST /set {"debug":["SUBSCRIBER",...]}, GET
-# /get?key=debug -- see ../admin/get.ts, ../admin/set.ts), so there's
-# nothing else to mount or pass here for it.
+# Debug logging has no file and no CLI flag at all -- it's turned
+# on/off entirely at runtime through this same admin API (POST /set
+# {"debug":["SUBSCRIBER",...]}, GET /get?key=debug -- see
+# ../admin/get.ts, ../admin/set.ts), so there's nothing else to mount
+# or pass here for it.
 ENTRYPOINT ["/usr/local/bin/wis2hauler"]
 CMD ["/configuration.yml"]

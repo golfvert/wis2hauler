@@ -46,11 +46,9 @@ export const GET_FIELDS: Record<string, GetField> = {
 	whitelist: { roles: ['SUBSCRIBER'], get: (ctx) => ctx.store.getWhitelist() },
 	blacklist: { roles: ['SUBSCRIBER'], get: (ctx) => ctx.store.getBlacklist() },
 	'global-replay': { roles: null, get: (ctx) => ctx.store.getGlobalReplay() },
-	// The dynamic (admin-API-set) layer only -- see ../debug.ts's
-	// getDynamic() doc comment. The static -d CLI baseline isn't
-	// reported here: it's fixed for the process's lifetime and was
-	// never something this API could change, so there's nothing
-	// actionable for a caller to do with it.
+	// See ../debug.ts's getDynamic() doc comment -- this is the whole
+	// state, not a layer on top of anything else: there is no CLI flag
+	// or file feeding debug categories any more, only this admin API.
 	debug: { roles: null, get: (ctx) => ctx.debug.getDynamic() },
 	credentials: {
 		roles: ['DOWNLOADER'],

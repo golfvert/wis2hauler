@@ -81,7 +81,7 @@ networks:
     external: true
 ```
 
-`command: ["/configuration.yml", "-d", "SUBSCRIBER"]` (overriding the image's default `CMD`) is how you'd add the `-d` debug-category flag without touching `ENTRYPOINT`.
+There is no CLI flag for debug categories — toggle them at runtime through the admin API instead: `POST /set {"debug": ["SUBSCRIBER"]}` against whichever port `global.http-port` binds to.
 
 ### Non-root user
 
