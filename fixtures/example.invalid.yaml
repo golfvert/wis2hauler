@@ -1,0 +1,14 @@
+global:
+  roles: "SUBSCRIBER,FOOBAR"
+  log:
+    level: "verbose"
+  local-broker: []
+
+subscriber:
+  mqtt:
+    whitelist: []
+
+downloader:
+  aria-url: "http://127.0.0.1:6800/jsonrpc"
+  aria-inqueue: -1
+  rename-to: "s3"

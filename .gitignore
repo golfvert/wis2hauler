@@ -1,0 +1,40 @@
+# Dependencies
+node_modules/
+
+# OS junk
+.DS_Store
+
+# Local dev config -- real broker/credential values and machine-specific
+# paths (aria-download, aria-url, ...), never meant to leave this machine.
+# See fixtures/*.yaml for the sanitized configs the test suite actually
+# uses -- those ARE meant to be committed.
+dev.yaml
+
+# Node-RED reference export -- the original flow this app was ported
+# from (cited throughout src/ comments for cross-checking), not part of
+# the Bun app and not needed to build or run it.
+nodered/
+
+# Compiled/bundled output (e.g. `bun build --compile`)
+wis2hauler
+wis2-downloader
+*.exe
+
+# Debug marker files -- pre-existing convention, harmless to keep ignoring
+*.debug
+
+# Editors
+.vscode/
+.idea/
+
+# Logs
+*.log
+logs/
+
+# Env files
+.env
+.env.*
+
+# Staged for manual deletion (stale binaries, superseded source) --
+# never meant to reach the repo either way
+_to_delete/

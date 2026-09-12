@@ -1,0 +1,74 @@
+global:
+  roles: "SUBSCRIBER,DOWNLOADER,CLEANER,REPORTER,REPLAYER"
+  worker: "wis2hauler-01"
+  queue: "downloader-01"
+  redis:
+    mode: "cluster"
+    nodes:
+      - "redis-1.example.org:6379"
+      - "redis-2.example.org:6379"
+      - "redis-3.example.org:6379"
+    password: "changeme-redis"
+  log:
+    level: "info"
+    to: "stdout"
+  global-cache: true
+  centre-id: "fr-meteofrance"
+  http-port: 18723
+  local-broker:
+    - broker: "mqtts://pub1.example.org:8883"
+      username: "publisher"
+      password: "changeme"
+      version: 5
+      verifycert: true
+    - broker: "mqtts://pub2.example.org:8883"
+      username: "publisher"
+      password: "changeme"
+
+subscriber:
+  global-broker:
+    - broker: "mqtts://gb1.example.org:8883"
+      username: "subscriber"
+      password: "changeme"
+    - broker: "mqtts://gb2.example.org:8883"
+      username: "subscriber"
+      password: "changeme"
+  priority-global-cache:
+    - "gb1.example.org"
+  mqtt:
+    whitelist:
+      - "origin/a/wis2/fr-meteofrance/data/#"
+      - "cache/a/wis2/fr-meteofrance/metadata/#"
+    blacklist:
+      - "+/+/+/+/+/recommended/#"
+    overridelist:
+      - topic: "origin/a/wis2/fr-meteofrance/data/warnings/#"
+        max-length: 1048576
+    global-replay: null
+
+downloader:
+  aria-secret: "changeme-aria-secret"
+  aria-url: "ws://127.0.0.1:6800/jsonrpc"
+  aria-inqueue: 8
+  aria-download: "/downloads"
+  download-url: "https://downloads.example.org/wis2gc"
+  rename-to: "s3"
+  s3access:
+    url: "https://s3.example.org:9000"
+    accesskey: "changeme-access-key"
+    secretkey: "changeme-secret-key"
+    bucket: "wis2gc-fr-meteofrance"
+    region: "us-east-1"
+  credentials:
+    "origin/a/wis2/us-noaa/data/recommended":
+      username: "noaa-user"
+      password: "changeme"
+
+cleaner:
+  keep-in-cache: 43200
+
+replayer:
+  global-replay-url: "https://replay.example.org/wis2gc"
+
+reporter:
+  keep-ip-address: 86400

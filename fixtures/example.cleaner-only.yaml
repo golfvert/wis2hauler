@@ -1,0 +1,19 @@
+# A CLEANER-only replica -- no REPORTER/REPLAYER active -- used by
+# main.test.ts to prove the shared HTTP server + Setup-tab admin API
+# (GET /get, POST /set) start regardless of which roles are active
+# (main.ts's "always-on HTTP server" change), not just when REPORTER
+# and/or REPLAYER happen to be running.
+global:
+  roles: "CLEANER"
+  worker: "wis2-cleaner-only"
+  queue: "downloader-01"
+  redis:
+    mode: "single"
+    nodes:
+      - "redis-1.example.org:6379"
+  log:
+    level: "info"
+  http-port: 18724
+
+cleaner:
+  keep-in-cache: 43200
