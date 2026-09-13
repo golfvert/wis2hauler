@@ -60,6 +60,21 @@ export interface HashConfig {
 	s3?: {
 		bucket: string;
 	};
+	/**
+	 * downloader['aria-download'] -- needed here (not just by decode-write.ts/
+	 * consumer.ts/cleaner-ipc.ts, which already used it) to compute
+	 * HashResult.localPath below. Added 2026-09-13 (the maintainer, on why
+	 * ../cleaner/schedule.ts's old aria-download-derived "marker" AND its
+	 * replacement, flows.json's own hardcoded "downloads/" literal, are
+	 * BOTH wrong once a deployment isn't guaranteed to run every worker in
+	 * a container mounting that exact directory name -- see schedule.ts's
+	 * header comment for the full story): CLEANER no longer tries to guess
+	 * a locally-cached file's path from the public "link" URL at all; the
+	 * worker that actually did the download computes it once, here, while
+	 * it definitively knows both the real final filepath AND its own
+	 * aria-download, and publishes it as-is.
+	 */
+	ariaDownload: string;
 }
 
 export interface HashResult {
@@ -68,6 +83,20 @@ export interface HashResult {
 	/** Only set when outcome === 'HASH_OK'. */
 	localhref?: string;
 	uri?: string;
+	/**
+	 * The final filepath, relative to config.ariaDownload -- e.g. "2026/09/
+	 * 10/data.grib2" for a date-renamed file under aria-download "/downloads"
+	 * OR under aria-download "/home/xyz/files/something": relative, so it
+	 * carries no assumption about what the directory is actually called.
+	 * undefined for S3 mode, where handleRename() already deletes the local
+	 * copy synchronously right after upload -- nothing for CLEANER to ever
+	 * schedule, matching decideSchedule's old (now-removed) renameToS3
+	 * short-circuit, just decided here instead of guessed per-record later.
+	 * Consumed by ../cleaner/schedule.ts via the downloader_id hash's
+	 * "local-path" field (see lua.ts's LUA_COMPLETE) -- see that file's
+	 * header comment for the full mechanism this replaces.
+	 */
+	localPath?: string;
 }
 
 export interface HashIO {
@@ -76,6 +105,8 @@ export interface HashIO {
 	dirname(filepath: string): string;
 	basename(filepath: string): string;
 	join(...parts: string[]): string;
+	/** path.relative(from, to) -- see HashResult.localPath's doc comment. */
+	relative(from: string, to: string): string;
 	mkdirRecursive(dir: string): void;
 	exists(filepath: string): boolean;
 	unlinkSync(filepath: string): void;
@@ -164,12 +195,18 @@ async function handleRename(filepath: string, input: HashInput, config: HashConf
 	return { renamed: false, failed: false, filepath };
 }
 
-function buildLocalHrefAndUri(filepath: string, config: HashConfig, io: HashIO): { localhref: string; uri: string } {
+function buildLocalHrefAndUri(filepath: string, config: HashConfig, io: HashIO): { localhref: string; uri: string; localPath?: string } {
 	if (config.renameToS3) {
+		// Already deleted locally (see handleRename's S3 branch) -- no
+		// localPath, matching HashResult.localPath's doc comment.
 		const basename = io.basename(filepath);
 		return { localhref: `${config.downloadUrlBase}/${basename}`, uri: basename };
 	}
-	return { localhref: `${config.downloadUrlBase}/${config.worker}${filepath}`, uri: filepath };
+	return {
+		localhref: `${config.downloadUrlBase}/${config.worker}${filepath}`,
+		uri: filepath,
+		localPath: io.relative(config.ariaDownload, filepath),
+	};
 }
 
 function warnIfNotRenamed(result: RenameOutcome, input: HashInput, config: HashConfig, io: HashIO): void {

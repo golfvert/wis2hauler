@@ -81,6 +81,38 @@ describe('runFinishing', () => {
 		expect(store.infoGranules).toEqual([{ uri: '/downloads/f.grib2', length: '12345', centreid: 'centre', topic: 'path/here' }]);
 	});
 
+	test('passes localPath through to the store as the "local-path" hash field (2026-09-13: feeds cleaner/schedule.ts, see lua.ts LUA_COMPLETE)', async () => {
+		const store = new FakeDownloaderStore();
+		store.hashes.set('wis2:centre:abc', { 'https://example.com/f.grib2': 'queue' });
+		const { client } = makeMqttClient();
+		const deps: FinishingDeps = { store, worker: 'downloader1', centreId: 'my-centre', publishClients: [client] };
+
+		await runFinishing(
+			deps,
+			'wis2:centre:abc',
+			wnm,
+			'origin/a/wis2/centre/foo/bar',
+			'https://example.com/f.grib2',
+			'https://local.example.com/f.grib2',
+			'/downloads/f.grib2',
+			1,
+			'centre/foo/f.grib2',
+		);
+
+		expect(store.hashes.get('wis2:centre:abc')?.['local-path']).toBe('centre/foo/f.grib2');
+	});
+
+	test('an omitted localPath (S3 mode, or no Hash step at all) records an empty "local-path" field rather than leaving it unset', async () => {
+		const store = new FakeDownloaderStore();
+		store.hashes.set('wis2:centre:abc', { 'https://example.com/f.grib2': 'queue' });
+		const { client } = makeMqttClient();
+		const deps: FinishingDeps = { store, worker: 'downloader1', centreId: 'my-centre', publishClients: [client] };
+
+		await runFinishing(deps, 'wis2:centre:abc', wnm, 'origin/a/wis2/centre/foo/bar', 'https://example.com/f.grib2', 'https://local.example.com/f.grib2', '/downloads/f.grib2', 1);
+
+		expect(store.hashes.get('wis2:centre:abc')?.['local-path']).toBe('');
+	});
+
 	test('publishes to every configured client, in order', async () => {
 		const store = new FakeDownloaderStore();
 		store.hashes.set('wis2:centre:abc', { 'https://example.com/f.grib2': 'queue' });

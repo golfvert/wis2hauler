@@ -33,7 +33,7 @@ import { IoredisCleanerStore, IoredisGcStore } from '../redis/ioredis-cleaner-st
 import { IoredisElectionStore } from '../redis/ioredis-election-store.ts';
 import { runElectionLoop } from '../election/elector.ts';
 import { computeCleaningNeeded } from '../election/elect.ts';
-import { decideSchedule, computeDownloadsMarker, type ScheduleConfig } from './schedule.ts';
+import { decideSchedule, type ScheduleConfig } from './schedule.ts';
 import { SWEEP_ONCE_DELAY_S, SWEEP_INTERVAL_S, planSweepJob, type SweepJob } from './sweep.ts';
 import { processErrors, type XreadReply } from './errors.ts';
 import { GC_ONCE_DELAY_MS, GC_INTERVAL_MS, GC_DEFAULT_THRESHOLD_SECONDS, runGcSweep } from './gc.ts';
@@ -84,17 +84,17 @@ export async function runCleaner(
 	// Dedicated psubscribe connection -- see header note.
 	const subConn = createRedisConnection(config.global.redis);
 
-	// This replica's OWN downloader config, per the Schedule function's literal
-	// `global.get('rename-to-s3')` read -- Node-RED's global context is
-	// process-local, so this reflects THIS replica's config file, NOT
-	// necessarily the config of whichever replica actually did the download
-	// (the "<worker>" the cleaner-reporter message names may be a different
-	// replica entirely, in a multi-worker deployment). Ported exactly as
-	// coded, not "fixed" into a per-message lookup that flows.json never did.
+	// 2026-09-13: no longer reads THIS replica's own downloader.rename-to at
+	// all -- see schedule.ts's header comment. That used to be a literal
+	// port of the Schedule function's process-local `global.get('rename-to-s3')`
+	// read, which was already documented as wrong for a multi-worker
+	// deployment (it reflected this replica's own config, not necessarily
+	// the config of whichever replica actually did the download); the
+	// "local-path" field now carried on every cleaner-reporter record
+	// makes that guess unnecessary -- decideSchedule() decides S3-ness
+	// per-record instead of per-replica.
 	const scheduleConfig: ScheduleConfig = {
-		renameToS3: config.downloader?.['rename-to'] === 's3',
 		keepInCacheSeconds: config.cleaner?.['keep-in-cache'],
-		downloadsMarker: computeDownloadsMarker(config.downloader?.['aria-download']),
 	};
 
 	const gcThresholdSeconds = config.cleaner?.['redis-gc-threshold-seconds'] ?? GC_DEFAULT_THRESHOLD_SECONDS;

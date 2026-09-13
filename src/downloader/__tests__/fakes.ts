@@ -152,7 +152,7 @@ export class FakeDownloaderStore implements DownloaderStore {
 		delete this.credentials[topic];
 	}
 
-	async completeHref(downloaderId: string, href: string, storedAtMillis: string, localHref: string): Promise<'complete' | null> {
+	async completeHref(downloaderId: string, href: string, storedAtMillis: string, localHref: string, localPath: string): Promise<'complete' | null> {
 		const h = this.hashFor(downloaderId);
 		const current = h[href];
 		if (current === undefined) return null;
@@ -160,6 +160,7 @@ export class FakeDownloaderStore implements DownloaderStore {
 		h[href] = 'complete';
 		h.stored = storedAtMillis;
 		h.link = localHref;
+		h['local-path'] = localPath;
 		return 'complete';
 	}
 

@@ -237,14 +237,20 @@ export const DownloaderSection = Type.Object(
 		// path writes directly, bypassing aria2 entirely -- both paths
 		// share this one value so they can never disagree. Required, not
 		// optional/defaulted: decode-write.ts, consumer.ts's real-aria2
-		// completion gate, cleaner-ipc.ts's delete-path reconstruction,
-		// and cleaner/schedule.ts's cache-eviction sweep marker (see
-		// run.ts's computeDownloadsMarker) used to each independently
-		// hardcode or assume "/downloads" -- the maintainer's real aria2.conf uses
-		// a different path with different case
+		// completion gate, and cleaner-ipc.ts's delete-path reconstruction
+		// each independently hardcode or assume "/downloads" -- the maintainer's
+		// real aria2.conf uses a different path with different case
 		// (/Users/remy/Docker/WIS2/Aria2/Downloads), which silently broke
-		// every one of those assumptions at once. Per the maintainer: "Never assume
-		// the dir is known."
+		// every one of those assumptions at once.
+		// Per the maintainer: "Never assume the dir is known." This now ALSO
+		// feeds ../downloader/hash.ts's HashResult.localPath (added
+		// 2026-09-13, same reasoning extended to ../cleaner/schedule.ts's
+		// eviction match, which used to hardcode the literal "downloads/"
+		// fleet-wide the way the original flows.json Schedule node does --
+		// fine under Docker-only deployment, where every worker's directory
+		// was guaranteed to contain that literal, but silently broken for a
+		// bare-metal deployment with an arbitrarily-named directory; see
+		// hash.ts's and schedule.ts's header comments for the full story).
 		'aria-download': Type.String({ minLength: 1 }),
 		// Threaded straight into aria2.addUri's "check-certificate" param
 		// (Setup tab's "Aria" change node) -- optional because the

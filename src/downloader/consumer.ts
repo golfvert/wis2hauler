@@ -143,6 +143,7 @@ async function runCompletion(deps: ConsumerDeps, downloaderId: string, gid: stri
 			completeOutcome.localHref ?? '',
 			completeOutcome.uri ?? '',
 			completeOutcome.length,
+			completeOutcome.localPath,
 		);
 	} else if (completeOutcome.hashOutcome === 'HASH_NOK') {
 		// "Correct ?" (Warn): the original's own switch routes both its

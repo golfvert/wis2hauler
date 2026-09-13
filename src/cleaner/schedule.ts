@@ -1,5 +1,6 @@
 // The Cleaner tab's "Schedule" function node (657fefb1a3a5afae, itself
-// a merge of "K/V" + "Schedule delete") -- ported field-for-field.
+// a merge of "K/V" + "Schedule delete") -- ported field-for-field,
+// with one deliberate deviation from the original documented below.
 // Fed by the "Cleaner" redis-in psubscribe node (a8a76a5fc30cc193,
 // pattern "wis2gc:cleaner-reporter:*") through the "Cleaner ?" gate
 // (d1a37dc7eb2804ea: cleaner-primary && cleaning-needed && run-mode),
@@ -15,71 +16,69 @@
 // same value says "files will be deleted immediately" -- the original
 // Schedule function's own `typeof keep !== 'number' || keep <= 0` guard
 // contradicts that warning text; ported exactly as coded.
-import * as nodePath from 'node:path';
+//
+// CORRECTED AGAIN, 2026-09-13 (the maintainer): the 2026-09-13 fix earlier
+// today made this match flows.json's real Schedule node exactly --
+// hardcoding the literal `'downloads/'` (`link.indexOf('downloads/')` /
+// `link.substring(...)`) instead of the file's original, wronger
+// `downloader['aria-download']`-derived marker. That flows.json-faithful
+// hardcoded literal is ITSELF still wrong for this port, though, for a
+// reason that never applied to the original: the original ONLY ever ran
+// inside Docker, where every worker's aria-download was, by convention,
+// always some path containing "/downloads" -- guaranteed by how the
+// images were built, not by anything in the flow logic. This port also
+// supports bare-metal deployment, where an operator can point
+// downloader['aria-download'] at any directory name at all (see this
+// worker's own run.ts) -- the fleet no longer has ANY string every
+// worker's local path is guaranteed to contain, so hardcoding
+// "downloads/" silently and permanently stops scheduling eviction for
+// any worker whose directory doesn't happen to contain that literal.
+//
+// Fix (the maintainer's "option 1, with the caveat for S3, and it must
+// work for docker and bare metal"): stop trying to re-derive the local
+// path by pattern-matching the published "link" URL at all. Each
+// DOWNLOADER worker already knows -- authoritatively, from its own
+// hash.ts -- the exact path it wrote the file to, relative to its OWN
+// aria-download; that value now rides along on the SAME cleaner-reporter
+// record as a new "local-path" field (see lua.ts's LUA_COMPLETE and
+// finishing.ts), so CLEANER just reads it back verbatim instead of
+// guessing. This works identically under Docker (where "local-path"
+// happens to still look like the old marker-relative fragment) and bare
+// metal (where it doesn't need to). It also subsumes the old
+// `renameToS3` field: S3-mode downloads are uploaded then immediately
+// deleted locally (hash.ts's S3 branch), so hash.ts never produces a
+// localPath for them, "local-path" comes back empty, and this decision
+// already skips exactly that case with no separate S3 flag needed.
+// Records published by a not-yet-upgraded worker (rolling deploy) simply
+// have no "local-path" field at all -- treated the same as empty:
+// skipped, not deleted blind.
 
 export interface ScheduleConfig {
-	/** global.get('rename-to-s3') -- true iff downloader['rename-to'] === 's3'. */
-	renameToS3: boolean;
 	/** global.get('keep-in-cache') -- config.cleaner['keep-in-cache'], undefined if the cleaner section is absent. */
 	keepInCacheSeconds: number | undefined;
-	/**
-	 * The path-segment marker (e.g. "Downloads/") that identifies a
-	 * published link as pointing at a file under downloader['aria-download'],
-	 * derived from that same config value by run.ts's
-	 * computeDownloadsMarker -- see its doc comment for why a basename
-	 * derivation, not the raw directory, is what actually needs to
-	 * match. undefined when aria-download isn't configured (a
-	 * CLEANER-only deployment that never set it -- see validate.ts's
-	 * warning): every record is then skipped rather than guessing a
-	 * hardcoded marker, matching the maintainer's "never assume the dir is known".
-	 */
-	downloadsMarker: string | undefined;
 }
 
 export interface ScheduleResult {
 	/** ZADD score: Date.now() + keep*1000, as a string (matching the original's String(...)). */
 	scoreMs: string;
-	/** ZADD member: "<worker>|<path-under-downloads/>". */
+	/** ZADD member: "<worker>|<local-path>". */
 	member: string;
 }
 
 const CLEANER_REPORTER_PREFIX = 'cleaner-reporter:';
 
-/**
- * Derives ScheduleConfig.downloadsMarker from downloader['aria-download']:
- * the directory's own last path segment, plus a trailing slash -- e.g.
- * "/Users/remy/Docker/WIS2/Aria2/Downloads" -> "Downloads/". This is
- * what actually shows up as a path segment in a published link (see
- * hash.ts's buildLocalHrefAndUri -- only the "no rename" case ever
- * embeds the aria-download path into a link at all, and always as an
- * absolute path containing this directory's own name as a segment),
- * not the raw directory itself, which would never match since a
- * published link never carries a leading "/". Returns undefined when
- * ariaDownloadDir itself is unset (a CLEANER-only deployment that
- * never configured it -- see validate.ts's warning for that case);
- * decideSchedule then skips every record rather than guessing.
- */
-export function computeDownloadsMarker(ariaDownloadDir: string | undefined): string | undefined {
-	if (!ariaDownloadDir) return undefined;
-	const name = nodePath.basename(ariaDownloadDir);
-	return name ? `${name}/` : undefined;
-}
-
 export function decideSchedule(config: ScheduleConfig, flatPayload: readonly unknown[], channelTopic: string, now: number): ScheduleResult | null {
-	// S3 mode: files are uploaded to S3 and not kept on local disk -> nothing to delete.
-	if (config.renameToS3) return null;
-
-	const marker = config.downloadsMarker;
-	if (!marker) return null; // aria-download not configured -- see ScheduleConfig's doc comment.
-
 	const rec: Record<string, unknown> = {};
 	for (let i = 0; i < flatPayload.length; i += 2) {
 		rec[String(flatPayload[i])] = flatPayload[i + 1];
 	}
-	const link = rec.link;
+	const localPath = rec['local-path'];
 
-	// Skip records with no local file (download_error / integrity_fail carry no link).
-	if (typeof link !== 'string' || link.indexOf(marker) === -1) return null;
+	// Skip records with no locally-cached file: S3-mode downloads (hash.ts
+	// never sets local-path for them), download_error/integrity_fail
+	// records (no link, no local-path), and records from a worker that
+	// hasn't yet been upgraded to publish "local-path" at all.
+	if (typeof localPath !== 'string' || localPath === '') return null;
 
 	// Retention in seconds; if unset/disabled, keep the file.
 	const keep = config.keepInCacheSeconds;
@@ -87,10 +86,9 @@ export function decideSchedule(config: ScheduleConfig, flatPayload: readonly unk
 
 	const markerIdx = channelTopic.indexOf(CLEANER_REPORTER_PREFIX);
 	const worker = markerIdx === -1 ? channelTopic : channelTopic.substring(markerIdx + CLEANER_REPORTER_PREFIX.length);
-	const path = link.substring(link.indexOf(marker) + marker.length);
 
 	return {
 		scoreMs: String(now + keep * 1000),
-		member: `${worker}|${path}`,
+		member: `${worker}|${localPath}`,
 	};
 }

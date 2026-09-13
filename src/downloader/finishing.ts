@@ -56,13 +56,19 @@ export async function runFinishing(
 	localHref: string,
 	uri: string,
 	length: number,
+	// complete.ts's CompleteOutcome.localPath -- undefined for S3 (nothing
+	// to ever evict) or when Hash didn't run at all. Stored on the
+	// downloader_id hash as "local-path" (lua.ts's LUA_COMPLETE) purely so
+	// ../cleaner/schedule.ts can read it back verbatim instead of parsing
+	// it out of localHref -- see that file's header comment for why.
+	localPath?: string,
 ): Promise<void> {
 	// "HGET" (1c95d462b92b83ce) -> EVAL LUA_COMPLETE -> "Payload ?"
 	// (0c9dc8d837b621d5): a Lua `false` (the href field never existed on
 	// the hash) gates off everything below, matching the switch's silent
 	// no-wire false branch. This step is NOT one of the 4 independent
 	// ones -- it's the original's single upstream gate all 4 branch off.
-	const transitioned = await deps.store.completeHref(downloaderId, href, String(Date.now()), localHref);
+	const transitioned = await deps.store.completeHref(downloaderId, href, String(Date.now()), localHref, localPath ?? '');
 	if (transitioned !== 'complete') return;
 
 	// Step 1/4: "WNM" (d430de06ba1e6656) -> "Link" chain: swap in the

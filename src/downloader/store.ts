@@ -276,12 +276,13 @@ export interface DownloaderStore {
 
 	// "HGET" (1c95d462b92b83ce) -> "EVAL" (dba76a2231eb7150) running
 	// LUA_COMPLETE: EVAL(LUA_COMPLETE, 1, downloaderHashKey(downloaderId),
-	// href, storedAtMillis, localHref). Returns the string "complete"
-	// (field existed and is now complete, or already was) or null
-	// (Lua false / Redis nil -- the href field didn't exist on the
+	// href, storedAtMillis, localHref, localPath). Returns the string
+	// "complete" (field existed and is now complete, or already was) or
+	// null (Lua false / Redis nil -- the href field didn't exist on the
 	// hash at all, which gates the whole Finishing chain off per
-	// lua.ts's own header comment).
-	completeHref(downloaderId: string, href: string, storedAtMillis: string, localHref: string): Promise<'complete' | null>;
+	// lua.ts's own header comment). localPath: '' for S3 (nothing to
+	// evict) -- see lua.ts's header comment, added 2026-09-13.
+	completeHref(downloaderId: string, href: string, storedAtMillis: string, localHref: string, localPath: string): Promise<'complete' | null>;
 
 	// "Update" (051ef2b8332e9716) -> "EVAL" (32d1d4a4cae36be6) running
 	// LUA_RETRY: EVAL(LUA_RETRY, 1, downloaderHashKey(downloaderId),

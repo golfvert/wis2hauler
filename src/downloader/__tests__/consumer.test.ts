@@ -41,6 +41,7 @@ function makeHashIo(overrides: Partial<HashIO> = {}): HashIO {
 		dirname: (fp) => fp.split('/').slice(0, -1).join('/'),
 		basename: (fp) => fp.split('/').pop() ?? '',
 		join: (...parts) => parts.join('/'),
+		relative: (from, to) => (to.startsWith(`${from}/`) ? to.slice(from.length + 1) : to),
 		mkdirRecursive: () => {},
 		exists: () => false,
 		unlinkSync: () => {},
@@ -61,6 +62,7 @@ const hashConfig: HashConfig = {
 	renameToDate: false,
 	renameToTopic: false,
 	renameToS3: false,
+	ariaDownload: '/downloads',
 };
 
 function makeMqttClient(): { client: MqttLike; published: { topic: string; payload: string }[] } {

@@ -47,6 +47,8 @@ export interface CompleteOutcome {
 	/** Only set when hashOutcome === 'HASH_OK'. */
 	localHref?: string;
 	uri?: string;
+	/** hashResult.localPath -- see hash.ts's HashResult doc comment. undefined for S3 (and non-HASH_OK outcomes). */
+	localPath?: string;
 }
 
 interface StoredWnmShape {
@@ -103,7 +105,7 @@ export async function runComplete(deps: CompleteDeps, downloaderId: string, gid:
 		deps.store.unscheduleCleanerCancel(deps.worker, gid),
 	]);
 
-	let hashResult: { outcome: HashOutcome; length: number; localhref?: string; uri?: string };
+	let hashResult: { outcome: HashOutcome; length: number; localhref?: string; uri?: string; localPath?: string };
 	try {
 		hashResult = await runHash(
 			{ method, hash, filepath, wnmpubtime: wnm.properties?.pubtime, wnmtopic: wnmTopic },
@@ -134,5 +136,6 @@ export async function runComplete(deps: CompleteDeps, downloaderId: string, gid:
 		length: hashResult.length,
 		localHref: hashResult.localhref,
 		uri: hashResult.uri,
+		localPath: hashResult.localPath,
 	};
 }

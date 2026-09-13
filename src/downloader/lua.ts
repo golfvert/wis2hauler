@@ -10,10 +10,21 @@
 // no SHA caching needed to match behavior (ioredis may cache it for
 // us internally, which is an implementation detail, not new behavior).
 
-// Called as: EVAL(LUA_COMPLETE, 1, downloaderHashKey(downloaderId), href, storedAtMillis, localHref)
+// Called as: EVAL(LUA_COMPLETE, 1, downloaderHashKey(downloaderId), href, storedAtMillis, localHref, localPath)
 // KEYS[1] = the downloader_id hash. ARGV[1] = href. ARGV[2] = the
 // millis timestamp string to record as "stored". ARGV[3] = the local
-// file path/URL to record as "link".
+// file path/URL to record as "link". ARGV[4] = the path relative to
+// THIS worker's own aria-download, or '' for S3 (nothing to evict) --
+// recorded as "local-path".
+//
+// ARGV[4]/"local-path" is NOT part of the original flows.json script --
+// added 2026-09-13 (the maintainer) so ../cleaner/schedule.ts can read back
+// the exact path the downloading worker itself resolved the file to,
+// instead of re-deriving it by pattern-matching the "link" URL (which
+// the original does via a hardcoded "downloads/" literal -- see
+// schedule.ts's header comment for why that breaks once a deployment
+// isn't guaranteed to name every worker's download directory the same
+// way). Every other field/behavior here is still the literal port.
 //
 // Returns Redis nil (Lua `false`) if the href field doesn't exist on
 // the hash at all -- the original's "Payload ?" gate then drops the
@@ -23,7 +34,7 @@
 // 'complete' (idempotent replay) -- both cases proceed through the
 // Finishing chain identically; ported as-is, not "fixed" to skip the
 // republish on the idempotent case.
-export const LUA_COMPLETE = `local c=redis.call('HGET',KEYS[1],ARGV[1]); if not c then return false end; if c=='complete' then return 'complete' end; redis.call('HSET',KEYS[1],ARGV[1],'complete','stored',ARGV[2],'link',ARGV[3]); return 'complete'`;
+export const LUA_COMPLETE = `local c=redis.call('HGET',KEYS[1],ARGV[1]); if not c then return false end; if c=='complete' then return 'complete' end; redis.call('HSET',KEYS[1],ARGV[1],'complete','stored',ARGV[2],'link',ARGV[3],'local-path',ARGV[4]); return 'complete'`;
 
 // Called as: EVAL(LUA_RETRY, 1, downloaderHashKey(downloaderId), promoteHref, promoteSource, newAttempt, errorHref, errorSource)
 // KEYS[1] = the downloader_id hash. ARGV[1] = promoteHref (the href

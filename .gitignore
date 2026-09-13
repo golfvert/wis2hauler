@@ -20,6 +20,14 @@ wis2hauler
 wis2-downloader
 *.exe
 
+# Build output staged for a Docker build -- compiled binaries (dist/<arch>/)
+# and geoip-lite's .dat files (dist/geoip-data/), whether produced by CI
+# (.github/workflows/release.yml) or by a local `docker build` per
+# docs/deployment.md. Always regenerated fresh from bun install/build --
+# never meant to be committed (found live, 2026-09-13: a local test build
+# got `git add -A`'d, pushing 75MB+ .dat files straight into history).
+dist/
+
 # Debug marker files -- pre-existing convention, harmless to keep ignoring
 *.debug
 

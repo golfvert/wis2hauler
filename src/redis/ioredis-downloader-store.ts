@@ -179,8 +179,8 @@ export class IoredisDownloaderStore implements DownloaderStore {
 		await this.redis.hdel(downloaderCredentialsKey(), topic);
 	}
 
-	async completeHref(downloaderId: string, href: string, storedAtMillis: string, localHref: string): Promise<'complete' | null> {
-		const result = await this.redis.eval(LUA_COMPLETE, 1, downloaderHashKey(downloaderId), href, storedAtMillis, localHref);
+	async completeHref(downloaderId: string, href: string, storedAtMillis: string, localHref: string, localPath: string): Promise<'complete' | null> {
+		const result = await this.redis.eval(LUA_COMPLETE, 1, downloaderHashKey(downloaderId), href, storedAtMillis, localHref, localPath);
 		return result === 'complete' ? 'complete' : null;
 	}
 

@@ -15,6 +15,7 @@ function makeHashIo(overrides: Partial<HashIO> = {}): HashIO {
 		dirname: (fp) => fp.split('/').slice(0, -1).join('/'),
 		basename: (fp) => fp.split('/').pop() ?? '',
 		join: (...parts) => parts.join('/'),
+		relative: (from, to) => (to.startsWith(`${from}/`) ? to.slice(from.length + 1) : to),
 		mkdirRecursive: () => {},
 		exists: () => false,
 		unlinkSync: () => {},
@@ -35,6 +36,7 @@ const hashConfig: HashConfig = {
 	renameToDate: false,
 	renameToTopic: false,
 	renameToS3: false,
+	ariaDownload: '/downloads',
 };
 
 function makeDeps(overrides: Partial<CompleteDeps> = {}): { deps: CompleteDeps; store: FakeDownloaderStore } {
@@ -89,6 +91,9 @@ describe('runComplete', () => {
 		expect(result?.wnm.downloader_id).toBe('wis2:centre:abc');
 		expect(result?.wnm.conformsTo).toEqual(['http://wis.wmo.int/spec/wnm/1/conf/core']);
 		expect(result?.localHref).toBe('https://downloader.example.com/downloader1/downloads/f.grib2');
+		// 2026-09-13: relative to hashConfig.ariaDownload -- feeds
+		// cleaner/schedule.ts via finishing.ts/lua.ts's "local-path" field.
+		expect(result?.localPath).toBe('f.grib2');
 		expect(store.deletedAria2GidRecords).toEqual(['downloader1:gid-1']);
 		expect(store.deletedAria2GidExpires).toEqual(['downloader1:gid-1']);
 		expect(store.cancelSchedule.has('downloader1|gid-1')).toBe(false);

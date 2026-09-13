@@ -27,6 +27,10 @@ function makeIo(overrides: Partial<HashIO> = {}): HashIO & { warnings: string[];
 		join(...parts) {
 			return parts.join('/').replace(/\/+/g, '/');
 		},
+		relative(from, to) {
+			const f = from.replace(/\/+$/, '');
+			return to.startsWith(`${f}/`) ? to.slice(f.length + 1) : to;
+		},
 		mkdirRecursive(dir) {
 			calls.push(`mkdir:${dir}`);
 			dirs.add(dir);
@@ -74,6 +78,7 @@ const noRenameConfig: HashConfig = {
 	renameToDate: false,
 	renameToTopic: false,
 	renameToS3: false,
+	ariaDownload: '/downloads',
 };
 
 describe('formatDateDir / formatTopicDir', () => {
@@ -95,6 +100,7 @@ describe('runHash', () => {
 			length: 42,
 			localhref: 'http://example.test/dl/w1/downloads/file.dat',
 			uri: '/downloads/file.dat',
+			localPath: 'file.dat',
 		});
 		expect(io.calls).toEqual([]);
 	});
@@ -110,6 +116,9 @@ describe('runHash', () => {
 		expect(result.outcome).toBe('HASH_OK');
 		expect(result.uri).toBe('/downloads/2024/01/15/10/file.dat');
 		expect(result.localhref).toBe('http://example.test/dl/w1/downloads/2024/01/15/10/file.dat');
+		// 2026-09-13: relative to config.ariaDownload, not derived from a
+		// "downloads/" literal -- see hash.ts's HashResult.localPath doc comment.
+		expect(result.localPath).toBe('2024/01/15/10/file.dat');
 		expect(io.calls).toContain('rename:/downloads/file.dat->/downloads/2024/01/15/10/file.dat');
 	});
 
@@ -240,6 +249,9 @@ describe('runHash', () => {
 		expect(result.outcome).toBe('HASH_OK');
 		expect(result.localhref).toBe('http://example.test/dl/file.dat');
 		expect(result.uri).toBe('file.dat');
+		// S3 mode: no locally-cached file left to ever schedule for eviction --
+		// see HashResult.localPath's doc comment and cleaner/schedule.ts.
+		expect(result.localPath).toBeUndefined();
 		expect(io.calls).toContain('s3:my-bucket/file.dat');
 		expect(io.calls).toContain('unlinkAsync:/downloads/file.dat');
 	});

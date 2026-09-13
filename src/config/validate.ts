@@ -221,20 +221,18 @@ export function validateConfig(input: unknown): ValidationResult {
 			}
 		}
 
-		// CLEANER can run without DOWNLOADER (a standalone deployment --
-		// see fixtures/example.cleaner-only.yaml), so downloader:aria-download
-		// isn't Ajv-enforced by DOWNLOADER's own section-requiredness check
-		// above in that shape. But schedule.ts's cache-eviction sweep still
-		// needs to know the same directory DOWNLOADER writes into (it
-		// derives its sweep marker from this value -- see run.ts's
-		// computeDownloadsMarker) to recognize which published links point
-		// at a locally-cached file. Warning, not an error, to match the
-		// existing "cleaner: section missing" severity just above: Cleaner
-		// keeps running, it just never matches anything to evict, same
-		// degrade-not-crash shape.
-		if (!isString(isObject(cfg.downloader) ? cfg.downloader['aria-download'] : undefined)) {
-			warnings.push("global.roles includes CLEANER but downloader['aria-download'] is not set — the cache-eviction sweep will never match a locally-cached file (never assume the download directory)");
-		}
+		// REMOVED, 2026-09-13 (the maintainer, quoting flows.json directly): this
+		// used to warn when downloader['aria-download'] was unset, on the
+		// theory that ../cleaner/schedule.ts's eviction-matching needed it.
+		// It doesn't -- the original Schedule node (657fefb1a3a5afae) hardcodes
+		// the literal 'downloads/' fleet-wide, with no config lookup at all,
+		// and neither does any other node in the Cleaner tab. CLEANER runs
+		// via one elected instance reading a global (not per-worker)
+		// psubscribe across the whole fleet, so there was never "this
+		// replica's own aria-download" for it to need in the first place --
+		// see schedule.ts's header comment for the full correction. This
+		// warning was itself a symptom of the same invented dependency and
+		// is gone along with it.
 	}
 
 	// ─── reporter ─────────────────────────────────────────────────────────

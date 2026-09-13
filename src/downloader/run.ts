@@ -143,6 +143,10 @@ export async function runDownloader(
 		renameToTopic: dl['rename-to'] === 'topic',
 		renameToS3: dl['rename-to'] === 's3',
 		s3: dl.s3access ? { bucket: dl.s3access.bucket } : undefined,
+		// 2026-09-13: this worker's own aria-download, so hash.ts can compute
+		// HashResult.localPath relative to it -- see hash.ts's header comment
+		// on why this replaced deriving it from a "downloads/" literal.
+		ariaDownload: dl['aria-download'],
 	};
 
 	const hashIo: HashIO = {
@@ -156,6 +160,7 @@ export async function runDownloader(
 		dirname: (filepath) => nodePath.dirname(filepath),
 		basename: (filepath) => nodePath.basename(filepath),
 		join: (...parts) => nodePath.join(...parts),
+		relative: (from, to) => nodePath.relative(from, to),
 		mkdirRecursive: (dir) => {
 			fs.mkdirSync(dir, { recursive: true });
 		},

@@ -147,7 +147,7 @@ The maximum number of downloads queued or in-flight at once — the main backpre
 
 ### `downloader.aria-download` — required
 
-The exact directory aria2 itself writes into (must match `aria2.conf`'s `dir=` — same host, same case). This app's own embedded-content fast path also writes here directly. Several other pieces of the pipeline (the cleaner's eviction sweep, the cache-directory marker used to recognize a locally-cached link) derive from this same value, so it must never be assumed or hardcoded elsewhere — always set it explicitly.
+The exact directory aria2 itself writes into (must match `aria2.conf`'s `dir=` — same host, same case). This app's own embedded-content fast path also writes here directly. `decode-write.ts`, `consumer.ts`'s real-aria2 completion gate, and `cleaner-ipc.ts`'s delete-path reconstruction all derive from this same value, so it must never be assumed or hardcoded elsewhere — always set it explicitly. This worker's own `hash.ts` also uses it (added 2026-09-13) to compute each completed download's path *relative* to this directory, published alongside the cache-reporter record as `local-path`; the elected CLEANER instance reads that field back verbatim to know what to schedule for eviction, rather than re-deriving it from a fleet-wide `"downloads/"` naming convention — which the original flows.json Schedule node assumes, safely, only because it only ever ran inside Docker containers that all mounted this directory under that exact name. A bare-metal deployment has no such guarantee, so this port can't make that assumption either.
 
 ### `downloader.cache-name` — optional (warning if missing)
 
