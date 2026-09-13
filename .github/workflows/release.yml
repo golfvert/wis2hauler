@@ -203,4 +203,10 @@ jobs:
           context: .
           platforms: linux/amd64,linux/arm64
           push: true
+          # Buildx attaches build provenance + SBOM attestations to the pushed
+          # image by default, which shows up on GHCR as an extra unwanted
+          # "unknown/unknown" OS/Arch entry in the manifest list alongside the
+          # real linux/amd64 and linux/arm64 ones. Disable both explicitly.
+          provenance: false
+          sbom: false
           tags: ghcr.io/${{ github.repository }}:${{ needs.version.outputs.tag }}

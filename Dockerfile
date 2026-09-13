@@ -47,7 +47,14 @@ ARG TARGETARCH
 # geoip-lite's .dat files are bundled straight into the compiled binary,
 # confirmed live earlier this session), so this is the only apk package
 # actually required.
-RUN apk add --no-cache ca-certificates
+# Bun's musl-target compiled binary still dynamically links libstdc++.so.6
+# for certain C++ runtime symbols (exception handling, std:: allocator/hash
+# functions) even though it targets musl libc for everything else -- Alpine
+# does not ship libstdc++ by default. Without it the binary fails at startup
+# with "Error loading shared library libstdc++.so.6" plus a cascade of
+# "Error relocating ...: symbol not found" (e.g. _ZSt17__throw_bad_allocv).
+# libgcc is libstdc++'s own runtime dependency on Alpine, so both are needed.
+RUN apk add --no-cache ca-certificates libstdc++ libgcc
 
 # Default, but settable, non-root user/group -- per the maintainer's request.
 # "Settable" is deliberately handled TWO different ways, for two
