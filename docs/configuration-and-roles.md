@@ -91,6 +91,8 @@ This instance's own WIS2 centre identifier, used as part of the MQTT client id b
 
 Up to two local MQTT brokers, wired to `PUB1`/`PUB2`, that `SUBSCRIBER`'s publish-only outcomes and `DOWNLOADER`'s completion notifications get republished to. See [`deployment.md`](deployment.md#local-mqtt-brokers-and-publish-only-outcomes). Same broker object shape as `subscriber.global-broker` below (`broker`, `username`, `password`, `version`, `verifycert`). If absent, downloaded files are stored after download and rename (see below) and sits there for further processing (eg. using an external notify)
 
+Omitting it entirely is a perfectly normal deployment shape, not a degraded one — it's flagged exactly once, as a startup warning (`global.local-broker: missing or empty — no local MQTT broker configured (PUB1/PUB2 will not connect)`), not re-logged on every message. With no `PUB1`/`PUB2` connected, `SUBSCRIBER`'s and `DOWNLOADER`'s own republish steps simply have nothing to iterate over — every notification and every completed download still processes exactly as it otherwise would, just silently skipping the republish, with no per-message log line marking the skip.
+
 ### `global.http-port` — optional, default `8080`
 
 The port this hauler's one shared HTTP admin server binds to. Always bound, on every instance, regardless of active roles — the admin API (`/get`, `/set`) is never role-gated. 
