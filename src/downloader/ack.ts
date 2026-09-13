@@ -15,10 +15,38 @@ import type { SourceLogger } from '../logging/logger.ts';
 // "-" random) and Decode & Write's synthetic gid
 // ("<entry-id>-<random>", where entry-id is itself a Redis Stream ID
 // shaped "<millis>-<seq>") satisfy this same pattern. A record that
-// fails it is left alone entirely (log-only in the original, matching
-// "link out 10"'s dead end) -- most likely a record already cleaned
-// up by a race with another ack.
+// still fails it after retrying (see RETRY_DELAYS_MS below) is left
+// alone entirely (log-only in the original, matching "link out 10"'s
+// dead end) -- most likely a record already cleaned up by a race with
+// another ack.
 const FIRST_REGEX = /^\d+-\d+-\d+(-\d+)?$/;
+
+export const defaultSleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
+
+// NOT a port -- added 2026-09-13 after a live investigation (log
+// correlation across SUBSCRIBER/DOWNLOADER workers, no Redis query
+// needed -- see the project's own runbook notes) traced a batch of
+// small, fast-completing downloads (Environment Canada citypage_weather
+// XML bulletins, ~550-650ms end-to-end) that vanished with NO trace
+// anywhere -- no completion, no retry, no hash-error, no exception on
+// this worker's own stdout -- to a genuine race in aria-start.ts's
+// startRealDownload: once aria2.addUri() resolves with a gid, this
+// module's "First ?" check (getAria2GidRecord, right below) depends on
+// aria-start.ts having already promoted the pre-registered
+// stream-id-keyed record to the gid-keyed key read here
+// (getStreamEntry -> setAria2GidFields, two more sequential Redis
+// round trips AFTER addUri() already returned). A download fast enough
+// for its own onDownloadComplete notification to reach this function
+// before that promotion finishes finds nothing here yet -- and looks
+// indistinguishable from a genuinely-already-cleaned-up record, so it
+// silently vanished, with nothing to retry it. These two delays are a
+// generous multiple of that race window (2 ordinary Redis round trips,
+// expected in the single-digit milliseconds even under load): up to
+// 400ms of added latency, paid only when this specific race actually
+// happens, buys real headroom against Redis-cluster contention during
+// a same-millisecond download burst (the citypage_weather case was 16
+// downloads landing within 20ms of each other on one worker).
+const RETRY_DELAYS_MS = [100, 300];
 
 export interface AckedEntry {
 	streamId: string;
@@ -38,21 +66,45 @@ export interface AckedEntry {
  * node) -- fired concurrently here rather than replicating the
  * original's incidental sequential wiring of the 3 Clean->DEL steps.
  *
- * Returns null when "First ?" rejects the record (no state changed).
- * Otherwise ALWAYS returns the AckedEntry, even when part of the
- * cleanup fan-out below fails -- see the Promise.allSettled comment.
+ * Returns null when "First ?" still rejects the record after retrying
+ * (see RETRY_DELAYS_MS) -- no state changed. Otherwise ALWAYS returns
+ * the AckedEntry, even when part of the cleanup fan-out below fails --
+ * see the Promise.allSettled comment.
  */
 // ackLog: "Ack" (Downloader tab, previous-node 67a08d8a21f14ae1, Debug)
 // -- a `catch` node in the original, meaning it only ever logs when
 // something in this ack/cleanup fan-out actually throws; it does NOT
 // stop the original's separate, parallel wire onward to the
 // Complete/WNM-publish chain. Optional and trailing so every existing
-// call site keeps compiling without it.
-export async function startAck(store: DownloaderStore, queue: string, worker: string, gid: string, ackLog?: SourceLogger): Promise<AckedEntry | null> {
-	const flat = await store.getAria2GidRecord(worker, gid);
-	const fields = parseFlatRecord(flat);
-	const streamId = fields.stream_id;
+// call site keeps compiling without it. The final give-up warn below
+// (after retries are exhausted) is NOT a port -- see RETRY_DELAYS_MS's
+// own comment -- so it's leveled per the maintainer's own info/warn/
+// debug policy rather than any flows.json precedent: WARN, since a
+// download the rest of the pipeline will never learn finished is
+// "something not good in itself", not routine per-message detail.
+export async function startAck(
+	store: DownloaderStore,
+	queue: string,
+	worker: string,
+	gid: string,
+	ackLog?: SourceLogger,
+	sleep: (ms: number) => Promise<void> = defaultSleep,
+): Promise<AckedEntry | null> {
+	let flat = await store.getAria2GidRecord(worker, gid);
+	let fields = parseFlatRecord(flat);
+	let streamId = fields.stream_id;
+
+	let attempt = 0;
+	while ((!streamId || !FIRST_REGEX.test(streamId)) && attempt < RETRY_DELAYS_MS.length) {
+		await sleep(RETRY_DELAYS_MS[attempt]!);
+		attempt++;
+		flat = await store.getAria2GidRecord(worker, gid);
+		fields = parseFlatRecord(flat);
+		streamId = fields.stream_id;
+	}
+
 	if (!streamId || !FIRST_REGEX.test(streamId)) {
+		ackLog?.warn({ worker, gid, retries: attempt, reason: 'no aria2_gid record found after retrying (First ? check)' });
 		return null;
 	}
 

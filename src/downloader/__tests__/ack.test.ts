@@ -27,6 +27,17 @@ function fakeSourceLogger(): { logger: SourceLogger; debugCalls: Record<string, 
 	return { logger: { info: () => {}, warn: () => {}, debug: (d) => debugCalls.push(d) }, debugCalls };
 }
 
+function fakeWarnLogger(): { logger: SourceLogger; warnCalls: Record<string, unknown>[] } {
+	const warnCalls: Record<string, unknown>[] = [];
+	return { logger: { info: () => {}, warn: (d) => warnCalls.push(d), debug: () => {} }, warnCalls };
+}
+
+// Instant, not real timers -- every test below that exercises the
+// no-record-found path passes this instead of ack.ts's real
+// defaultSleep, so the retry loop still runs (proving the retry
+// behavior itself) without actually waiting 400ms per test.
+const instantSleep = async (_ms: number): Promise<void> => {};
+
 class ThrowingDeleteStore extends FakeDownloaderStore {
 	override async deleteAria2GidRecord(): Promise<void> {
 		throw new Error('redis: connection reset');
@@ -34,17 +45,78 @@ class ThrowingDeleteStore extends FakeDownloaderStore {
 }
 
 describe('startAck', () => {
-	test('returns null when there is no aria2_gid record at all', async () => {
+	test('returns null when there is no aria2_gid record at all, after retrying', async () => {
 		const store = new FakeDownloaderStore();
-		const result = await startAck(store, 'wis2gc:downloader-queue', 'downloader1', 'missing-gid');
+		const delays: number[] = [];
+		const result = await startAck(store, 'wis2gc:downloader-queue', 'downloader1', 'missing-gid', undefined, async (ms) => void delays.push(ms));
 		expect(result).toBeNull();
+		expect(delays).toEqual([100, 300]); // both retries exhausted, real record never appeared
 	});
 
 	test('returns null when the stream_id fails the "First ?" regex (not <millis>-<seq>[-<n>])', async () => {
 		const store = new FakeDownloaderStore();
 		store.aria2GidRecords.set('downloader1:some-gid', ['stream_id', 'not-a-stream-id', 'downloader_id', 'x']);
-		const result = await startAck(store, 'wis2gc:downloader-queue', 'downloader1', 'some-gid');
+		const result = await startAck(store, 'wis2gc:downloader-queue', 'downloader1', 'some-gid', undefined, instantSleep);
 		expect(result).toBeNull();
+	});
+
+	// NOT a port -- see ack.ts's own RETRY_DELAYS_MS comment: a download
+	// fast enough that its onDownloadComplete notification arrives before
+	// aria-start.ts's gid-promotion (getStreamEntry -> setAria2GidFields)
+	// has finished writing the aria2_gid record must not be treated the
+	// same as a genuinely-already-cleaned-up one.
+	describe('retry (gid-promotion race)', () => {
+		test('a record that only appears after the first retry is picked up, not lost to the race', async () => {
+			const store = new FakeDownloaderStore();
+			let sleepCalls = 0;
+			const sleep = async (): Promise<void> => {
+				sleepCalls++;
+				if (sleepCalls === 1) {
+					// Simulates aria-start.ts's promotion finishing during the
+					// wait, exactly the race this retry exists to survive.
+					store.aria2GidRecords.set('downloader1:late-gid', ['stream_id', '1694198400000-0-999999', 'downloader_id', 'wis2:centre:abc']);
+				}
+			};
+
+			const result = await startAck(store, 'q', 'downloader1', 'late-gid', undefined, sleep);
+
+			expect(result?.streamId).toBe('1694198400000-0-999999');
+			expect(sleepCalls).toBe(1); // only needed the FIRST retry, not both
+		});
+
+		test('a record that only appears after the second retry is still picked up', async () => {
+			const store = new FakeDownloaderStore();
+			let sleepCalls = 0;
+			const sleep = async (): Promise<void> => {
+				sleepCalls++;
+				if (sleepCalls === 2) {
+					store.aria2GidRecords.set('downloader1:very-late-gid', ['stream_id', '1694198400000-0-999999', 'downloader_id', 'wis2:centre:abc']);
+				}
+			};
+
+			const result = await startAck(store, 'q', 'downloader1', 'very-late-gid', undefined, sleep);
+
+			expect(result?.streamId).toBe('1694198400000-0-999999');
+			expect(sleepCalls).toBe(2);
+		});
+
+		test('gives up and logs a warn (with the retry count) when the record never appears', async () => {
+			const store = new FakeDownloaderStore();
+			const { logger, warnCalls } = fakeWarnLogger();
+
+			const result = await startAck(store, 'q', 'downloader1', 'ghost-gid', logger, instantSleep);
+
+			expect(result).toBeNull();
+			expect(warnCalls).toEqual([{ worker: 'downloader1', gid: 'ghost-gid', retries: 2, reason: 'no aria2_gid record found after retrying (First ? check)' }]);
+		});
+
+		test('a genuinely-already-cleaned-up record (real double-ack race) still returns null, not a false recovery', async () => {
+			const store = new FakeDownloaderStore();
+			// Never set -- this is the ordinary case the regex/existence
+			// check was originally built for, unaffected by the retry.
+			const result = await startAck(store, 'q', 'downloader1', 'truly-gone-gid', undefined, instantSleep);
+			expect(result).toBeNull();
+		});
 	});
 
 	test('a real-shaped stream_id acks the queue entry and cleans up all 3 keys', async () => {
