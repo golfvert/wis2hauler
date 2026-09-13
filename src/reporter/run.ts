@@ -37,7 +37,7 @@ import { buildBytesOp, buildFilesOp, buildIpsOp, deriveCountry, extractGranuleRe
 import { applyCounterOp, applyGaugeOp, createReporterMetrics } from './prom.ts';
 import { cleanerReporterKey } from '../wis2/redis-keys.ts';
 import type { HttpRouter } from '../http/router.ts';
-import geoipLite from 'geoip-lite';
+import path from 'node:path';
 
 // "Start" inject: onceDelay 2s, once (no repeat).
 const HASHSTAT_START_DELAY_MS = 2000;
@@ -47,6 +47,35 @@ function defaultSleep(ms: number): Promise<void> {
 }
 
 export async function runReporter(config: Config, debug: DebugController, log: typeof console, signal: AbortSignal, processUuid: string, router: HttpRouter): Promise<void> {
+	// geoip-lite reads its .dat files as a MODULE-LEVEL side effect (its
+	// lib/geoip.js unconditionally calls preload()/preload6() at the bottom
+	// of the file) using a directory it resolves off `__dirname` at the
+	// time the module is evaluated. Bun's `--compile` bakes `__dirname` in
+	// as the literal path it had on the machine that BUILT the binary (e.g.
+	// /home/runner/work/wis2hauler/wis2hauler/node_modules/geoip-lite/data
+	// on the CI runner) -- not a path inside the compiled executable. A
+	// top-level `import geoipLite from 'geoip-lite'` therefore used to
+	// crash EVERY compiled binary at startup with ENOENT, on every
+	// platform, regardless of which roles were even configured, since
+	// main.ts imports this module unconditionally (found live, 2026-09-13:
+	// the maintainer's first real Docker deployment test died before even
+	// REPORTER's election loop started).
+	//
+	// Fixed two ways:
+	//   1. Load geoip-lite lazily, here, only when REPORTER actually runs
+	//      -- a deployment that never enables REPORTER never touches it.
+	//   2. Point GEODATADIR (an env override geoip-lite's own path
+	//      resolution already honors -- see its geodatadir computation)
+	//      at a RUNTIME-computed default: the `geoip-data` folder shipped
+	//      next to the ACTUAL running executable (`process.execPath`, a
+	//      real runtime value, unlike `__dirname`). See Dockerfile (bakes
+	//      the data in at exactly that path) and docs/deployment.md (the
+	//      standalone-binary case, using the geoip-data.tar.gz release
+	//      asset). An operator can still set GEODATADIR themselves to put
+	//      the data somewhere else.
+	process.env.GEODATADIR ??= path.join(path.dirname(process.execPath), 'geoip-data');
+	const { default: geoipLite } = await import('geoip-lite');
+
 	const reportBy = config.global['centre-id'] ?? '';
 	const keepIpSeconds = config.reporter?.['keep-ip-address'] ?? 86400;
 

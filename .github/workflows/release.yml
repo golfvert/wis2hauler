@@ -148,6 +148,23 @@ jobs:
           chmod +x release-assets/*
           ls -la release-assets
 
+      # geoip-lite (used only by REPORTER's /caddy country-lookup) needs
+      # its .dat files shipped as a `geoip-data` folder next to wherever
+      # the binary runs from -- see src/reporter/run.ts's header comment.
+      # The Docker image bakes this in itself (docker job, below); anyone
+      # running one of the standalone binaries above extracts this
+      # alongside it instead (or sets GEODATADIR explicitly) -- see
+      # docs/deployment.md. One tarball covers every platform: the data
+      # itself is arch-independent.
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - run: bun install
+
+      - name: Package geoip-data.tar.gz
+        run: tar -czf release-assets/geoip-data.tar.gz -C node_modules/geoip-lite/data .
+
       - name: Create release ${{ needs.version.outputs.tag }}
         env:
           GH_TOKEN: ${{ github.token }}
@@ -187,6 +204,20 @@ jobs:
           mv dist/amd64/wis2hauler-linux-x64-musl dist/amd64/wis2hauler
           mv dist/arm64/wis2hauler-linux-arm64-musl dist/arm64/wis2hauler
           chmod +x dist/amd64/wis2hauler dist/arm64/wis2hauler
+
+      # geoip-lite's .dat files aren't produced by `bun build --compile`
+      # (see src/reporter/run.ts's header comment) -- the image needs
+      # them copied in alongside the binary, at dist/geoip-data, which
+      # the Dockerfile's own COPY picks up. Same data regardless of
+      # target architecture, so this one `bun install` covers both
+      # platform builds buildx is about to do.
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - run: bun install
+
+      - run: cp -r node_modules/geoip-lite/data dist/geoip-data
 
       - uses: docker/setup-qemu-action@v3
 

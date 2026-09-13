@@ -22,7 +22,7 @@ A "replica" is one running instance of the `wis2hauler` binary, configured with 
 
 ### Obtaining pre-defined images
 
-Check existing images in https://github.com/golfvert/wis2hauler/pkgs/container/wis2hauler
+Check existing images in https://github.com/golfvert/wis2hauler/pkgs/container/wis2hauler — these already include geoip-lite's data files (see the note below), so there's nothing extra to do for REPORTER's `/caddy` country lookups to work.
 
 ### Building the image
 
@@ -35,13 +35,20 @@ bun build --compile --target=bun-linux-x64-musl src/main.ts --outfile wis2hauler
 
 The `--target=...-musl` variant is required — the Dockerfile's base image is `alpine:3.24` (musl libc), and a binary built with the default `bun-linux-x64`/`bun-linux-arm64` target is glibc-linked and fails immediately on Alpine with a dynamic-linker error. This is a different artifact than a glibc build you might also produce for a bare-metal Linux deployment; build once per target you actually deploy to.
 
+You also need geoip-lite's data files staged at `dist/geoip-data` (arch-independent — same for every target), since `bun build --compile` does **not** bundle them (found live, 2026-09-13 — see `src/reporter/run.ts`'s header comment for why):
+
+```bash
+mkdir -p dist/geoip-data
+cp -r node_modules/geoip-lite/data/* dist/geoip-data/
+```
+
 Then:
 
 ```bash
-docker build -t wis2hauler:latest .
+docker build -t wis2hauler:latest --build-arg TARGETARCH=amd64 .
 ```
 
-The image needs no other build-time input — `ca-certificates` (for `mqtts://`/`wss://`/TLS-Redis) is the only package it installs; every dependency (ioredis, mqtt.js, js-yaml, winston, ajv, geoip-lite, prom-client) is pure JavaScript and already bundled into the compiled binary, including geoip-lite's data files.
+`ca-certificates` (for `mqtts://`/`wss://`/TLS-Redis) is the only apk package the image installs; every dependency (ioredis, mqtt.js, js-yaml, winston, ajv, geoip-lite, prom-client) is pure JavaScript. geoip-lite's data files are the one exception to "bundled into the compiled binary" — they're copied in as a separate `geoip-data` directory next to the binary instead (only needed if you run the `REPORTER` role; every other role never touches geoip-lite at all).
 
 ### Running it
 
@@ -140,6 +147,15 @@ bun build --compile src/main.ts --outfile wis2hauler
 # or, without a compile step:
 bun src/main.ts /path/to/configuration.yml
 ```
+
+**If you run the `REPORTER` role**, also fetch `geoip-data.tar.gz` from the same GitHub release as the binary and extract it into a `geoip-data` folder right next to the binary (`./wis2hauler` and `./geoip-data/` as siblings) — REPORTER's `/caddy` country lookup (`geoip-lite`) resolves its data directory relative to wherever the running binary actually lives, so this is the only placement that works without also setting `GEODATADIR` yourself:
+
+```bash
+mkdir -p ./geoip-data
+tar -xzf geoip-data.tar.gz -C ./geoip-data
+```
+
+No other role touches geoip-lite, so skip this entirely for `SUBSCRIBER`/`DOWNLOADER`/`CLEANER`/`REPLAYER`-only replicas.
 
 Run it under whatever process supervisor you already use (systemd, runit, pm2, ...) — there's nothing wis2hauler-specific about that part. This is the deployment shape the config's own comments assume by default: one or two replicas per host, config files and logs living directly on disk, no container runtime in the loop at all.
 

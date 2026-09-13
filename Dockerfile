@@ -42,11 +42,13 @@ ARG TARGETARCH
 # entries and GB1/GB2 both commonly use mqtts://, and Redis Cluster/TLS
 # is plausible too. Alpine's base image ships neither certs nor a CA
 # bundle by default; without this, any TLS connection fails verification.
-# Nothing else in package.json needs a native/shared-lib dependency
-# (ioredis, mqtt, js-yaml, winston, ajv, geoip-lite are all pure JS --
-# geoip-lite's .dat files are bundled straight into the compiled binary,
-# confirmed live earlier this session), so this is the only apk package
-# actually required.
+# Nothing else in package.json needs a native/shared-lib dependency --
+# ioredis, mqtt, js-yaml, winston, ajv, geoip-lite are all pure JS. (An
+# earlier version of this comment claimed geoip-lite's .dat files get
+# bundled straight into the compiled binary -- that was WRONG, found
+# live 2026-09-13 when it crashed the container at startup; see the
+# COPY dist/geoip-data step below for the real fix.) ca-certificates
+# remains the only apk package actually required for the JS deps.
 # Bun's musl-target compiled binary still dynamically links libstdc++.so.6
 # for certain C++ runtime symbols (exception handling, std:: allocator/hash
 # functions) even though it targets musl libc for everything else -- Alpine
@@ -107,6 +109,21 @@ RUN mkdir -p /downloads /logs \
 	&& chown -R wis2:wis2 /downloads /logs
 
 COPY --chmod=0755 dist/${TARGETARCH}/wis2hauler /usr/local/bin/wis2hauler
+
+# geoip-lite (used only by REPORTER's /caddy country-lookup) reads its
+# .dat files off a directory it resolves at import time. src/reporter/
+# run.ts points that resolution at a GEODATADIR default computed from
+# `process.execPath` -- i.e. a `geoip-data` folder living NEXT TO
+# wherever the binary actually runs from, `/usr/local/bin` here. CI
+# (.github/workflows/release.yml's docker job) populates dist/geoip-data
+# by running `bun install` and copying node_modules/geoip-lite/data --
+# same data, arch-independent, so it's identical for both platforms
+# this multi-arch build produces. Found live, 2026-09-13: without this,
+# geoip-lite's own module-level preload() (which runs unconditionally,
+# whether or not REPORTER is even enabled in this deployment's roles)
+# used to crash the binary at startup looking for its data at the path
+# it had on the GitHub Actions runner that built it.
+COPY dist/geoip-data /usr/local/bin/geoip-data
 
 USER wis2:wis2
 
