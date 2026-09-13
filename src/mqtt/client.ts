@@ -2,7 +2,18 @@
 // used for each of Subscriber's GB1/GB2 upstream brokers, and for
 // each of global.local-broker's PUB1/PUB2 targets that publish-only
 // outcomes republish onto.
-import mqtt, { type MqttClient } from 'mqtt';
+import mqtt, { MqttClient, type IClientOptions } from 'mqtt';
+// mqtt.js's own "runs in a real browser" stream builder -- see
+// buildMqttClient's header comment for why this port needs it too.
+// A named export (unlike its tcp.js/tls.js siblings' bare `export
+// default`), and confirmed (2026-09-13) to resolve to the same callable
+// function under both `bun run` and a `bun build --compile` binary --
+// tcp.js/tls.js's default exports do NOT (they come back double-wrapped
+// in an extra `{ default: fn }` layer under --compile only), which is
+// exactly why this fix reaches for ONLY this one named export and
+// leaves mqtt.connect()'s own tcp/tls dispatch alone entirely (see
+// below) rather than also hand-selecting those two.
+import { browserStreamBuilder } from 'mqtt/lib/connect/ws';
 import type { BrokerConfig } from '../config/schema.ts';
 import type { MqttLike } from './types.ts';
 
@@ -56,6 +67,121 @@ function wrapMqttClient(client: MqttClient): MqttLike {
 	};
 }
 
+// BUN COMPATIBILITY, 2026-09-13 (real deployment failure, worker "one":
+// `Error: Not supported yet in Bun` at `createWebSocketStream (ws:...)`,
+// thrown the moment its wss://scgc.teganet.eu local-broker connection
+// tried to open under the compiled Bun binary -- every one of these
+// workers' `PUB1` connections crash-loops main.ts's startup forever):
+//
+// Bun ships its own built-in, NOT feature-complete reimplementation of
+// the `ws` npm package, silently substituted in whenever anything
+// imports/requires "ws" -- confirmed a real, still-open, still-unfixed
+// Bun limitation (oven-sh/bun#4568; a fix, oven-sh/bun#35459, has been
+// proposed but is still an open, unmerged PR as of 2026-09-13 -- its own
+// description names mqtt.js by name as one of the packages this
+// breaks). Bun's substitute `ws` doesn't implement
+// `createWebSocketStream` at all -- it just throws that literal
+// message. mqtt.js's Node-mode stream builder (mqtt/lib/connect/ws.js's
+// `streamBuilder`, the one mqtt.connect() picks for every ws/wss broker
+// whenever `is_browser_1.default` is false, which it always is here)
+// calls exactly that function.
+//
+// mqtt.js already has a second, WORKING code path for this scenario:
+// `browserStreamBuilder` (same file) -- what every real web browser
+// uses instead, built entirely on the standard global `WebSocket`
+// (which Bun DOES fully, natively implement -- this is Bun's own
+// spec-compliant client, not a shim of anyone else's package) plus the
+// `readable-stream` npm package (a pure-JS userland stream
+// reimplementation, unaffected by any of this). mqtt.connect() itself
+// picks between the two builders via `is_browser || opts.forceNativeWebSocket`
+// -- but that choice is cached in a MODULE-LEVEL variable the FIRST
+// time mqtt.connect() is called ANYWHERE in this process, for every
+// later call, regardless of that later call's own opts (mqtt/lib/
+// connect/index.js's `let protocols = null; if (!protocols) {...}`).
+// This process runs BOTH wss:// local-broker connections AND real
+// mqtts:// (plain TLS, not WebSocket at all) global-broker connections
+// side by side -- see the maintainer's real worker "one" config:
+// local-broker wss://scgc.teganet.eu + global-broker
+// mqtts://globalbroker.meteo.fr. Simply passing `forceNativeWebSocket:
+// true` on every mqtt.connect() call would have silently broken THOSE
+// mqtts:// connections instead: mqtt.connect()'s browser-mode protocol
+// table has no 'mqtts' handler at all, and its own fallback
+// protocol-matching logic would silently reroute a "mqtts" request onto
+// 'wss' instead -- the wrong transport entirely, and not an error
+// anyone would notice until messages simply never arrived.
+//
+// Fix: bypass mqtt.connect()'s protocol dispatch/module-level cache
+// entirely, but ONLY for ws/wss brokers -- construct the `MqttClient`
+// directly with `browserStreamBuilder`. This never touches, and is
+// never affected by, whatever mqtt.connect() itself later decides for
+// some OTHER (tcp/tls) broker in the same process. Plain mqtt://mqtts://
+// brokers are untouched below -- they still go through ordinary
+// mqtt.connect(), exactly as before this fix, since that path never
+// touches the `ws` package at all and was never broken.
+function isWebSocketBroker(brokerUrl: string): boolean {
+	const protocol = new URL(brokerUrl).protocol.replace(/:$/, '');
+	return protocol === 'ws' || protocol === 'wss';
+}
+
+/** `browserStreamBuilder`'s own URL builder wants protocol/hostname/port/path pre-parsed onto opts -- mirrors exactly what mqtt.connect()'s string-URL parsing does today, just without also deciding (and caching) which builder every OTHER broker in this process gets. */
+function parseWebSocketBrokerUrl(brokerUrl: string): Pick<IClientOptions, 'protocol' | 'hostname' | 'port' | 'path'> {
+	const parsed = new URL(brokerUrl);
+	const protocol = parsed.protocol.replace(/:$/, '') as 'ws' | 'wss';
+	return {
+		protocol,
+		hostname: parsed.hostname,
+		port: parsed.port ? Number(parsed.port) : undefined,
+		path: `${parsed.pathname}${parsed.search}` || '/',
+	};
+}
+
+/**
+ * Builds (but does not wait on) the MqttClient for one BrokerConfig,
+ * choosing the right transport per-connection instead of relying on
+ * mqtt.connect()'s process-wide cached choice -- see this file's
+ * BUN COMPATIBILITY comment above. `extraOpts` carries whatever the two
+ * exported connect functions below don't share (currently just
+ * connectMqttBestEffort's `connectTimeout`).
+ */
+function buildMqttClient(broker: BrokerConfig, clientId: string, extraOpts: Pick<IClientOptions, 'connectTimeout'>): MqttClient {
+	const rejectUnauthorized = broker.verifycert ?? true;
+	const baseOpts: IClientOptions = {
+		username: broker.username,
+		password: broker.password,
+		protocolVersion: broker.version ?? 5,
+		rejectUnauthorized,
+		clientId,
+		reconnectPeriod: 5000,
+		...extraOpts,
+	};
+
+	if (!isWebSocketBroker(broker.broker)) {
+		return mqtt.connect(broker.broker, baseOpts);
+	}
+
+	const wsOpts: IClientOptions = {
+		...baseOpts,
+		...parseWebSocketBrokerUrl(broker.broker),
+		// browserStreamBuilder's default `new WebSocket(url, [subprotocol])`
+		// call (mqtt/lib/connect/ws.js's createBrowserWebSocket) never passes
+		// wsOptions/rejectUnauthorized through to the socket at all -- this
+		// hook is the only way to actually honor broker.verifycert (default
+		// true, i.e. normal TLS validation) on this path. Bun's native
+		// WebSocket accepts a `tls` option shaped exactly like node:tls's,
+		// the same as `fetch`.
+		createWebsocket: (url, protocols) => new WebSocket(url, { protocols, tls: { rejectUnauthorized } }),
+	};
+	// MqttClient.connect() calls `this.streamBuilder(this)` with ONE
+	// argument -- opts is never passed at the call site, matching
+	// mqtt.connect()'s own `function wrapper(client) { ... return
+	// protocols[opts.protocol](client, opts); }` (mqtt/lib/connect/
+	// index.js): every real streamBuilder needs `opts` closed over by
+	// whatever function is actually handed to `new MqttClient(...)`,
+	// not read off the call. Same pattern here, just closing over
+	// `wsOpts` instead of mqtt.connect()'s own cached-per-process `opts`.
+	return new MqttClient((client) => browserStreamBuilder(client, wsOpts), wsOpts);
+}
+
 // GB1/GB2 (Subscriber's actual upstream data source) -- blocking until
 // connected is the right behavior here: there is nothing useful for
 // Subscriber to do without it, so it retries forever (reconnectPeriod)
@@ -83,14 +209,7 @@ function wrapMqttClient(client: MqttClient): MqttLike {
 // main.ts's RoleRunners doc comment).
 export function connectMqtt(broker: BrokerConfig, label: string, clientId: string): Promise<MqttLike> {
 	return new Promise((resolve, reject) => {
-		const client: MqttClient = mqtt.connect(broker.broker, {
-			username: broker.username,
-			password: broker.password,
-			protocolVersion: broker.version ?? 5,
-			rejectUnauthorized: broker.verifycert ?? true,
-			clientId,
-			reconnectPeriod: 5000,
-		});
+		const client = buildMqttClient(broker, clientId, {});
 
 		client.once('connect', () => resolve(wrapMqttClient(client)));
 		client.once('error', (err) => reject(err));
@@ -137,15 +256,7 @@ export function connectMqttBestEffort(
 		let settledInitial = false;
 		let loggedCurrentOutage = false;
 
-		const client: MqttClient = mqtt.connect(broker.broker, {
-			username: broker.username,
-			password: broker.password,
-			protocolVersion: broker.version ?? 5,
-			rejectUnauthorized: broker.verifycert ?? true,
-			clientId,
-			connectTimeout: initialTimeoutMs,
-			reconnectPeriod: 5000,
-		});
+		const client = buildMqttClient(broker, clientId, { connectTimeout: initialTimeoutMs });
 
 		const wrapper = wrapMqttClient(client);
 
