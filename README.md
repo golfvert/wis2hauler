@@ -33,7 +33,7 @@ See [`docs/configuration-and-roles.md`](docs/configuration-and-roles.md) for the
 
 ## Quick start
 
-### Option A — from source, with Bun:**
+### Option A — from source, with Bun:
 
 #### 1. Install Bun
 
@@ -60,7 +60,10 @@ cp fixtures/example.valid.yaml my-config.yaml   # edit to taste
 bun src/main.ts my-config.yaml
 ```
 
-### Option B — a prebuilt binary, no Bun or source build required.** Every release publishes a compiled standalone executable for each supported platform on this repo's [Releases](https://github.com/golfvert/wis2hauler/releases) page. Download the asset matching your OS/architecture, make it executable, and run it directly against a config file:
+### Option B — a prebuilt binary, no Bun or source build required.
+
+
+Every release publishes a compiled standalone executable for each supported platform on this repo's [Releases](https://github.com/golfvert/wis2hauler/releases) page. Download the asset matching your OS/architecture, make it executable, and run it directly against a config file:
 
 ```bash
 # check the Releases page for the exact asset name for your platform
@@ -69,7 +72,7 @@ chmod +x <asset-name>
 ./<asset-name> my-config.yaml
 ```
 
-Want to produce that binary yourself instead of downloading it (e.g. for a platform without a published release, or a musl target for the Docker image)? See "Building a standalone binary" below.
+If you want to produce that binary yourself instead of downloading it (e.g. for a platform without a published release,...)? See "Building a standalone binary" below.
 
 A config file is a required argument either way — there is no default path. See [`docs/configuration-and-roles.md`](docs/configuration-and-roles.md) for every option, and `fixtures/*.yaml` for working examples (a full multi-role config, a minimal single-role one, and one that fails validation on purpose).
 

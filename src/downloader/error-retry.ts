@@ -63,6 +63,12 @@ export async function runRetryDecision(deps: ErrorRetryDeps, downloaderId: strin
 		deps.requeueLog?.warn({ downloaderId, href: decision.extracted ?? '', topic: fields.topic ?? '' });
 		deps.updateLog?.warn({ downloaderId, promoteHref: decision.promoteHref, newAttempt: decision.newAttempt });
 		await Promise.all([
+			// workQueueEntryId deliberately omitted: the original
+			// work-queue entry was already XACK'd/XDEL'd by the startAck()
+			// call that routed this download into the retry pipeline in
+			// the first place, and mintRequeueId()'s synthetic id was
+			// never itself a real work-queue entry -- see aria-start.ts's
+			// AriaStartEntry.workQueueEntryId doc for the bug this avoids.
 			startRealDownload(deps.ariaStart, {
 				id: deps.mintRequeueId(),
 				downloaderId,

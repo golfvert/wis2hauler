@@ -11,6 +11,11 @@ function fakeSourceLogger(): { logger: SourceLogger; warnCalls: Record<string, u
 	return { logger: { info: () => {}, warn: (d) => warnCalls.push(d), debug: () => {} }, warnCalls };
 }
 
+function fakeReceivedLogger(): { logger: SourceLogger; debugCalls: Record<string, unknown>[] } {
+	const debugCalls: Record<string, unknown>[] = [];
+	return { logger: { info: () => {}, warn: () => {}, debug: (d) => debugCalls.push(d) }, debugCalls };
+}
+
 function fakeLog() {
 	const lines: string[] = [];
 	return { log: { log: (...a: unknown[]) => lines.push(a.join(' ')), error: (...a: unknown[]) => lines.push(a.join(' ')), warn: () => {} } as unknown as typeof console, lines };
@@ -365,6 +370,75 @@ describe('processEntry', () => {
 
 		expect(sleeps).toEqual([1000]); // position 1 -> CACHE_STAGGER_SECONDS[1] = 1s
 		expect(store.workQueue).toHaveLength(1); // still proceeds to a normal claim afterwards
+	});
+
+	// "Decision" (Debug): added 2026-09-13 so global.log.level/.to actually
+	// captures, per notification, what SUBSCRIBER decided -- see
+	// ConsumerDeps.decisionLog's own doc comment for why this didn't
+	// already exist in file-routed form, and for why this is DEBUG (a
+	// new addition follows the maintainer's info/warn/debug policy from
+	// scratch, unlike a ported call site) rather than info.
+	describe('decisionLog', () => {
+		test('a "download" action logs downloaderId/topic/href/action', async () => {
+			const store = new FakeStore();
+			const { logger, debugCalls } = fakeReceivedLogger();
+			const deps = baseDeps(store, { decisionLog: logger });
+			const w = wnm('d1');
+			const downloaderId = computeDownloaderId(w);
+
+			await processEntry(entry('origin/a/wis2/fr-meteofrance/data/foo', w), deps);
+
+			expect(debugCalls).toEqual([{ downloaderId, topic: 'origin/a/wis2/fr-meteofrance/data/foo', href: 'https://origin.example.org/file.grib2', action: 'download' }]);
+		});
+
+		test('a "wait" action (lost the claim race) logs action: wait', async () => {
+			const store = new FakeStore();
+			const w = wnm('d2');
+			const downloaderId = computeDownloaderId(w);
+			store.claimedIds.add(downloaderId);
+			const { logger, debugCalls } = fakeReceivedLogger();
+			const deps = baseDeps(store, { decisionLog: logger });
+
+			await processEntry(entry('origin/a/wis2/fr-meteofrance/data/foo', w), deps);
+
+			expect(debugCalls).toEqual([{ downloaderId, topic: 'origin/a/wis2/fr-meteofrance/data/foo', href: 'https://origin.example.org/file.grib2', action: 'wait' }]);
+		});
+
+		test('a "drop" action (lost the claim race, nocache) still logs -- otherwise this outcome leaves no trace anywhere', async () => {
+			const store = new FakeStore();
+			const w = wnm('d3', { cache: false });
+			const downloaderId = computeDownloaderId(w);
+			store.claimedIds.add(downloaderId);
+			const { logger, debugCalls } = fakeReceivedLogger();
+			const deps = baseDeps(store, { decisionLog: logger });
+
+			await processEntry(entry('origin/a/wis2/fr-meteofrance/data/foo', w), deps);
+
+			expect(debugCalls).toEqual([{ downloaderId, topic: 'origin/a/wis2/fr-meteofrance/data/foo', href: 'https://origin.example.org/file.grib2', action: 'drop' }]);
+		});
+
+		test('an "already-complete" action logs before short-circuiting', async () => {
+			const store = new FakeStore();
+			const w = wnm('d4');
+			const downloaderId = computeDownloaderId(w);
+			store.completeIds.add(downloaderId);
+			const { logger, debugCalls } = fakeReceivedLogger();
+			const deps = baseDeps(store, { decisionLog: logger });
+
+			await processEntry(entry('origin/a/wis2/fr-meteofrance/data/foo', w), deps);
+
+			expect(debugCalls).toEqual([{ downloaderId, topic: 'origin/a/wis2/fr-meteofrance/data/foo', href: 'https://origin.example.org/file.grib2', action: 'already-complete' }]);
+		});
+
+		test('an "ignore"-classified message logs nothing (never reaches the classify/claim decision at all)', async () => {
+			const store = new FakeStore();
+			const { logger, debugCalls } = fakeReceivedLogger();
+			const deps = baseDeps(store, { decisionLog: logger });
+
+			await processEntry(entry('metadata/a/wis2/fr-meteofrance/metadata/foo', wnm('d5')), deps);
+
+			expect(debugCalls).toHaveLength(0);
+		});
 	});
 });
 

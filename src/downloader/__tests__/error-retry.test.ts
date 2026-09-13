@@ -69,7 +69,13 @@ describe('runRetryDecision', () => {
 		const promoted = store.aria2GidRecords.get('downloader1:requeue-gid');
 		expect(promoted).toBeDefined();
 		expect(promoted?.[promoted.indexOf('href') + 1]).toBe('https://example.com/a.grib2');
-		expect(promoted?.[promoted.indexOf('download_entry_id') + 1]).toBe('requeue-1');
+		// download_entry_id is "" for a retry, not the synthetic
+		// mintRequeueId() value: that id was never itself a real
+		// work-queue entry (the original one was already XACK'd/XDEL'd
+		// back when this download first failed), so aria-start.ts leaves
+		// workQueueEntryId unset here -- see ack.ts's startAck() for the
+		// "ERR Invalid stream ID..." bug this avoids.
+		expect(promoted?.[promoted.indexOf('download_entry_id') + 1]).toBe('');
 
 		const hash = store.hashes.get('wis2:centre:abc')!;
 		expect(hash['https://example.com/a.grib2']).toBe('queue');

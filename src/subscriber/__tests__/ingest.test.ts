@@ -1,10 +1,16 @@
 import { describe, expect, test } from 'bun:test';
 import { createIngestHandler, createIngestStats, type IngestDeps } from '../ingest.ts';
 import { FakeStore } from './fakes.ts';
+import type { SourceLogger } from '../../logging/logger.ts';
 
 function fakeLog() {
 	const lines: string[] = [];
 	return { log: { log: (...a: unknown[]) => lines.push(a.join(' ')), error: (...a: unknown[]) => lines.push(a.join(' ')), warn: () => {} } as unknown as typeof console, lines };
+}
+
+function fakeReceivedLogger(): { logger: SourceLogger; debugCalls: Record<string, unknown>[] } {
+	const debugCalls: Record<string, unknown>[] = [];
+	return { logger: { info: () => {}, warn: () => {}, debug: (d) => debugCalls.push(d) }, debugCalls };
 }
 
 function baseDeps(store: FakeStore, overrides: Partial<IngestDeps> = {}): IngestDeps {
@@ -168,5 +174,84 @@ describe('createIngestHandler', () => {
 		await handler('origin/a/wis2/fr-meteofrance/data/foo', Buffer.from(wnm('msg-ts')));
 
 		expect(timestamps).toEqual([1_234_567_890]);
+	});
+
+	// "Received" (Debug): added 2026-09-13 restoring a capability the
+	// maintainer confirmed flows.json had (a log tap ahead of every
+	// filter below) that this port had dropped -- see
+	// IngestDeps.receivedLog's own doc comment. Unconditional means
+	// unconditional: every case here would otherwise leave the message
+	// completely untraceable (blacklisted/malformed never reach
+	// consumer.ts, and rbe/dedup only ever produce an aggregate counter).
+	describe('receivedLog', () => {
+		test('fires for an ordinary ingested message, with topic and byte length', async () => {
+			const store = new FakeStore();
+			const stats = createIngestStats();
+			const { logger, debugCalls } = fakeReceivedLogger();
+			const payload = Buffer.from(wnm('msg-recv-1'));
+			const handler = createIngestHandler(baseDeps(store, { receivedLog: logger, sourceLabel: 'GB2' }), stats);
+
+			await handler('origin/a/wis2/fr-meteofrance/data/foo', payload);
+
+			expect(debugCalls).toEqual([{ source: 'GB2', topic: 'origin/a/wis2/fr-meteofrance/data/foo', bytes: payload.length }]);
+		});
+
+		test('fires for a topic that then gets blacklisted -- this is the only place such a message is individually identifiable', async () => {
+			const store = new FakeStore();
+			const stats = createIngestStats();
+			const { logger, debugCalls } = fakeReceivedLogger();
+			const handler = createIngestHandler(baseDeps(store, { receivedLog: logger, blacklist: ['+/+/+/+/+/recommended/#'] }), stats);
+
+			await handler('origin/a/wis2/fr-meteofrance/data/recommended/foo', Buffer.from(wnm('msg-recv-2')));
+
+			expect(debugCalls).toHaveLength(1);
+			expect(stats.blacklisted).toBe(1);
+			expect(store.rawStream).toHaveLength(0); // confirms it really was dropped, yet still logged
+		});
+
+		test('fires for malformed JSON', async () => {
+			const store = new FakeStore();
+			const stats = createIngestStats();
+			const { logger, debugCalls } = fakeReceivedLogger();
+			const handler = createIngestHandler(baseDeps(store, { receivedLog: logger }), stats);
+
+			await handler('origin/a/wis2/fr-meteofrance/data/foo', Buffer.from('{not json'));
+
+			expect(debugCalls).toHaveLength(1);
+			expect(stats.malformed).toBe(1);
+		});
+
+		test('fires once per call even when rbe/dedup suppress the second one', async () => {
+			const store = new FakeStore();
+			const stats = createIngestStats();
+			const { logger, debugCalls } = fakeReceivedLogger();
+			const handler = createIngestHandler(baseDeps(store, { receivedLog: logger }), stats);
+			const payload = Buffer.from(wnm('msg-recv-rbe'));
+
+			await handler('origin/a/wis2/fr-meteofrance/data/foo', payload);
+			await handler('origin/a/wis2/fr-meteofrance/data/foo', payload);
+
+			expect(debugCalls).toHaveLength(2); // both arrivals logged, even though the second is dropped by rbe
+			expect(stats.unchanged).toBe(1);
+		});
+
+		test('fires before the GB2 preDelayMs sleep, not after', async () => {
+			const store = new FakeStore();
+			const stats = createIngestStats();
+			const { logger, debugCalls } = fakeReceivedLogger();
+			const order: string[] = [];
+			const handler = createIngestHandler(
+				baseDeps(store, {
+					receivedLog: { info: () => {}, warn: () => {}, debug: (d) => { order.push('log'); debugCalls.push(d); } },
+					preDelayMs: 2000,
+					sleep: async () => void order.push('sleep'),
+				}),
+				stats,
+			);
+
+			await handler('origin/a/wis2/fr-meteofrance/data/foo', Buffer.from(wnm('msg-recv-order')));
+
+			expect(order).toEqual(['log', 'sleep']);
+		});
 	});
 });

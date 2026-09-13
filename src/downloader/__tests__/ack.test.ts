@@ -1,7 +1,26 @@
 import { describe, expect, test } from 'bun:test';
 import { startAck } from '../ack.ts';
+import { startRealDownload, type AriaStartDeps, type AriaStartEntry } from '../aria-start.ts';
+import type { Aria2Client } from '../aria2.ts';
 import type { SourceLogger } from '../../logging/logger.ts';
 import { FakeDownloaderStore } from './fakes.ts';
+
+// Mimics real Redis's own XACK/XDEL id validation (confirmed against a
+// live redis-server 7.0.15, 2026-09-13: XACK/XDEL reject anything not
+// shaped "<ms>-<seq>" with the exact error text below) -- unlike
+// FakeDownloaderStore, which never throws, so it alone can't reproduce
+// the production bug this file guards against.
+const VALID_STREAM_ID = /^\d+-\d+$/;
+class RedisLikeAckStore extends FakeDownloaderStore {
+	override async ackWorkQueueEntry(queue: string, entryId: string): Promise<void> {
+		if (!VALID_STREAM_ID.test(entryId)) throw new Error('ERR Invalid stream ID specified as stream command argument');
+		await super.ackWorkQueueEntry(queue, entryId);
+	}
+	override async deleteWorkQueueEntry(queue: string, entryId: string): Promise<void> {
+		if (!VALID_STREAM_ID.test(entryId)) throw new Error('ERR Invalid stream ID specified as stream command argument');
+		await super.deleteWorkQueueEntry(queue, entryId);
+	}
+}
 
 function fakeSourceLogger(): { logger: SourceLogger; debugCalls: Record<string, unknown>[] } {
 	const debugCalls: Record<string, unknown>[] = [];
@@ -68,14 +87,95 @@ describe('startAck', () => {
 		expect(result?.streamId).toBe('1694198400000-0-654321');
 	});
 
-	test('"Ack" (Debug): a failure in the cleanup fan-out logs once and still rethrows', async () => {
+	// REWRITTEN 2026-09-13 (found live in production): the cleanup
+	// fan-out below (XACK/XDEL + 3 DELs) must never abort startAck()
+	// itself -- the original wires each of these 5 Redis commands to
+	// its OWN Catch node (Debug-only, never halting the flow onward to
+	// Complete/WNM-publish); a literal Promise.all here instead let one
+	// failing call (see the empty-download_entry_id test below) throw
+	// straight out of startAck(), silently dropping every retried
+	// download's whole completion. Still logs via ackLog, just never
+	// rethrows.
+	test('"Ack" (Debug): a failure in the cleanup fan-out logs once but does not stop startAck() from returning the AckedEntry', async () => {
 		const store = new ThrowingDeleteStore();
 		store.aria2GidRecords.set('downloader1:gid-err', ['stream_id', '1694198400000-0-999999', 'downloader_id', 'x', 'download_entry_id', '1694198400000-0']);
 		const { logger, debugCalls } = fakeSourceLogger();
 
-		await expect(startAck(store, 'wis2gc:downloader-queue', 'downloader1', 'gid-err', logger)).rejects.toThrow('redis: connection reset');
+		const result = await startAck(store, 'wis2gc:downloader-queue', 'downloader1', 'gid-err', logger);
 
+		expect(result?.streamId).toBe('1694198400000-0-999999');
 		expect(debugCalls).toHaveLength(1);
 		expect(debugCalls[0]).toMatchObject({ worker: 'downloader1', gid: 'gid-err', streamId: '1694198400000-0-999999', error: 'redis: connection reset' });
+	});
+
+	// Found 2026-09-13: a RETRIED download (error-retry.ts's
+	// runRetryDecision -> aria-start.ts's startRealDownload, which
+	// leaves workQueueEntryId unset) has NO real work-queue entry left
+	// to ack -- the original entry was already XACK'd/XDEL'd back when
+	// this download first failed. Its aria2_gid record's
+	// download_entry_id is therefore '', and ackWorkQueueEntry/
+	// deleteWorkQueueEntry must be skipped entirely rather than issuing
+	// a guaranteed-to-fail XACK/XDEL against a synthetic, never-enqueued
+	// id (real Redis rejects a malformed id with "ERR Invalid stream ID
+	// specified as stream command argument").
+	test('a retried download (download_entry_id === "") skips ackWorkQueueEntry/deleteWorkQueueEntry entirely, but still cleans up the other 3 keys', async () => {
+		const store = new FakeDownloaderStore();
+		store.aria2GidRecords.set('downloader1:requeue-gid', [
+			'stream_id',
+			'1757740000123-99-482910-654321',
+			'downloader_id',
+			'wis2:centre:abc',
+			'download_entry_id',
+			'',
+			'href',
+			'https://example.com/f.grib2',
+			'filename',
+			'abc_f.grib2',
+		]);
+
+		const result = await startAck(store, 'wis2gc:downloader-queue', 'downloader1', 'requeue-gid');
+
+		expect(result?.downloadEntryId).toBe('');
+		expect(store.acked).toEqual([]);
+		expect(store.xdeleted).toEqual([]);
+		expect(store.deletedStreamEntries).toEqual(['downloader1:1757740000123-99-482910-654321']);
+		expect(store.deletedStreamEntryExpires).toEqual(['downloader1:1757740000123-99-482910-654321']);
+		expect(store.deletedAria2GidRecords).toEqual(['downloader1:requeue-gid']);
+	});
+
+	// End-to-end regression test for the exact production report ("I see
+	// this in the logs: DOWNLOADER: post-download processing failed: ERR
+	// Invalid stream ID specified as stream command argument"): runs a
+	// RETRIED download through the real aria-start.ts -> ack.ts pipeline
+	// (not a hand-built fixture record) against a store that enforces
+	// Redis's own id-shape validation, proving the fix holds across both
+	// files together, not just each in isolation.
+	test('a full retry-then-complete cycle never throws, even against a store that enforces real Redis id validation', async () => {
+		const store = new RedisLikeAckStore();
+		const aria2: Aria2Client = { addUri: async () => 'aria2-gid-retry-e2e' } as unknown as Aria2Client;
+		const ariaStart: AriaStartDeps = {
+			store,
+			worker: 'downloader1',
+			aria2,
+			credentials: () => undefined,
+			checkCertificate: undefined,
+			randomStreamSuffix: () => '482910',
+		};
+		// error-retry.ts's runRetryDecision builds exactly this shape:
+		// mintRequeueId()'s synthetic id, no workQueueEntryId.
+		const retryEntry: AriaStartEntry = {
+			id: '1757740000123-99-654321',
+			downloaderId: 'wis2:centre:abc',
+			href: 'https://example.com/f.grib2',
+			topic: 'origin/a/wis2/centre/foo',
+		};
+
+		await startRealDownload(ariaStart, retryEntry);
+		const result = await startAck(store, 'wis2gc:downloader-queue', 'downloader1', 'aria2-gid-retry-e2e');
+
+		expect(result).not.toBeNull();
+		expect(result?.downloadEntryId).toBe('');
+		expect(store.acked).toEqual([]);
+		expect(store.xdeleted).toEqual([]);
 	});
 });

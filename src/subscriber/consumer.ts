@@ -52,6 +52,43 @@ export interface ConsumerDeps {
 	// precedent, see run.ts's header) has never been built; there's no
 	// pause decision anywhere in this file to attach a log call to.
 	orderLinksLog?: SourceLogger;
+	// NOT a port of anything in flows.json -- added 2026-09-13 at the
+	// maintainer's own prompting ("it still doesn't explain why not using the
+	// logs. That's why debug logs are made"): every OTHER per-stage
+	// event in this codebase (Aria, Correct?, Re-queue, Link, ...) is a
+	// createSourceLogger() call, routed through global.log's
+	// level/file config -- but until now, THIS role's own "here is what
+	// SUBSCRIBER decided for this notification" event (line below,
+	// `isDebugEnabled()`) only ever went through the separate,
+	// unrelated `log: typeof console` parameter (plain stdout, gated by
+	// the DebugController's per-role on/off flag, NOT by global.log.level/
+	// .to at all) -- so turning on `global.log.level: debug` +
+	// `to: file` never actually captured it into a rotating file the way
+	// it captures every DOWNLOADER-side stage. This is the fix: the SAME
+	// per-entry decision, also emitted through the normal structured/
+	// file-routed path, so `wis2gc-decision-*.debug.log` becomes a
+	// complete, file-based ledger of what SUBSCRIBER decided for every
+	// notification that reached this function. Emitted at DEBUG, not
+	// info -- this is NOT a port of anything in flows.json, so it
+	// follows the maintainer's own level policy from scratch rather than
+	// any original precedent (2026-09-13: "info is the bare minimum ...
+	// debug is to be enabled when investigation is needed" -- a
+	// per-notification trace is investigation detail, not a sparse
+	// "is it working" signal).
+	//
+	// Named "Decision", not "Received" -- see ingest.ts's own
+	// receivedLog for that: the maintainer pointed out (2026-09-13, same
+	// conversation) that flows.json had a separate, earlier tap logging
+	// literally every message received on the wire, ahead of
+	// rbe/blacklist/dedup/parsing -- something this log, sitting in
+	// processEntry, can NOT reconstruct on its own, since a message
+	// dropped by any of ingest.ts's own filters never reaches here at
+	// all. The two are complementary, not redundant: ingest.ts's
+	// "Received" is the ground truth for "did anything arrive on this
+	// topic", this one is "what did SUBSCRIBER do with it once parsed
+	// and classified". Optional so every existing hand-built
+	// ConsumerDeps in this file's own tests keeps compiling without it.
+	decisionLog?: SourceLogger;
 }
 
 export const defaultSleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
@@ -170,13 +207,21 @@ export async function processEntry(entry: RawStreamEntry, deps: ConsumerDeps): P
 	});
 
 	if (deps.isDebugEnabled()) deps.log.log(`consumer: ${downloaderId} (${entry.topic}) -> ${action.kind}`);
+	// See ConsumerDeps.decisionLog's own doc comment: the file-routed
+	// twin of the plain-console line just above, computed once here
+	// (rather than duplicated inside the 'download'/'wait' cases below,
+	// which used to each compute their own copy of this same href) so
+	// every action.kind -- including 'drop' and 'already-complete',
+	// which otherwise leave zero trace anywhere -- gets one record of
+	// what SUBSCRIBER decided and why.
+	const href = firstOf(selectLink(wnm)?.href) ?? '';
+	deps.decisionLog?.debug({ downloaderId, topic: entry.topic, href, action: action.kind });
 
 	switch (action.kind) {
 		case 'already-complete':
 			return;
 
 		case 'download': {
-			const href = firstOf(selectLink(wnm)?.href) ?? '';
 			const hasContent = wnm.properties.content !== undefined;
 			// The original's stored "wnm" field is the SAME payload object
 			// that had payload.downloader_id set on it upstream (the
@@ -194,7 +239,6 @@ export async function processEntry(entry: RawStreamEntry, deps: ConsumerDeps): P
 		}
 
 		case 'wait': {
-			const href = firstOf(selectLink(wnm)?.href) ?? '';
 			await deps.store.recordWait(downloaderId, href, prepared.source);
 			return;
 		}

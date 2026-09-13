@@ -98,7 +98,7 @@ export async function processQueueEntry(deps: ConsumerDeps, entry: WorkQueueEntr
 		const outcome = runDecodeWrite({ id: entry.id, downloaderId: entry.downloaderId, href: entry.href }, fields.wnm ?? '', deps.ariaDownloadDir, deps.decodeWriteIo);
 
 		if (outcome.kind === 'fallback') {
-			await startRealDownload(deps.ariaStart, { id: entry.id, downloaderId: entry.downloaderId, href: entry.href, topic: entry.topic });
+			await startRealDownload(deps.ariaStart, { id: entry.id, downloaderId: entry.downloaderId, href: entry.href, topic: entry.topic, workQueueEntryId: entry.id });
 			return;
 		}
 
@@ -124,7 +124,7 @@ export async function processQueueEntry(deps: ConsumerDeps, entry: WorkQueueEntr
 		return;
 	}
 
-	await startRealDownload(deps.ariaStart, { id: entry.id, downloaderId: entry.downloaderId, href: entry.href, topic: entry.topic });
+	await startRealDownload(deps.ariaStart, { id: entry.id, downloaderId: entry.downloaderId, href: entry.href, topic: entry.topic, workQueueEntryId: entry.id });
 }
 
 /** Shared by the Decode & Write fast path and the real-aria2 onDownloadComplete handler: runs complete.ts and routes on its hashOutcome, always releasing one in-flight slot regardless of outcome. */

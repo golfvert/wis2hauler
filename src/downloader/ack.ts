@@ -23,7 +23,7 @@ const FIRST_REGEX = /^\d+-\d+-\d+(-\d+)?$/;
 export interface AckedEntry {
 	streamId: string;
 	downloaderId: string;
-	/** The work-queue stream entry id to XACK/XDEL -- msg.payload.download_entry_id in the original. */
+	/** The work-queue stream entry id XACK/XDEL was attempted against -- msg.payload.download_entry_id in the original. '' for a retry (see aria-start.ts's AriaStartEntry.workQueueEntryId), which skips those two calls entirely. */
 	downloadEntryId: string;
 	href: string;
 	filename: string;
@@ -39,11 +39,15 @@ export interface AckedEntry {
  * original's incidental sequential wiring of the 3 Clean->DEL steps.
  *
  * Returns null when "First ?" rejects the record (no state changed).
+ * Otherwise ALWAYS returns the AckedEntry, even when part of the
+ * cleanup fan-out below fails -- see the Promise.allSettled comment.
  */
 // ackLog: "Ack" (Downloader tab, previous-node 67a08d8a21f14ae1, Debug)
 // -- a `catch` node in the original, meaning it only ever logs when
-// something in this ack/cleanup fan-out actually throws. Optional and
-// trailing so every existing call site keeps compiling without it.
+// something in this ack/cleanup fan-out actually throws; it does NOT
+// stop the original's separate, parallel wire onward to the
+// Complete/WNM-publish chain. Optional and trailing so every existing
+// call site keeps compiling without it.
 export async function startAck(store: DownloaderStore, queue: string, worker: string, gid: string, ackLog?: SourceLogger): Promise<AckedEntry | null> {
 	const flat = await store.getAria2GidRecord(worker, gid);
 	const fields = parseFlatRecord(flat);
@@ -53,17 +57,38 @@ export async function startAck(store: DownloaderStore, queue: string, worker: st
 	}
 
 	const downloadEntryId = fields.download_entry_id ?? '';
-	try {
-		await Promise.all([
-			store.ackWorkQueueEntry(queue, downloadEntryId),
-			store.deleteWorkQueueEntry(queue, downloadEntryId),
-			store.deleteStreamEntry(worker, streamId),
-			store.deleteStreamEntryExpire(worker, streamId),
-			store.deleteAria2GidRecord(worker, gid),
-		]);
-	} catch (err) {
-		ackLog?.debug({ worker, gid, streamId, error: err instanceof Error ? err.message : String(err) });
-		throw err;
+
+	// Promise.allSettled, not Promise.all: matches the original's 5
+	// independent redis-command nodes, each with its OWN Catch node
+	// (Debug-only, never halting), so one failing here can never
+	// propagate out of startAck() and abort the caller's downstream
+	// runCompletion(). Found 2026-09-13: a literal Promise.all was
+	// silently dropping EVERY retried download's whole completion (hash
+	// verify + WNM publish) in production, because a retry's
+	// download_entry_id is always '' (see below) and ackWorkQueueEntry
+	// ('') used to throw "ERR Invalid stream ID specified as stream
+	// command argument", which this function then rethrew straight
+	// through handleAriaNotification, uncaught, before runCompletion()
+	// was ever reached.
+	//
+	// downloadEntryId === '' means this is a retried attempt
+	// (aria-start.ts's AriaStartEntry.workQueueEntryId was left unset):
+	// there is no real work-queue entry left to ack -- error-retry.ts's
+	// runRetryDecision() already XACK'd/XDEL'd the ORIGINAL entry back
+	// when this download first failed -- so skip these two calls
+	// entirely rather than issuing a guaranteed-to-fail XACK/XDEL
+	// against a synthetic id that was never enqueued.
+	const results = await Promise.allSettled([
+		downloadEntryId === '' ? Promise.resolve() : store.ackWorkQueueEntry(queue, downloadEntryId),
+		downloadEntryId === '' ? Promise.resolve() : store.deleteWorkQueueEntry(queue, downloadEntryId),
+		store.deleteStreamEntry(worker, streamId),
+		store.deleteStreamEntryExpire(worker, streamId),
+		store.deleteAria2GidRecord(worker, gid),
+	]);
+	for (const result of results) {
+		if (result.status === 'rejected') {
+			ackLog?.debug({ worker, gid, streamId, error: result.reason instanceof Error ? result.reason.message : String(result.reason) });
+		}
 	}
 
 	return {

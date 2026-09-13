@@ -26,11 +26,44 @@ import type { DownloaderStore } from './store.ts';
 import type { SourceLogger } from '../logging/logger.ts';
 
 export interface AriaStartEntry {
-	/** The work-queue stream entry id (msg.downloads.id) -- first half of the minted stream_id. */
+	/**
+	 * Combined with a random suffix (randomStreamSuffix) to mint THIS
+	 * attempt's stream_id -- any unique value works structurally here.
+	 * For a fresh work-queue entry (consumer.ts) this IS the work-queue
+	 * stream entry id (msg.downloads.id); for a retried href
+	 * (error-retry.ts) it's a synthetic re-queue id that was never
+	 * itself XADD'd to the work queue. See workQueueEntryId below for
+	 * why that distinction matters.
+	 */
 	id: string;
 	downloaderId: string;
 	href: string;
 	topic: string;
+	/**
+	 * The real work-queue stream entry id to XACK/XDEL once this
+	 * attempt reaches ack.ts's startAck() -- omit for a retry.
+	 *
+	 * Found 2026-09-13: error-retry.ts's runRetryDecision() already
+	 * XACK's/XDEL's the ORIGINAL work-queue entry back when this
+	 * download first failed (via the startAck() call that routed it
+	 * into the retry pipeline in the first place), then starts the
+	 * retried href under a brand-new synthetic id
+	 * (`${Date.now()}-99-${randomSixDigits}`, run.ts's mintRequeueId)
+	 * that was never itself a real work-queue entry. Passing that
+	 * synthetic id through as this attempt's download_entry_id too (the
+	 * literal-port behavior) meant that once the RETRY completed,
+	 * startAck() issued a real XACK/XDEL against Redis for an id that
+	 * both (a) never existed in the work-queue stream and (b) isn't
+	 * even shaped like a valid Redis stream id (3 dash-separated
+	 * segments, not 2) -- guaranteeing
+	 * "ERR Invalid stream ID specified as stream command argument" on
+	 * every single retried download's completion. Leaving this field
+	 * unset for a retry (registerStreamEntry below then stores '')
+	 * tells ack.ts's startAck() there is no real queue entry left to
+	 * ack, skipping those two calls entirely instead of issuing a
+	 * doomed one.
+	 */
+	workQueueEntryId?: string;
 }
 
 export interface AriaStartDeps {
@@ -60,7 +93,7 @@ export async function startRealDownload(deps: AriaStartDeps, entry: AriaStartEnt
 		deps.store.registerStreamEntry(deps.worker, streamId, {
 			streamId,
 			downloaderId: entry.downloaderId,
-			downloadEntryId: entry.id,
+			downloadEntryId: entry.workQueueEntryId ?? '',
 			href: entry.href,
 			filename,
 		}),

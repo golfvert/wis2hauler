@@ -19,6 +19,7 @@
 import type { Wnm } from '../wis2/wnm.ts';
 import { isBlacklisted, stripReplayPrefix } from '../wis2/topic-match.ts';
 import type { SubscriberStore } from './store.ts';
+import type { SourceLogger } from '../logging/logger.ts';
 
 // "Save": [ "wis2gc:subscriber:wnmid:" & id, true, "NX", "EX", 900 ].
 export const MESSAGE_ID_DEDUP_TTL_SECONDS = 900;
@@ -40,6 +41,31 @@ export interface IngestDeps {
 	now: () => number;
 	log: typeof console;
 	isDebugEnabled: () => boolean;
+	// NOT a port of flows.json node-for-node (there's no single change
+	// node this corresponds to), but restoring a CAPABILITY the
+	// maintainer confirmed the original had and this port had dropped
+	// (2026-09-13: "in flows.json there was the option to log all
+	// notification message received") -- a debug/log tap wired directly
+	// off the mqtt-in node, ahead of rbe/blacklist/dedup/parsing, so it
+	// captures literally every message that arrives on the wire
+	// regardless of what happens to it afterward. Distinct from
+	// consumer.ts's own "Decision" log (which only ever sees whatever
+	// SUCCESSFULLY reaches processEntry, downstream of every ingest-side
+	// filter below) -- a message this port blacklists, rbe-dedupes,
+	// fails to parse, or wnm.id-dedupes today leaves NO trace in
+	// consumer.ts's log, in Redis (writeDownloadJob/recordWait never
+	// run for it), or in IngestStats beyond an aggregate counter -- this
+	// is the only place such a message is ever individually
+	// identifiable. NOT a port, so it follows the maintainer's own
+	// level policy from scratch rather than any flows.json precedent
+	// (2026-09-13: "info is the bare minimum ... to see what is working
+	// as expected ... debug is to be enabled when investigation is
+	// needed") -- logging every single message individually is
+	// per-message investigation detail, not a sparse "is it working"
+	// signal, so this is emitted at DEBUG, never info. Optional so
+	// every existing hand-built IngestDeps in this file's own tests
+	// keeps compiling without it.
+	receivedLog?: SourceLogger;
 }
 
 export interface IngestStats {
@@ -73,6 +99,12 @@ export function createIngestHandler(deps: IngestDeps, stats: IngestStats): (topi
 	const lastPayloadByTopic = new Map<string, string>();
 
 	return async (topic: string, payload: Buffer) => {
+		// Unconditional, before EVEN the GB2 fixed pre-delay -- as close
+		// to "the message arrived" as this handler ever gets, and ahead
+		// of every filter below (rbe/blacklist/parse/dedup) that can
+		// otherwise make a message vanish without individual trace. See
+		// this field's own doc comment (IngestDeps.receivedLog) for why.
+		deps.receivedLog?.debug({ source: deps.sourceLabel, topic, bytes: payload.length });
 		if (deps.preDelayMs > 0) await deps.sleep(deps.preDelayMs);
 
 		stats.received++;

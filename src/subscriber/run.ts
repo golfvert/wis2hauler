@@ -66,6 +66,11 @@ export async function runSubscriber(
 	// GB1 only -- see ingest.ts's header comment on the GB1/GB2 blacklist asymmetry.
 	const gb1Blacklist = globalCacheMode ? [...baseBlacklist, RECOMMENDED_TOPIC_BLACKLIST_RULE] : baseBlacklist;
 
+	// Shared across both GB1/GB2 handlers below -- see ingest.ts's own
+	// IngestDeps.receivedLog doc comment; each connection's own line
+	// carries its `source` (GB1/GB2) so one logger/file still tells them apart.
+	const receivedLog = logSink && gate ? createSourceLogger('Received', logSink, gate, 'SUBSCRIBER') : undefined;
+
 	for (let i = 0; i < upstreamClients.length; i++) {
 		const label = `GB${i + 1}`;
 		const client = upstreamClients[i]!;
@@ -82,6 +87,7 @@ export async function runSubscriber(
 				now: () => Date.now(),
 				log,
 				isDebugEnabled,
+				receivedLog,
 			},
 			stats,
 		);
@@ -104,6 +110,7 @@ export async function runSubscriber(
 		sleep: defaultSleep,
 		now: () => new Date(),
 		orderLinksLog: logSink && gate ? createSourceLogger('Order links', logSink, gate, 'SUBSCRIBER') : undefined,
+		decisionLog: logSink && gate ? createSourceLogger('Decision', logSink, gate, 'SUBSCRIBER') : undefined,
 	};
 
 	log.log('SUBSCRIBER: consumer loop starting');

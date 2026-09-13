@@ -25,6 +25,7 @@ const entry: AriaStartEntry = {
 	downloaderId: 'wis2:centre:abc',
 	href: 'https://example.com/foo/bar.grib2',
 	topic: 'origin/a/wis2/centre/foo',
+	workQueueEntryId: '1694198400000-0',
 };
 
 describe('startRealDownload', () => {
@@ -124,5 +125,34 @@ describe('startRealDownload', () => {
 		await startRealDownload(deps, entry);
 
 		expect((calls[0]!.options as { credentials?: unknown }).credentials).toBeUndefined();
+	});
+
+	// Found 2026-09-13: error-retry.ts's runRetryDecision() never sets
+	// workQueueEntryId (mintRequeueId()'s synthetic id was never itself
+	// a real work-queue entry, and the original one was already
+	// XACK'd/XDEL'd back on the attempt that failed) -- registered here
+	// as download_entry_id === "", which ack.ts's startAck() then reads
+	// as "skip the XACK/XDEL, there's nothing real to ack".
+	test('a retried href (workQueueEntryId omitted) registers download_entry_id as "" rather than the synthetic streamId half', async () => {
+		const store = new FakeDownloaderStore();
+		const { aria2 } = makeFakeAria2('aria2-gid-retry');
+		const retryEntry: AriaStartEntry = {
+			id: '1757740000123-99-482910',
+			downloaderId: 'wis2:centre:abc',
+			href: 'https://example.com/foo/bar.grib2',
+			topic: 'origin/a/wis2/centre/foo',
+		};
+		const deps: AriaStartDeps = {
+			store,
+			worker: 'downloader1',
+			aria2,
+			credentials: () => undefined,
+			checkCertificate: undefined,
+			randomStreamSuffix: () => '654321',
+		};
+
+		await startRealDownload(deps, retryEntry);
+
+		expect(store.streamEntries.get('downloader1:1757740000123-99-482910-654321')?.downloadEntryId).toBe('');
 	});
 });
