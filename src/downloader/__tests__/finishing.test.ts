@@ -154,6 +154,31 @@ describe('runFinishing', () => {
 		expect(infoCalls).toHaveLength(1);
 	});
 
+	test('no local-broker configured (empty publishClients, 2026-09-14) -> step 1 is skipped entirely: no Link logs, but steps 2-4 still run', async () => {
+		const store = new FakeDownloaderStore();
+		store.hashes.set('wis2:centre:abc', { 'https://example.com/f.grib2': 'queue' });
+		const { logger, infoCalls, warnCalls } = fakeSourceLogger();
+		const deps: FinishingDeps = { store, worker: 'downloader1', centreId: 'my-centre', publishClients: [], linkLog: logger };
+
+		await runFinishing(
+			deps,
+			'wis2:centre:abc',
+			wnm,
+			'origin/a/wis2/centre/foo/bar',
+			'https://example.com/f.grib2',
+			'', // localHref -- would be '' too in production, since downloader.download-url is unset when there's no local-broker (see hash.ts)
+			'/downloads/f.grib2',
+			1,
+		);
+
+		expect(infoCalls).toHaveLength(0);
+		expect(warnCalls).toHaveLength(0);
+
+		expect(store.completeIds.has('wis2:centre:abc')).toBe(true);
+		expect(store.cleanerReports).toHaveLength(1);
+		expect(store.infoGranules).toHaveLength(1);
+	});
+
 	test('a rejecting publish (e.g. a disconnected local-broker client) is reported with explicit "local-broker publish failed" context, but does NOT abort the other 3 independent steps', async () => {
 		// Regression test for the 2026-09-11 bug: an earlier version of
 		// runFinishing let this rejection propagate and abort the whole

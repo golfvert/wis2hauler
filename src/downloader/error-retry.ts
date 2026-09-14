@@ -57,6 +57,24 @@ export async function runRetryDecision(deps: ErrorRetryDeps, downloaderId: strin
 	const flat = await deps.store.getDownloaderRecord(downloaderId);
 	const decision = decideRetry(flat);
 
+	// NOT a port -- added 2026-09-13 after a live investigation (the
+	// maintainer: "Pretty useless logs") found the original's bare
+	// `$string(payload)` -- just the flat hash array, verbatim -- gave
+	// no way to tell which download a RETRY_NOK entry was even for: the
+	// downloader_id lives only in the Redis KEY name (downloaderHashKey),
+	// never as a hash field, so it was never present in what got
+	// recorded here. Worse, `flat` itself can legitimately be `[]` (the
+	// hash already gone by this 30s-later HGETALL -- e.g. its 7200s TTL
+	// finally lapsed on a message that sat in a backlog that long), which
+	// looked identical to "genuinely nothing worth retrying" in the raw
+	// array with no way to tell the two apart. Wrapping the same array
+	// (unchanged, still `decision.payload`) with the downloaderId this
+	// function already has in scope, plus an explicit hashFound flag,
+	// costs nothing structurally but makes every RETRY_NOK entry
+	// correlatable (grep the downloader_id straight out of the log) and
+	// makes the "hash already vanished" case distinguishable from "hash
+	// present, no fallback href available" at a glance.
+
 	if (decision.retry === 'RETRY_OK') {
 		const fields = parseFlatRecord(flat);
 		await deps.sleep((decision.delaySeconds ?? 0) * 1000);
@@ -78,7 +96,11 @@ export async function runRetryDecision(deps: ErrorRetryDeps, downloaderId: strin
 			deps.store.retryTransition(downloaderId, decision.promoteHref, decision.promoteSource, decision.newAttempt, decision.errorHref, decision.errorSource),
 		]);
 	} else if (decision.retry === 'RETRY_NOK') {
-		await deps.store.recordError(deps.queue, deps.worker, JSON.stringify(decision.payload));
+		await deps.store.recordError(
+			deps.queue,
+			deps.worker,
+			JSON.stringify({ downloaderId, hashFound: flat.length > 0, hash: decision.payload }),
+		);
 	}
 	// RETRY_NONEED: no-op -- matches the "Retry ?" switch's empty 3rd wire.
 }

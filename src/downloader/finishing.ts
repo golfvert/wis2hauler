@@ -78,45 +78,56 @@ export async function runFinishing(
 	// client.ts's connectMqttBestEffort) -- isolated in its own
 	// try/catch so a down/reconnecting local broker can never prevent
 	// steps 2-4 below (see this file's header).
-	try {
-		const firstLink = wnm.links?.[0];
-		if (!firstLink) {
-			// "Link" (Warn): no link to swap the local href into -- an
-			// anomaly the original still lets through (links.slice(1) alone),
-			// worth flagging.
-			deps.linkLog?.warn({ downloaderId, wnmTopic, href });
-		}
-		const cacheWnm: Wnm = {
-			...wnm,
-			links: firstLink ? [{ ...firstLink, href: localHref }, ...wnm.links.slice(1)] : wnm.links,
-			properties: { ...wnm.properties, 'global-cache': deps.centreId },
-		};
-		delete (cacheWnm as { downloader_id?: string }).downloader_id;
-		const cacheTopic = wnmTopic.replace(/^origin/, 'cache');
-		const cachePayload = JSON.stringify(cacheWnm);
-		// "Link" (Info): the local href this download landed on.
-		deps.linkLog?.info({ downloaderId, link: localHref });
-		for (const client of deps.publishClients) {
-			try {
-				await client.publish(cacheTopic, cachePayload);
-			} catch (err) {
-				// Precise context so whichever generic catch-all eventually
-				// logs this (run.ts's aria2-notification handler, or a
-				// real-aria2 caller's own try/catch) doesn't have to guess
-				// what actually failed -- observed live (the maintainer, 2026-09-10):
-				// with a local broker down or not yet reconnected, the
-				// generic wrapper's message read "aria2 notification
-				// handling failed", which reads like the notification
-				// itself was the problem, not that publishing its
-				// downstream cache-topic republish was.
-				throw new Error(
-					`local-broker publish failed (cache-topic republish, topic ${cacheTopic}): ${err instanceof Error ? err.message : String(err)}`,
-					{ cause: err },
-				);
+	//
+	// Skipped ENTIRELY (not just a no-op loop) when there's no
+	// local-broker configured at all -- added 2026-09-14 (the maintainer:
+	// "If global.local-broker is absent no need to prepare new
+	// Notification Message"). Before this, an empty publishClients still
+	// built cacheWnm/cacheTopic/cachePayload and fired the "Link" Info/Warn
+	// logs for a republish that was never going anywhere; now a deployment
+	// with no local-broker (and so no downloader.download-url either --
+	// see hash.ts's HashConfig.downloadUrlBase) does none of that work.
+	if (deps.publishClients.length > 0) {
+		try {
+			const firstLink = wnm.links?.[0];
+			if (!firstLink) {
+				// "Link" (Warn): no link to swap the local href into -- an
+				// anomaly the original still lets through (links.slice(1) alone),
+				// worth flagging.
+				deps.linkLog?.warn({ downloaderId, wnmTopic, href });
 			}
+			const cacheWnm: Wnm = {
+				...wnm,
+				links: firstLink ? [{ ...firstLink, href: localHref }, ...wnm.links.slice(1)] : wnm.links,
+				properties: { ...wnm.properties, 'global-cache': deps.centreId },
+			};
+			delete (cacheWnm as { downloader_id?: string }).downloader_id;
+			const cacheTopic = wnmTopic.replace(/^origin/, 'cache');
+			const cachePayload = JSON.stringify(cacheWnm);
+			// "Link" (Info): the local href this download landed on.
+			deps.linkLog?.info({ downloaderId, link: localHref });
+			for (const client of deps.publishClients) {
+				try {
+					await client.publish(cacheTopic, cachePayload);
+				} catch (err) {
+					// Precise context so whichever generic catch-all eventually
+					// logs this (run.ts's aria2-notification handler, or a
+					// real-aria2 caller's own try/catch) doesn't have to guess
+					// what actually failed -- observed live (the maintainer, 2026-09-10):
+					// with a local broker down or not yet reconnected, the
+					// generic wrapper's message read "aria2 notification
+					// handling failed", which reads like the notification
+					// itself was the problem, not that publishing its
+					// downstream cache-topic republish was.
+					throw new Error(
+						`local-broker publish failed (cache-topic republish, topic ${cacheTopic}): ${err instanceof Error ? err.message : String(err)}`,
+						{ cause: err },
+					);
+				}
+			}
+		} catch (err) {
+			deps.error?.(`Finishing (${downloaderId}): step 1/4 cache republish failed, continuing with steps 2-4: ${err instanceof Error ? err.message : String(err)}`);
 		}
-	} catch (err) {
-		deps.error?.(`Finishing (${downloaderId}): step 1/4 cache republish failed, continuing with steps 2-4: ${err instanceof Error ? err.message : String(err)}`);
 	}
 
 	// Step 2/4: "Complete" (8da13408293c76fb) -> "Set": the whole-message

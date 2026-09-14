@@ -12,7 +12,7 @@ A "replica" is one running instance of the `wis2hauler` binary, configured with 
 
 1. **Redis** (or Redis Cluster) — the shared coordination/state store every role reads and writes: work queues (Redis Streams), dedup keys, the leader-election hash, cached-file retention timers, Prometheus counters. Every replica in a deployment must point at the *same* Redis/Redis Cluster.
 2. **aria2**, running with its JSON-RPC interface enabled (`--enable-rpc --rpc-secret=<secret> --rpc-listen-all`), reachable over WebSocket. wis2hauler drives aria2 entirely through this one JSON-RPC connection — it never shells out to it.
-3. A way to serve the downloaded files back out to WIS2 (`downloader.download-url`) — typically a plain static file server (nginx, Caddy) pointed at the same directory aria2 downloads into, or an S3-compatible bucket if `downloader.rename-to: s3` is used instead.
+3. A way to serve the downloaded files back out to WIS2 (`downloader.download-url`) — typically a plain static file server (nginx, Caddy) pointed at the same directory aria2 downloads into, or an S3-compatible bucket if `downloader.rename-to: s3` is used instead. Only needed when `global.local-broker` is also configured (see below) — with no local broker to republish a cache-topic WNM to, `download-url` can be omitted too.
 
 `SUBSCRIBER`-only or `CLEANER`/`REPORTER`/`REPLAYER`-only replicas don't need aria2 at all — see [`configuration-and-roles.md`](configuration-and-roles.md) for which config sections each role actually requires.
 
@@ -216,7 +216,7 @@ A Redis Cluster needs at least 3 master nodes (plus replicas, if you want automa
 
 `global.local-broker` (up to two entries, wired to `PUB1`/`PUB2`) is where `SUBSCRIBER` republishes messages it decided not to download (a Global-Cache `no-cache` flag, an overridelist match) and where `DOWNLOADER` republishes completion notifications once a file has been downloaded and verified. Both roles, when active on the same replica, share the same PUB1/PUB2 connections rather than opening their own — the process's orchestrator (`main.ts`) owns opening and closing them once, for the whole process.
 
-If you don't need a local broker at all (a pure-downloader setup where something else reads completions directly out of Redis), omit `global.local-broker` — this only produces a warning, not an error, at startup.
+If you don't need a local broker at all (a pure-downloader setup where something else reads completions directly out of Redis), omit `global.local-broker` — this only produces a warning, not an error, at startup. In that case `DOWNLOADER` also skips preparing the cache-topic WNM entirely (2026-09-14 — it's not just left with nothing to publish to), so `downloader.download-url` can be omitted as well; see [`configuration-and-roles.md`](configuration-and-roles.md#downloaderdownload-url--required-only-when-globallocal-broker-is-configured).
 
 ---
 

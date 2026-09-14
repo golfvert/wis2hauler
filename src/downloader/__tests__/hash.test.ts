@@ -105,6 +105,19 @@ describe('runHash', () => {
 		expect(io.calls).toEqual([]);
 	});
 
+	test('downloadUrlBase undefined (no global.local-broker configured, 2026-09-14) -> HASH_OK with no localhref, uri/localPath unaffected', async () => {
+		const io = makeIo();
+		const config: HashConfig = { ...noRenameConfig, downloadUrlBase: undefined };
+		const result = await runHash({ method: null, hash: 0, filepath: '/downloads/file.dat' }, config, io);
+		expect(result).toEqual({
+			outcome: 'HASH_OK',
+			length: 42,
+			localhref: undefined,
+			uri: '/downloads/file.dat',
+			localPath: 'file.dat',
+		});
+	});
+
 	test('renameToDate with pubtime, no collision -> renames into YYYY/MM/DD/HH, HASH_OK reflects new path', async () => {
 		const io = makeIo();
 		const config: HashConfig = { ...noRenameConfig, renameToDate: true };

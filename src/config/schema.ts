@@ -259,7 +259,15 @@ export const DownloaderSection = Type.Object(
 		// built object rather than sending it as null; the Bun port
 		// matches that by omitting the param entirely when unset.
 		'aria-check-tls': Type.Optional(Type.Boolean()),
-		'download-url': Type.String({ pattern: '^https?://.+' }),
+		// Optional since 2026-09-14 (the maintainer): only needed to build the
+		// local href finishing.ts's step 1/4 swaps into the cache-topic WNM
+		// republish -- which itself only happens when global.local-broker has
+		// at least one broker configured (see finishing.ts's own gate). A
+		// deployment with no local-broker at all has nothing to republish to,
+		// so it has no use for download-url either; see validate.ts's
+		// cross-check for the case that's still an error (a broker IS
+		// configured but download-url isn't).
+		'download-url': Type.Optional(Type.String({ pattern: '^https?://.+' })),
 		// 's3access' is required iff this is 's3' — a cross-check, so
 		// s3access stays optional in the shape schema; see validate.ts.
 		'rename-to': Type.Optional(

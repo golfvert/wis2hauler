@@ -182,6 +182,22 @@ export function validateConfig(input: unknown): ValidationResult {
 	if (isObject(cfg.downloader)) {
 		const d = cfg.downloader;
 
+		// 2026-09-14 (the maintainer): download-url is only ever needed to
+		// build the local href finishing.ts's step 1/4 swaps into the
+		// cache-topic WNM before republishing it to global.local-broker --
+		// see that file's publishClients gate. No local-broker configured
+		// means no republish ever happens, so no download-url is needed
+		// either; Ajv (schema.ts) no longer requires the key at all, this is
+		// the cross-field check Ajv can't express on its own.
+		const localBrokerConfigured = isArray(g?.['local-broker']) && (g!['local-broker'] as unknown[]).length > 0;
+		if (d['download-url'] === undefined) {
+			if (localBrokerConfigured) {
+				errors.push("downloader.download-url: required when global.local-broker is configured — needed to build the cache-topic WNM republish's local link");
+			} else {
+				infos.push('downloader.download-url: not set — no global.local-broker configured, so no cache-topic WNM will ever be prepared/republished');
+			}
+		}
+
 		const renameTo = d['rename-to'];
 		let renameS3 = false;
 		if (renameTo === undefined) infos.push('downloader.rename-to: not set — no renaming');

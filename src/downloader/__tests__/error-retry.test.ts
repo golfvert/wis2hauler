@@ -127,9 +127,30 @@ describe('runRetryDecision', () => {
 		expect(store.errors).toHaveLength(1);
 		expect(store.errors[0]!.queue).toBe('wis2gc:downloader-queue');
 		expect(store.errors[0]!.worker).toBe('downloader1');
-		const payload = JSON.parse(store.errors[0]!.payload) as string[];
-		expect(payload).toContain('error');
+		// Wrapped with downloaderId/hashFound since 2026-09-13 (NOT a
+		// port -- see error-retry.ts's own comment) so an exhausted
+		// retry's log entry is actually correlatable to which download
+		// it was for.
+		const recorded = JSON.parse(store.errors[0]!.payload) as { downloaderId: string; hashFound: boolean; hash: string[] };
+		expect(recorded.downloaderId).toBe('wis2:centre:abc');
+		expect(recorded.hashFound).toBe(true);
+		expect(recorded.hash).toContain('error');
 		expect(store.aria2GidRecords.size).toBe(0);
+	});
+
+	test('RETRY_NOK: hashFound is false when the downloader_id hash was already gone by the 30s check', async () => {
+		const store = new FakeDownloaderStore();
+		// No store.hashes.set(...) at all -- getDownloaderRecord returns [] for a key that was never written or has since vanished.
+		const sleeps: number[] = [];
+		const deps = makeDeps(store, sleeps);
+
+		await runRetryDecision(deps, 'wis2:centre:gone');
+
+		expect(store.errors).toHaveLength(1);
+		const recorded = JSON.parse(store.errors[0]!.payload) as { downloaderId: string; hashFound: boolean; hash: string[] };
+		expect(recorded.downloaderId).toBe('wis2:centre:gone');
+		expect(recorded.hashFound).toBe(false);
+		expect(recorded.hash).toEqual([]);
 	});
 
 	test('RETRY_NONEED: an already-complete message is a silent no-op', async () => {

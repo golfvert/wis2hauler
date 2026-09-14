@@ -91,7 +91,7 @@ This instance's own WIS2 centre identifier, used as part of the MQTT client id b
 
 Up to two local MQTT brokers, wired to `PUB1`/`PUB2`, that `SUBSCRIBER`'s publish-only outcomes and `DOWNLOADER`'s completion notifications get republished to. See [`deployment.md`](deployment.md#local-mqtt-brokers-and-publish-only-outcomes). Same broker object shape as `subscriber.global-broker` below (`broker`, `username`, `password`, `version`, `verifycert`). If absent, downloaded files are stored after download and rename (see below) and sits there for further processing (eg. using an external notify)
 
-Omitting it entirely is a perfectly normal deployment shape, not a degraded one — it's flagged exactly once, as a startup warning (`global.local-broker: missing or empty — no local MQTT broker configured (PUB1/PUB2 will not connect)`), not re-logged on every message. With no `PUB1`/`PUB2` connected, `SUBSCRIBER`'s and `DOWNLOADER`'s own republish steps simply have nothing to iterate over — every notification and every completed download still processes exactly as it otherwise would, just silently skipping the republish, with no per-message log line marking the skip.
+Omitting it entirely is a perfectly normal deployment shape, not a degraded one — it's flagged exactly once, as a startup warning (`global.local-broker: missing or empty — no local MQTT broker configured (PUB1/PUB2 will not connect)`), not re-logged on every message. With no `PUB1`/`PUB2` connected, `SUBSCRIBER`'s own republish step still has nothing to iterate over (unchanged); `DOWNLOADER`'s completion side goes further (since 2026-09-14) and skips preparing the cache-topic WNM at all, not just publishing it — see `finishing.ts`. Either way, every notification and every completed download still processes exactly as it otherwise would, just silently skipping the republish, with no per-message log line marking the skip. With no local-broker configured, `downloader.download-url` becomes optional too — see that field below.
 
 ### `global.http-port` — optional, default `8080`
 
@@ -153,9 +153,11 @@ The exact directory aria2 itself writes into (must match `aria2.conf`'s `dir=` �
 
 This cache's own WIS2 identifier, stamped into `properties.global-cache` on every notification this instance publishes after a successful download. 
 
-### `downloader.download-url` — required
+### `downloader.download-url` — required only when `global.local-broker` is configured
 
-The public base URL downloaded files are served from — combined with the stored path (which depends on `rename-to`) to build the `links[0].href` of every published completion notification.
+The public base URL downloaded files are served from — combined with the stored path (which depends on `rename-to`) to build the `links[0].href` of the cache-topic WNM `DOWNLOADER` republishes to `PUB1`/`PUB2` on a successful download.
+
+Optional since 2026-09-14: with no `global.local-broker` configured at all, there's nothing to republish that WNM to, so `finishing.ts`'s whole "build the cache WNM" step is skipped outright (not just left with nothing to iterate over, the way an empty `local-broker` already behaved) — and `download-url` has no remaining use, so it can be omitted too. Validation reflects the pairing: omitting `download-url` while `local-broker` *is* configured is still an error (there'd be a broker to publish to but no way to build the link), while omitting both together is silent.
 
 ### `downloader.rename-to` — optional
 

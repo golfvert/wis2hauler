@@ -53,8 +53,11 @@ describe('validateConfig — invalid fixture', () => {
 		expect(result.errors.some((e) => e.startsWith('downloader.aria-inqueue'))).toBe(true);
 		// downloader.aria-secret missing entirely (Ajv-level, required)
 		expect(result.errors.some((e) => e.startsWith('downloader.aria-secret'))).toBe(true);
-		// downloader.download-url missing entirely (Ajv-level, required)
-		expect(result.errors.some((e) => e.startsWith('downloader.download-url'))).toBe(true);
+		// downloader.download-url is missing too, but NOT an error here: since
+		// 2026-09-14 it's only required when global.local-broker is actually
+		// configured (see the dedicated describe block below), and this
+		// fixture's local-broker is `[]` -- so this is an info, not an error.
+		expect(result.infos).toContain('downloader.download-url: not set — no global.local-broker configured, so no cache-topic WNM will ever be prepared/republished');
 		// rename-to: s3 with no s3access section
 		expect(result.errors).toContain("downloader.s3access: required when rename-to is 's3' but section is missing");
 	});
@@ -106,6 +109,41 @@ describe('validateConfig — warning-only cases (should not fail validation)', (
 		const result = validateConfig(cfg);
 		expect(result.valid).toBe(true);
 		expect(result.warnings.some((w) => w.startsWith('cleaner: section missing'))).toBe(true);
+	});
+});
+
+describe('validateConfig — downloader.download-url / global.local-broker cross-check (2026-09-14)', () => {
+	test('both absent: download-url is optional when there is no local-broker to republish to', () => {
+		const cfg = parseYaml(validYaml) as Record<string, any>;
+		delete cfg.global['local-broker'];
+		delete cfg.downloader['download-url'];
+		const result = validateConfig(cfg);
+		expect(result.valid).toBe(true);
+		expect(result.errors.some((e) => e.startsWith('downloader.download-url'))).toBe(false);
+		expect(result.infos).toContain('downloader.download-url: not set — no global.local-broker configured, so no cache-topic WNM will ever be prepared/republished');
+	});
+
+	test('local-broker configured but download-url absent: an error, not just an info', () => {
+		const cfg = parseYaml(validYaml) as Record<string, any>;
+		delete cfg.downloader['download-url'];
+		const result = validateConfig(cfg);
+		expect(result.valid).toBe(false);
+		expect(result.errors).toContain("downloader.download-url: required when global.local-broker is configured — needed to build the cache-topic WNM republish's local link");
+	});
+
+	test('local-broker empty array (same as absent) with download-url absent: valid, no error', () => {
+		const cfg = parseYaml(validYaml) as Record<string, any>;
+		cfg.global['local-broker'] = [];
+		delete cfg.downloader['download-url'];
+		const result = validateConfig(cfg);
+		expect(result.valid).toBe(true);
+		expect(result.errors.some((e) => e.startsWith('downloader.download-url'))).toBe(false);
+	});
+
+	test('both present (the valid fixture): no error, no info about download-url being unset', () => {
+		const result = validateConfig(parseYaml(validYaml));
+		expect(result.errors.some((e) => e.startsWith('downloader.download-url'))).toBe(false);
+		expect(result.infos.some((i) => i.startsWith('downloader.download-url'))).toBe(false);
 	});
 });
 

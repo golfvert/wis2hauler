@@ -20,6 +20,16 @@
 // further consumer traced in flows.json's Cleaner tab -- so this
 // module's job ends at "drain the error stream and advance
 // lastErrorId"; run.ts is free to log the parsed messages.
+//
+// `payload` was originally always the bare flat hash array the
+// original's "Next" function left in msg.payload (see retry.ts's
+// decideRetry). Since 2026-09-13 (error-retry.ts's runRetryDecision --
+// NOT a port, see that file's own comment) a RETRY_NOK entry's `error`
+// field is instead `{downloaderId, hashFound, hash}`, wrapping that
+// same array -- this module doesn't need to know or care about the
+// difference, since `payload` is handed through as `unknown` either
+// way and it's run.ts's debug/console logging that actually renders
+// it.
 export interface ParsedErrorMessage {
 	topic: string;
 	payload: unknown;

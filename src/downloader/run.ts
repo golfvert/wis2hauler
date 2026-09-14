@@ -309,7 +309,7 @@ export async function runDownloader(
 		sleep: defaultSleep,
 	};
 
-	if (isDebugEnabled()) log.log(`DOWNLOADER: aria-inqueue=${dl['aria-inqueue']} download-url=${dl['download-url']} rename-to=${dl['rename-to'] ?? 'none'}`);
+	if (isDebugEnabled()) log.log(`DOWNLOADER: aria-inqueue=${dl['aria-inqueue']} download-url=${dl['download-url'] ?? 'none'} rename-to=${dl['rename-to'] ?? 'none'}`);
 
 	log.log('DOWNLOADER: consumer + cleaner-ipc loops starting');
 	await Promise.allSettled([runConsumerLoop(consumerDeps, signal, defaultSleep), runCleanerIpcLoop(cleanerIpc, signal)]);

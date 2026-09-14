@@ -53,7 +53,15 @@ export interface HashInput {
 
 export interface HashConfig {
 	worker: string; // global "worker"
-	downloadUrlBase: string; // global "download-url"
+	/**
+	 * global "download-url" -- optional since 2026-09-14 (the maintainer):
+	 * only meaningful when there's a cache-topic WNM to build a local href
+	 * for at all (finishing.ts's step 1/4, gated on global.local-broker
+	 * having at least one broker configured). undefined here means
+	 * buildLocalHrefAndUri below produces no localhref rather than baking
+	 * a broken "undefined/..." URL into HashResult -- see that function.
+	 */
+	downloadUrlBase: string | undefined;
 	renameToDate: boolean;
 	renameToTopic: boolean;
 	renameToS3: boolean;
@@ -195,15 +203,19 @@ async function handleRename(filepath: string, input: HashInput, config: HashConf
 	return { renamed: false, failed: false, filepath };
 }
 
-function buildLocalHrefAndUri(filepath: string, config: HashConfig, io: HashIO): { localhref: string; uri: string; localPath?: string } {
+function buildLocalHrefAndUri(filepath: string, config: HashConfig, io: HashIO): { localhref?: string; uri: string; localPath?: string } {
 	if (config.renameToS3) {
 		// Already deleted locally (see handleRename's S3 branch) -- no
 		// localPath, matching HashResult.localPath's doc comment.
 		const basename = io.basename(filepath);
-		return { localhref: `${config.downloadUrlBase}/${basename}`, uri: basename };
+		return { localhref: config.downloadUrlBase ? `${config.downloadUrlBase}/${basename}` : undefined, uri: basename };
 	}
 	return {
-		localhref: `${config.downloadUrlBase}/${config.worker}${filepath}`,
+		// undefined (not a string built from an undefined base) when
+		// download-url isn't configured -- see HashConfig.downloadUrlBase's
+		// doc comment; uri/localPath don't depend on download-url at all,
+		// so they're computed the same either way.
+		localhref: config.downloadUrlBase ? `${config.downloadUrlBase}/${config.worker}${filepath}` : undefined,
 		uri: filepath,
 		localPath: io.relative(config.ariaDownload, filepath),
 	};
