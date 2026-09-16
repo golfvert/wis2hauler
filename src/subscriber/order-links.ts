@@ -28,18 +28,20 @@ export type TopicClassification =
 
 // Delay (seconds) applied before the claim race, indexed by
 // TopicClassification's cache `position` (0 = highest priority).
-// Ported verbatim from the original's per-output delay nodes,
-// including the fact that position 0 and 1 carry the *same* 1s delay
-// before jumping to 3,4,5,6,7,8 for positions 2-7 — an irregularity
-// in the source flow (not a clean arithmetic progression) that's
-// preserved here rather than "corrected" without confirming it was
-// unintentional. Worth asking about before this value ships.
+// Positions 0-7 are ported verbatim from the original's per-output
+// delay nodes, including the fact that position 0 and 1 carry the
+// *same* 1s delay before jumping to 3,4,5,6,7,8 for positions 2-7 —
+// an irregularity in the source flow (not a clean arithmetic
+// progression) that's preserved here rather than "corrected" without
+// confirming it was unintentional.
+//
+// The original's Switch node topped out at 8 outputs, which is why
+// priority-global-cache was capped at 8 entries there — a Node-RED
+// wiring limitation, not a business rule (confirmed with the
+// maintainer, 2026-09-15), so it is NOT reproduced here: see
+// classifyTopic below, and staggerDelaySeconds' fallback for
+// positions past this table.
 export const CACHE_STAGGER_SECONDS: readonly number[] = [1, 1, 3, 4, 5, 6, 7, 8];
-
-// Only positions 0-7 (8 priority slots) were wired up in the original
-// — a 9th+ priority centre in priority-global-cache silently never
-// matches, same as here.
-const MAX_PRIORITY_POSITIONS = CACHE_STAGGER_SECONDS.length;
 
 // topic is the raw MQTT topic as received — deliberately checked with
 // substring matching (not a prefix/startsWith check), matching the
@@ -59,7 +61,7 @@ export function classifyTopic(topic: string, wnm: Wnm, priorityGlobalCache: read
 		if (typeof globalCache !== 'string') return { kind: 'ignore' };
 
 		const position = priorityGlobalCache.indexOf(globalCache);
-		if (position === -1 || position >= MAX_PRIORITY_POSITIONS) return { kind: 'ignore' };
+		if (position === -1) return { kind: 'ignore' };
 		return { kind: 'cache', position };
 	}
 
@@ -67,7 +69,13 @@ export function classifyTopic(topic: string, wnm: Wnm, priorityGlobalCache: read
 }
 
 // Seconds to wait before this classification enters the claim race —
-// 0 for anything unstaggered.
+// 0 for anything unstaggered. Beyond CACHE_STAGGER_SECONDS' explicit
+// table (positions 0-7), continues the same +1s-per-position
+// progression positions 2-7 already follow: position 8 -> 9s,
+// 9 -> 10s, and so on, unbounded — priority-global-cache is no longer
+// length-capped (see classifyTopic), so this has to cover every
+// position it can hand back.
 export function staggerDelaySeconds(classification: TopicClassification): number {
-	return classification.kind === 'cache' ? (CACHE_STAGGER_SECONDS[classification.position] ?? 0) : 0;
+	if (classification.kind !== 'cache') return 0;
+	return CACHE_STAGGER_SECONDS[classification.position] ?? classification.position + 1;
 }

@@ -71,11 +71,14 @@ export async function runDownloader(
 	const isDebugEnabled = () => debug.has('DOWNLOADER');
 
 	// The 9 module loggers this role's ported logIO call sites need (10
-	// sites -- "Link" covers 2, its own Warn and Info -- see each Deps
+	// sites -- "Publish" covers 2, its own Warn and Info -- see each Deps
 	// interface's own doc comment for exactly which site each one is).
 	// undefined (not built) when this runner is called without a
 	// logSink/gate, e.g. from a test's own direct call.
-	const linkLog = logSink && gate ? createSourceLogger('Link', logSink, gate, 'DOWNLOADER') : undefined;
+	// Named "Publish" (renamed from "Link" 2026-09-16, see FinishingDeps.
+	// publishLog's own doc comment), so it shares a log file with
+	// Subscriber's own publish-only republish logger of the same name.
+	const publishLog = logSink && gate ? createSourceLogger('Publish', logSink, gate, 'DOWNLOADER') : undefined;
 	const requeueLog = logSink && gate ? createSourceLogger('Re-queue', logSink, gate, 'DOWNLOADER') : undefined;
 	const updateLog = logSink && gate ? createSourceLogger('Update', logSink, gate, 'DOWNLOADER') : undefined;
 	const correctLog = logSink && gate ? createSourceLogger('Correct ?', logSink, gate, 'DOWNLOADER') : undefined;
@@ -275,7 +278,7 @@ export async function runDownloader(
 		worker,
 		centreId: config.global['centre-id'] ?? '',
 		publishClients,
-		linkLog,
+		publishLog,
 		error: (m) => log.error(`DOWNLOADER: ${m}`),
 	};
 

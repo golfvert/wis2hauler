@@ -11,6 +11,11 @@ function fakeSourceLogger(): { logger: SourceLogger; warnCalls: Record<string, u
 	return { logger: { info: () => {}, warn: (d) => warnCalls.push(d), debug: () => {} }, warnCalls };
 }
 
+function fakeInfoLogger(): { logger: SourceLogger; infoCalls: Record<string, unknown>[] } {
+	const infoCalls: Record<string, unknown>[] = [];
+	return { logger: { info: (d) => infoCalls.push(d), warn: () => {}, debug: () => {} }, infoCalls };
+}
+
 function fakeReceivedLogger(): { logger: SourceLogger; debugCalls: Record<string, unknown>[] } {
 	const debugCalls: Record<string, unknown>[] = [];
 	return { logger: { info: () => {}, warn: () => {}, debug: (d) => debugCalls.push(d) }, debugCalls };
@@ -248,6 +253,77 @@ describe('processEntry', () => {
 		expect(monitorMsg.data.severity).toBe('INFO');
 
 		expect(pub2.published).toHaveLength(2);
+	});
+
+	test('no local-broker configured (empty publishClients, 2026-09-14): claim bookkeeping still runs, but nothing is built or published', async () => {
+		const store = new FakeStore();
+		const w = wnm('m6x', { cache: false });
+		// publishClients left at baseDeps' default: [].
+		const deps = baseDeps(store, { globalCacheMode: true, overridelist: [{ topic: 'origin/a/wis2/fr-meteofrance/data/#' }] });
+		const downloaderId = computeDownloaderId(w);
+
+		await processEntry(entry('origin/a/wis2/fr-meteofrance/data/foo', w), deps);
+
+		// Claim bookkeeping is unconditional -- unaffected by whether
+		// there's anything to publish to.
+		expect(store.hashes.get(downloaderId)?.attempt).toBe('1');
+		expect(store.releasedClaims).toEqual([downloaderId]);
+		// Nothing to assert on the WNM/monitor payloads themselves -- with
+		// no publishClients there's nowhere for them to land, which is
+		// exactly the point: buildPublishOnlyMessages is never even called
+		// (see processEntry's 'publish-only' case).
+	});
+
+	test('"Publish" (Info): a publish-only outcome logs the full republished notification, wnm and monitor included (2026-09-16)', async () => {
+		const store = new FakeStore();
+		const w = wnm('m6z'); // properties.cache absent -> origin wanted it cached
+		const pub1 = new FakeMqtt();
+		const { logger, infoCalls } = fakeInfoLogger();
+		const deps = baseDeps(store, {
+			globalCacheMode: true,
+			publishClients: [pub1],
+			overridelist: [{ topic: 'origin/a/wis2/fr-meteofrance/data/#' }],
+			publishLog: logger,
+		});
+		const downloaderId = computeDownloaderId(w);
+
+		await processEntry(entry('origin/a/wis2/fr-meteofrance/data/foo', w), deps);
+
+		expect(infoCalls).toHaveLength(1);
+		const call = infoCalls[0]!;
+		expect(call.downloaderId).toBe(downloaderId);
+		expect(call.role).toBe('SUBSCRIBER');
+		expect(call.topic).toBe('cache/a/wis2/fr-meteofrance/data/foo');
+		expect((call.wnm as Wnm).properties['global-cache']).toBe('fr-meteofrance');
+		expect((call.wnm as { downloader_id?: string }).downloader_id).toBeUndefined();
+		// overridelist matched -> the monitor event is also emitted and logged.
+		expect(call.monitorTopic).toBe('monitor/a/wis2/fr-meteofrance');
+		expect((call.monitor as { type: string }).type).toBe('int.wmo.wis.wme.event.item.cache');
+	});
+
+	test('"Publish" (Info): no monitor event fields when the monitor event isn\'t emitted (bare cache:false, no override)', async () => {
+		const store = new FakeStore();
+		const w = wnm('m6', { cache: false });
+		const pub1 = new FakeMqtt();
+		const { logger, infoCalls } = fakeInfoLogger();
+		const deps = baseDeps(store, { globalCacheMode: true, publishClients: [pub1], publishLog: logger });
+
+		await processEntry(entry('origin/a/wis2/fr-meteofrance/data/foo', w), deps);
+
+		expect(infoCalls).toHaveLength(1);
+		expect(infoCalls[0]!.monitorTopic).toBeUndefined();
+		expect(infoCalls[0]!.monitor).toBeUndefined();
+	});
+
+	test('"Publish" (Info): not called at all when no local-broker is configured', async () => {
+		const store = new FakeStore();
+		const w = wnm('m6x', { cache: false });
+		const { logger, infoCalls } = fakeInfoLogger();
+		const deps = baseDeps(store, { globalCacheMode: true, publishLog: logger }); // publishClients: [] (default)
+
+		await processEntry(entry('origin/a/wis2/fr-meteofrance/data/foo', w), deps);
+
+		expect(infoCalls).toHaveLength(0);
 	});
 
 	test('winning the claim via an overridelist match on a cache:false message publishes the WNM only -- no monitor event, since the origin already said not-cached', async () => {

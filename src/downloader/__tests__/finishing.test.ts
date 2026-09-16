@@ -126,16 +126,28 @@ describe('runFinishing', () => {
 		expect(pub2.published).toHaveLength(1);
 	});
 
-	test('"Link" (Info): a successful transition logs once with the local href', async () => {
+	test('"Link" (Info): a successful transition logs the full republished notification, not just the href (2026-09-16)', async () => {
 		const store = new FakeDownloaderStore();
 		store.hashes.set('wis2:centre:abc', { 'https://example.com/f.grib2': 'queue' });
 		const { client } = makeMqttClient();
 		const { logger, infoCalls, warnCalls } = fakeSourceLogger();
-		const deps: FinishingDeps = { store, worker: 'downloader1', centreId: 'my-centre', publishClients: [client], linkLog: logger };
+		const deps: FinishingDeps = { store, worker: 'downloader1', centreId: 'my-centre', publishClients: [client], publishLog: logger };
 
 		await runFinishing(deps, 'wis2:centre:abc', wnm, 'origin/a/wis2/centre/foo/bar', 'https://example.com/f.grib2', 'https://local.example.com/f.grib2', '/downloads/f.grib2', 1);
 
-		expect(infoCalls).toEqual([{ downloaderId: 'wis2:centre:abc', link: 'https://local.example.com/f.grib2' }]);
+		expect(infoCalls).toEqual([
+			{
+				downloaderId: 'wis2:centre:abc',
+				role: 'DOWNLOADER',
+				topic: 'cache/a/wis2/centre/foo/bar',
+				link: 'https://local.example.com/f.grib2',
+				wnm: {
+					id: 'msg-1',
+					links: [{ rel: 'canonical', href: 'https://local.example.com/f.grib2' }],
+					properties: { pubtime: '2023-09-08T12:00:00Z', data_id: 'abc', 'global-cache': 'my-centre' },
+				},
+			},
+		]);
 		expect(warnCalls).toHaveLength(0);
 	});
 
@@ -144,12 +156,12 @@ describe('runFinishing', () => {
 		store.hashes.set('wis2:centre:abc', { 'https://example.com/f.grib2': 'queue' });
 		const { client } = makeMqttClient();
 		const { logger, infoCalls, warnCalls } = fakeSourceLogger();
-		const deps: FinishingDeps = { store, worker: 'downloader1', centreId: 'my-centre', publishClients: [client], linkLog: logger };
+		const deps: FinishingDeps = { store, worker: 'downloader1', centreId: 'my-centre', publishClients: [client], publishLog: logger };
 		const noLinkWnm: Wnm = { ...wnm, links: [] };
 
 		await runFinishing(deps, 'wis2:centre:abc', noLinkWnm, 'origin/a/wis2/centre/foo/bar', 'https://example.com/f.grib2', 'https://local.example.com/f.grib2', '/downloads/f.grib2', 1);
 
-		expect(warnCalls).toEqual([{ downloaderId: 'wis2:centre:abc', wnmTopic: 'origin/a/wis2/centre/foo/bar', href: 'https://example.com/f.grib2' }]);
+		expect(warnCalls).toEqual([{ downloaderId: 'wis2:centre:abc', role: 'DOWNLOADER', wnmTopic: 'origin/a/wis2/centre/foo/bar', href: 'https://example.com/f.grib2' }]);
 		// The Info still fires afterward -- it isn't gated on firstLink being present.
 		expect(infoCalls).toHaveLength(1);
 	});
@@ -158,7 +170,7 @@ describe('runFinishing', () => {
 		const store = new FakeDownloaderStore();
 		store.hashes.set('wis2:centre:abc', { 'https://example.com/f.grib2': 'queue' });
 		const { logger, infoCalls, warnCalls } = fakeSourceLogger();
-		const deps: FinishingDeps = { store, worker: 'downloader1', centreId: 'my-centre', publishClients: [], linkLog: logger };
+		const deps: FinishingDeps = { store, worker: 'downloader1', centreId: 'my-centre', publishClients: [], publishLog: logger };
 
 		await runFinishing(
 			deps,

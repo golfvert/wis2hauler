@@ -89,6 +89,29 @@ export interface ConsumerDeps {
 	// and classified". Optional so every existing hand-built
 	// ConsumerDeps in this file's own tests keeps compiling without it.
 	decisionLog?: SourceLogger;
+	// Added 2026-09-16 at the maintainer's request, mirroring downloader/
+	// finishing.ts's own "Publish" fix from the same day: that log used
+	// to record only `link` (the local href) for the DOWNLOADER's
+	// cache-topic republish, which turned out not to actually show the
+	// notification being published -- the maintainer asked for the full
+	// message there, then asked for the same treatment here, for the
+	// SUBSCRIBER's OWN local-broker publish (the 'publish-only' case
+	// below). Unlike decisionLog just above, this is emitted at INFO,
+	// not DEBUG: per the maintainer's own level policy ("info is the
+	// bare minimum ... debug is to be enabled when investigation is
+	// needed", 2026-09-13), "this Global Cache put a notification out
+	// onto its own local broker" is a sparse, always-useful signal --
+	// the same class of event as DOWNLOADER's own "Publish", not a
+	// per-notification investigation trace like "Decision". Named
+	// "Publish" -- NOT "Link" -- specifically so this writes to the
+	// SAME `wis2gc-publish-<hour>.info.log` file as downloader/
+	// finishing.ts's logger of the same name (the maintainer: "I don't
+	// like not being the same name. Go for publish in both."); each
+	// entry's `role` field ('SUBSCRIBER' here, 'DOWNLOADER' there) is
+	// what tells the two apart within that shared file. NOT a port of
+	// anything in flows.json (same as decisionLog). Optional for the
+	// same reason as every other logger field here.
+	publishLog?: SourceLogger;
 }
 
 export const defaultSleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
@@ -100,13 +123,21 @@ export const defaultSleep = (ms: number): Promise<void> => new Promise((resolve)
 // message out to both change nodes in parallel), so each gets its own
 // copy with wnm.downloader_id stripped.
 //
-// Both are still BUILT here regardless of how nocache/publish-only was
+// Both are built here regardless of how nocache/publish-only was
 // reached -- whether processEntry's caller actually PUBLISHES the
 // monitor one is a separate, deliberate-deviation decision made by the
 // caller (see processEntry's 'publish-only' case and override.ts's
 // header comment): the WNM cache-topic republish is WIS2-Guide-
 // mandatory for the Global Cache role regardless of source, the
 // monitor event is not.
+//
+// This function itself is only ever CALLED when there's at least one
+// local-broker client to publish to at all -- see processEntry's
+// 'publish-only' case, gated on deps.publishClients.length > 0 since
+// 2026-09-14 (the maintainer: "No WNM here either", the same treatment
+// as downloader/finishing.ts's step 1/4). With no local-broker
+// configured there is nothing to republish to, so there's no reason to
+// build either message in the first place.
 function buildPublishOnlyMessages(
 	wnm: Wnm,
 	topic: string,
@@ -115,7 +146,7 @@ function buildPublishOnlyMessages(
 	uuidMonitor: string | undefined,
 	reason: string | undefined,
 	now: Date,
-): { cacheTopic: string; cachePayload: string; monitorTopic: string; monitorPayload: string } {
+): { cacheTopic: string; cacheWnm: Wnm; cachePayload: string; monitorTopic: string; monitorEvent: unknown; monitorPayload: string } {
 	// "WNM": delete wnm.downloader_id; wnm.properties["global-cache"] = centre-id;
 	// wnm.id = uuid_cache (possibly undefined -- see override.ts's header
 	// comment: the original only generates uuid_cache/uuid_monitor inside
@@ -158,7 +189,7 @@ function buildPublishOnlyMessages(
 	const monitorTopic = `monitor/a/wis2/${originid}`;
 	const monitorPayload = JSON.stringify(monitorEvent);
 
-	return { cacheTopic, cachePayload, monitorTopic, monitorPayload };
+	return { cacheTopic, cacheWnm, cachePayload, monitorTopic, monitorEvent, monitorPayload };
 }
 
 export async function processEntry(entry: RawStreamEntry, deps: ConsumerDeps): Promise<void> {
@@ -248,63 +279,92 @@ export async function processEntry(entry: RawStreamEntry, deps: ConsumerDeps): P
 
 		case 'publish-only': {
 			await deps.store.initAttempt(downloaderId);
-			const { cacheTopic, cachePayload, monitorTopic, monitorPayload } = buildPublishOnlyMessages(
-				wnm,
-				entry.topic,
-				deps.centreId,
-				overrideResult.uuidCache,
-				overrideResult.uuidMonitor,
-				overrideResult.reason,
-				deps.now(),
-			);
-			// DELIBERATE DEVIATION, 2026-09-11 (confirmed with the maintainer across
-			// several rounds -- see the project notes for the full
-			// back-and-forth): the WIS2 monitoring event ("Data granule
-			// not cached") is emitted ONLY when this GC itself decided
-			// (via an overridelist match) not to cache something an
-			// origin wanted cached in the first place. It is NOT emitted
-			// when the origin itself already declared
-			// wnm.properties.cache === false -- there's nothing for a
-			// monitor to usefully report there (the origin already said
-			// so), regardless of whether an overridelist rule ALSO
-			// happens to match the same message. flows.json's own
-			// "Action ?" rule 1 got this wrong in the original too (the maintainer:
-			// "My flows.json had a bug too" -- it published Monitor
-			// whenever nocache was true for ANY reason, never rechecking
-			// wnm.properties.cache first) -- this is a corrected
-			// reimplementation of the *intended* WIS2 Guide behavior, not
-			// a faithful port of that rule. The WNM cache-topic republish
-			// just above is NOT part of this at all -- it stays
-			// unconditional on nocache alone (cache:false OR override),
-			// since the WIS2 Guide requires a Global Cache to keep
-			// republishing a (new) notification on cache/... whenever it
-			// isn't caching the data, regardless of why it isn't.
-			const emitMonitorEvent = overrideResult.override && wnm.properties.cache !== false;
-			const publishCalls = deps.publishClients.flatMap((client) => {
-				const calls = [client.publish(cacheTopic, cachePayload)];
-				if (emitMonitorEvent) calls.push(client.publish(monitorTopic, monitorPayload));
-				return calls;
-			});
-			try {
-				await Promise.all(publishCalls);
-			} catch (err) {
-				// Logged, NOT rethrown -- found 2026-09-11 alongside the
-				// identical bug in downloader/finishing.ts (see that
-				// file's header): rethrowing here let runConsumerLoop's
-				// generic per-entry catch abort this case entirely,
-				// silently skipping the releaseClaim() call below. Since
-				// runConsumerLoop already advances `lastId` past this
-				// entry unconditionally (see its own loop), a skipped
-				// releaseClaim wasn't just delayed, it was gone for this
-				// entry -- defeating the exact "don't leave it blocking a
-				// future real download" fix the maintainer asked for when
-				// store.ts's releaseClaim was written. A down/reconnecting
-				// local broker (mqtt/client.ts's connectMqttBestEffort)
-				// must never prevent this claim release.
-				const topics = emitMonitorEvent ? `${cacheTopic}/${monitorTopic}` : cacheTopic;
-				deps.log.error(
-					`consumer: local-broker publish failed (publish-only outcome for ${downloaderId}, topics ${topics}): ${err instanceof Error ? err.message : String(err)} -- releasing claim regardless`,
+			// Skipped ENTIRELY (not just an empty flatMap producing nothing to
+			// await) when there's no local-broker configured at all -- added
+			// 2026-09-14 (the maintainer, same request/reasoning as
+			// downloader/finishing.ts's step 1/4 gate: "No WNM here either").
+			// Before this, an empty publishClients still built cacheWnm/
+			// cachePayload and, on an overridelist match, the CloudEvents
+			// monitor payload too, for a republish that was never going
+			// anywhere.
+			if (deps.publishClients.length > 0) {
+				const { cacheTopic, cacheWnm, cachePayload, monitorTopic, monitorEvent, monitorPayload } = buildPublishOnlyMessages(
+					wnm,
+					entry.topic,
+					deps.centreId,
+					overrideResult.uuidCache,
+					overrideResult.uuidMonitor,
+					overrideResult.reason,
+					deps.now(),
 				);
+				// DELIBERATE DEVIATION, 2026-09-11 (confirmed with the maintainer across
+				// several rounds -- see the project notes for the full
+				// back-and-forth): the WIS2 monitoring event ("Data granule
+				// not cached") is emitted ONLY when this GC itself decided
+				// (via an overridelist match) not to cache something an
+				// origin wanted cached in the first place. It is NOT emitted
+				// when the origin itself already declared
+				// wnm.properties.cache === false -- there's nothing for a
+				// monitor to usefully report there (the origin already said
+				// so), regardless of whether an overridelist rule ALSO
+				// happens to match the same message. flows.json's own
+				// "Action ?" rule 1 got this wrong in the original too (the maintainer:
+				// "My flows.json had a bug too" -- it published Monitor
+				// whenever nocache was true for ANY reason, never rechecking
+				// wnm.properties.cache first) -- this is a corrected
+				// reimplementation of the *intended* WIS2 Guide behavior, not
+				// a faithful port of that rule. The WNM cache-topic republish
+				// just above is NOT part of this at all -- it stays
+				// unconditional on nocache alone (cache:false OR override),
+				// since the WIS2 Guide requires a Global Cache to keep
+				// republishing a (new) notification on cache/... whenever it
+				// isn't caching the data, regardless of why it isn't.
+				const emitMonitorEvent = overrideResult.override && wnm.properties.cache !== false;
+				// "Publish" (Info): the full notification message(s) this
+				// Global Cache is republishing onto the local broker -- same
+				// fix, same day, as downloader/finishing.ts's own "Publish"
+				// (renamed from "Link" 2026-09-16, same request: "Go for
+				// publish in both"): see ConsumerDeps.publishLog's doc
+				// comment. `wnm`/`monitor` are exactly the objects
+				// `cachePayload`/`monitorPayload` above serialize, so this is
+				// the real published content. `monitor` is only present when
+				// emitMonitorEvent is true -- there's nothing published under
+				// that topic otherwise. `role` disambiguates this from
+				// Downloader's own entries in the same shared
+				// `wis2gc-publish-*` log file.
+				deps.publishLog?.info({
+					downloaderId,
+					role: 'SUBSCRIBER',
+					topic: cacheTopic,
+					wnm: cacheWnm,
+					...(emitMonitorEvent ? { monitorTopic, monitor: monitorEvent } : {}),
+				});
+				const publishCalls = deps.publishClients.flatMap((client) => {
+					const calls = [client.publish(cacheTopic, cachePayload)];
+					if (emitMonitorEvent) calls.push(client.publish(monitorTopic, monitorPayload));
+					return calls;
+				});
+				try {
+					await Promise.all(publishCalls);
+				} catch (err) {
+					// Logged, NOT rethrown -- found 2026-09-11 alongside the
+					// identical bug in downloader/finishing.ts (see that
+					// file's header): rethrowing here let runConsumerLoop's
+					// generic per-entry catch abort this case entirely,
+					// silently skipping the releaseClaim() call below. Since
+					// runConsumerLoop already advances `lastId` past this
+					// entry unconditionally (see its own loop), a skipped
+					// releaseClaim wasn't just delayed, it was gone for this
+					// entry -- defeating the exact "don't leave it blocking a
+					// future real download" fix the maintainer asked for when
+					// store.ts's releaseClaim was written. A down/reconnecting
+					// local broker (mqtt/client.ts's connectMqttBestEffort)
+					// must never prevent this claim release.
+					const topics = emitMonitorEvent ? `${cacheTopic}/${monitorTopic}` : cacheTopic;
+					deps.log.error(
+						`consumer: local-broker publish failed (publish-only outcome for ${downloaderId}, topics ${topics}): ${err instanceof Error ? err.message : String(err)} -- releasing claim regardless`,
+					);
+				}
 			}
 			// Unconditional, not gated on PUB1 being configured (nor, now,
 			// on the publish above having succeeded) -- see store.ts's
@@ -341,8 +401,10 @@ export async function processEntry(entry: RawStreamEntry, deps: ConsumerDeps): P
  *
  * This one is worse than the downloader case in a second way:
  * processEntry() can itself `await deps.sleep(staggerSeconds * 1000)`
- * for 1-8s (order-links.ts's CACHE_STAGGER_SECONDS, only when
- * `priority-global-cache` is configured) -- under the old sequential
+ * for 1s or more (order-links.ts's staggerDelaySeconds, only when
+ * `priority-global-cache` is configured -- unbounded above 8s since
+ * priority-global-cache's length is no longer capped, 2026-09-15)
+ * -- under the old sequential
  * loop, ANY cache-priority message anywhere in a batch of up to 500
  * would block every other entry after it for that whole delay, every
  * single poll tick.

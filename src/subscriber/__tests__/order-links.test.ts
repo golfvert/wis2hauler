@@ -41,6 +41,11 @@ describe('classifyTopic', () => {
 		const wnm = baseWnm('unknown-global-cache');
 		expect(classifyTopic('cache/a/wis2/fr-meteofrance/data/x', wnm, ['gb1-global-cache'])).toEqual({ kind: 'ignore' });
 	});
+	test('priority-global-cache is unbounded in length (2026-09-15): a 9th+ entry still classifies as cache, not ignore', () => {
+		const centres = Array.from({ length: 12 }, (_, i) => `gb${i}-global-cache`);
+		const wnm = baseWnm('gb11-global-cache');
+		expect(classifyTopic('cache/a/wis2/fr-meteofrance/data/x', wnm, centres)).toEqual({ kind: 'cache', position: 11 });
+	});
 	test('a cache topic with no global-cache property at all is ignored (priority list configured)', () => {
 		expect(classifyTopic('cache/a/wis2/fr-meteofrance/data/x', baseWnm(), ['gb1-global-cache'])).toEqual({ kind: 'ignore' });
 	});
@@ -59,5 +64,10 @@ describe('staggerDelaySeconds', () => {
 		expect(staggerDelaySeconds({ kind: 'cache', position: 1 })).toBe(1);
 		expect(staggerDelaySeconds({ kind: 'cache', position: 2 })).toBe(3);
 		expect(staggerDelaySeconds({ kind: 'cache', position: 7 })).toBe(8);
+	});
+	test('positions past the 8-slot table (2026-09-15: priority-global-cache no longer capped) continue the +1s-per-position progression', () => {
+		expect(staggerDelaySeconds({ kind: 'cache', position: 8 })).toBe(9);
+		expect(staggerDelaySeconds({ kind: 'cache', position: 9 })).toBe(10);
+		expect(staggerDelaySeconds({ kind: 'cache', position: 30 })).toBe(31);
 	});
 });

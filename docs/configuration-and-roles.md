@@ -107,9 +107,25 @@ Required iff `SUBSCRIBER` is in `global.roles`.
 
 Up to two WIS2 Global Brokers, wired to `GB1`/`GB2`. Messages from GB1 are processed immediately; GB2 messages are deliberately delayed 2 seconds before deduplication, so that when the same notification arrives on both, the GB1 copy wins and the GB2 copy is dropped as a duplicate. If GB1 is unreachable, GB2 still works on its own. Same broker object shape as `global.local-broker`.
 
-### `subscriber.priority-global-cache` — optional
+### `subscriber.priority-global-cache` — optional, unlimited length
 
-An ordered list of `global-cache` identifiers used to prefer one cache's copy of a file over another's when multiple caches announce the same content. A notification from a cache not on this list is still downloaded — the list only breaks ties between competing sources.
+An ordered list of `global-cache` identifiers. Once this is set (non-empty), it works as an **allowlist** for `cache/a/wis2/...` traffic, not just a tie-breaker: a `cache` topic notification whose `properties['global-cache']` value isn't in the list — or is missing the property altogether — is discarded outright, before any claim attempt or download. `origin/a/wis2/...` traffic (the true origin's own message, never a repeated copy) is never filtered by this list; there is no `global-cache` value to check on it.
+
+For a centre that *is* listed, its position controls how long this Global Cache waits before entering the claim race for that content, relative to other listed centres — earlier in the list means it tries to claim sooner, so a preferred source's copy is more likely to win when the same content arrives via more than one cache. Position 0 and 1 both wait 1 second; from position 2 onward the wait grows by 1 second per position (3s, 4s, 5s, 6s, 7s, 8s, 9s, 10s, ...) with no upper bound — the list itself is not length-limited (an earlier Node-RED version of this flow was capped at 8 entries by a Switch node's fixed number of outputs; that was a wiring limitation, not a rule, and isn't reproduced here).
+
+Leaving `priority-global-cache` unset (or empty) turns this off entirely: every `cache/a/wis2/...` notification is then treated the same as an origin message — processed immediately, no allowlist filtering, no stagger delay.
+
+Example:
+
+```yaml
+subscriber:
+  priority-global-cache:
+    - gb1-global-cache
+    - gb2-global-cache
+    - gb3-global-cache
+```
+
+A notification with `global-cache: gb1-global-cache` waits 1s before claiming; `gb2-global-cache` also waits 1s; `gb3-global-cache` waits 3s; any `cache/...` notification whose `global-cache` isn't one of these three (or doesn't have one at all) is dropped.
 
 ### `subscriber.mqtt.whitelist` — required, runtime-settable
 
@@ -121,7 +137,46 @@ Patterns applied **after** the whitelist, to drop messages once received. Less s
 
 ### `subscriber.mqtt.overridelist` — optional, runtime-settable
 
-Rules that force a message to publish-only (no download), by topic match and/or by exceeding a `max-length` in bytes — used for content you want republished locally but never actually cached. It is typically used when running as a Global Cache to e.g. limit the size of files being downloaded.
+A list of rules that force a matching message to **publish-only** (no download attempt at all — this Global Cache still republishes the notification on `cache/...`, it just never fetches and caches the file itself). Use it for content you're willing to relay but don't want to actually store: known-oversized files, a noisy/experimental data stream, anything you'd rather leave to another Global Cache.
+
+Each rule is a YAML mapping, and every rule needs at least one of these two keys (a rule with neither is ignored):
+
+| Key | Type | Meaning |
+|---|---|---|
+| `topic` | string | An MQTT-wildcard topic pattern (`+` = exactly one level, `#` = that level and everything after, only legal as the last level). Matched against the message's real topic — a `replay/a/wis2/<centre>/<uuid>/...` wrapper is stripped first, so one rule covers both live and replayed messages. Same alphanumeric/`-`/`+`/`#`/`/` character set as `blacklist`. |
+| `max-length` | number | A size ceiling in bytes. The rule matches when the WNM's own declared link length is **strictly greater** than this value. Compared against the size the notification *claims* (`links[].length` on the selected link — `rel: update`, falling back to `rel: canonical`), not the actual downloaded file size, since this decision happens before any download is attempted. A message with no declared length can never match a `max-length` rule. |
+
+Rules are checked in order and the **first match wins**. If a rule sets **both** `topic` and `max-length`, they're ANDed — the topic must match *and* the file must exceed the size ceiling for that rule to fire; put them in separate rules if you want either condition to trigger on its own.
+
+A matching rule always forces the publish-only outcome and republishes the WNM. It additionally emits a WIS2 "Data granule not cached" monitoring event *unless* the origin had already declared `properties.cache: false` on the message itself (in that case there's nothing new to report — the origin already said not to cache it). The event's `description` is filled in from whichever rule matched:
+
+- topic match: `The topic matches a rejected value ( <rule.topic> ) for this Global Cache`
+- size match: `The file size is larger than <rule['max-length']> bytes`
+
+Examples:
+
+```yaml
+subscriber:
+  mqtt:
+    overridelist:
+      # Topic-only: never download anything under this path, regardless of size.
+      - topic: "origin/a/wis2/ca-eccc-msc/data/recommended/atmospheric-composition/experimental/#"
+
+      # Size-only: applies across every topic — any file over 50 MB is publish-only.
+      - max-length: 52428800
+
+      # Both keys on one rule = AND: only large files on this specific topic are skipped;
+      # smaller files under the same topic still download normally.
+      - topic: "origin/a/wis2/de-dwd-gts-to-wis2/data/core/+/+/+/+/#"
+        max-length: 10485760
+```
+
+Also settable at runtime without a restart, via `POST /set` (`SUBSCRIBER` role required) — see "Runtime admin API" below. This **replaces the whole list**, so include every rule you want active, not just the one you're adding:
+
+```bash
+curl -X POST http://localhost:8080/set -H 'content-type: application/json' \
+  -d '{"overridelist": [{"topic": "origin/a/wis2/ca-eccc-msc/data/recommended/atmospheric-composition/experimental/#"}]}'
+```
 
 ### `subscriber.mqtt.qos` — optional, default `0`
 
@@ -261,6 +316,8 @@ Without `key`, returns every field the instance's active roles are allowed to se
 | `debug` | any | the currently-set debug categories |
 | `credentials` | `DOWNLOADER` | the current in-memory `{topic: {username, password}}` map |
 
+`overridelist` is settable (see the `POST /set` table below) but not currently readable back through `GET /get` — `?key=overridelist` returns `400` (unknown key), a gap in this table's counterpart on the get side, not a rule against it. Until that's added, the only way to confirm what's active is whatever you last `POST`ed (or the static YAML, if it hasn't been patched at runtime).
+
 ### `POST /set`
 
 Body is a JSON object; any subset of these keys may be present in one request. The response reports what was applied and what wasn't: `{"changes": {"<key>": {"value": ..., "changed": true|false}}, "errors"?: [...]}`.
@@ -271,6 +328,7 @@ Body is a JSON object; any subset of these keys may be present in one request. T
 | `log-level` | any | Changes the global default level immediately. |
 | `log-level-role` | any | `{"role": "SUBSCRIBER", "value": "debug"}` — per-role override; `value: null` clears it. |
 | `whitelist` / `blacklist` | `SUBSCRIBER` | Replaces the active list; brokers re-subscribe in the background. |
+| `overridelist` | `SUBSCRIBER` | Replaces the active rule list wholesale — see `subscriber.mqtt.overridelist` above for the rule shape. Include every rule you want kept, not just the one being added or changed. |
 | `credentials` | `DOWNLOADER` | `{"op": "create"\|"update"\|"delete", "topic": "...", "username"?: "...", "password"?: "..."}` — applied as a real Redis HSET/HDEL, picked up by every `DOWNLOADER` instance within its next 10s sync. |
 | `debug` | any | Replaces the dynamic debug-category set wholesale (e.g. `["SUBSCRIBER", "DOWNLOADER"]`). |
 

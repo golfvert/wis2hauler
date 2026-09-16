@@ -36,13 +36,21 @@ export interface FinishingDeps {
 	centreId: string;
 	/** PUB1/PUB2 -- whichever of global.local-broker[0]/[1] are configured (see run.ts); iterating this array IS the original's "Pub 1 ?"/"Pub 2 ?" gate. */
 	publishClients: readonly MqttLike[];
-	// "Link" (Downloader tab, previous-node 0ed8c6d2a0bdf7f2, Warn, and
-	// previous-node e39be8ece5ffba63, Info) -- two DIFFERENT "Link"
-	// function nodes that both feed the WNM-rebuild step below, so one
-	// SourceLogger instance (its .warn/.info) covers both. Optional so
-	// every existing hand-built FinishingDeps in this file's own tests
-	// keeps compiling without it.
-	linkLog?: SourceLogger;
+	// Ports two DIFFERENT "Link" function nodes (Downloader tab,
+	// previous-node 0ed8c6d2a0bdf7f2, Warn, and previous-node
+	// e39be8ece5ffba63, Info) that both feed the WNM-rebuild step below,
+	// so one SourceLogger instance (its .warn/.info) covers both.
+	// Renamed from "Link" to "Publish" (2026-09-16, maintainer: "I don't
+	// like not being the same name. Go for publish in both."), so this
+	// now writes to the SAME `wis2gc-publish-<hour>.<level>.log` file
+	// Subscriber's own publish-only republish (../subscriber/consumer.ts's
+	// publishLog) uses, rather than two differently-named files for what
+	// is conceptually the same "republished onto the local broker" event
+	// -- each log line's `role` field ('DOWNLOADER' vs 'SUBSCRIBER',
+	// added the same day) is what tells the two apart within that shared
+	// file. Optional so every existing hand-built FinishingDeps in this
+	// file's own tests keeps compiling without it.
+	publishLog?: SourceLogger;
 	/** Per-step failure reporting -- see this file's header. Optional so every existing hand-built FinishingDeps in this file's own tests keeps compiling without it; run.ts wires it to `(m) => log.error(\`DOWNLOADER: ${m}\`)`. */
 	error?: (message: string) => void;
 }
@@ -94,7 +102,7 @@ export async function runFinishing(
 				// "Link" (Warn): no link to swap the local href into -- an
 				// anomaly the original still lets through (links.slice(1) alone),
 				// worth flagging.
-				deps.linkLog?.warn({ downloaderId, wnmTopic, href });
+				deps.publishLog?.warn({ downloaderId, role: 'DOWNLOADER', wnmTopic, href });
 			}
 			const cacheWnm: Wnm = {
 				...wnm,
@@ -104,8 +112,18 @@ export async function runFinishing(
 			delete (cacheWnm as { downloader_id?: string }).downloader_id;
 			const cacheTopic = wnmTopic.replace(/^origin/, 'cache');
 			const cachePayload = JSON.stringify(cacheWnm);
-			// "Link" (Info): the local href this download landed on.
-			deps.linkLog?.info({ downloaderId, link: localHref });
+			// "Link" (Info): the full notification message being republished
+			// onto the local broker. Previously only logged `link` (the local
+			// href) -- the maintainer flagged (2026-09-16, real production
+			// log line pasted) that this doesn't show the notification
+			// itself. `wnm` here is exactly the object `cachePayload` above
+			// serializes, so this is the real published content, not a
+			// derived summary of it -- `link`/`topic` are kept alongside for
+			// anything already grepping/filtering on those fields. `role`
+			// disambiguates this from Subscriber's own publish-only republish,
+			// now sharing the same `wis2gc-publish-*` log file (see
+			// FinishingDeps.publishLog's doc comment).
+			deps.publishLog?.info({ downloaderId, role: 'DOWNLOADER', topic: cacheTopic, link: localHref, wnm: cacheWnm });
 			for (const client of deps.publishClients) {
 				try {
 					await client.publish(cacheTopic, cachePayload);
