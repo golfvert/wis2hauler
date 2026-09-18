@@ -112,6 +112,7 @@ export async function runSubscriber(
 		orderLinksLog: logSink && gate ? createSourceLogger('Order links', logSink, gate, 'SUBSCRIBER') : undefined,
 		decisionLog: logSink && gate ? createSourceLogger('Decision', logSink, gate, 'SUBSCRIBER') : undefined,
 		publishLog: logSink && gate ? createSourceLogger('Publish', logSink, gate, 'SUBSCRIBER') : undefined,
+		duplicateLog: logSink && gate ? createSourceLogger('Duplicate', logSink, gate, 'SUBSCRIBER') : undefined,
 	};
 
 	log.log('SUBSCRIBER: consumer loop starting');

@@ -14,6 +14,8 @@ import {
 	downloaderCompleteKey,
 	downloaderHashKey,
 	mqttRawStreamKey,
+	subscriberGlobalCacheLineageKey,
+	subscriberLineageKey,
 	wnmIdDedupKey,
 	workQueueStreamKey,
 } from '../wis2/redis-keys.ts';
@@ -131,6 +133,28 @@ export class IoredisStore implements SubscriberStore {
 
 	async releaseClaim(downloaderId: string): Promise<void> {
 		await this.redis.del(downloaderClaimKey(downloaderId));
+	}
+
+	async getLineagePubtimes(originCentreId: string, dataIdRaw: string): Promise<string[]> {
+		const hash = await this.redis.hgetall(subscriberLineageKey(originCentreId, dataIdRaw));
+		return Object.keys(hash);
+	}
+
+	async recordLineagePubtime(originCentreId: string, dataIdRaw: string, pubtime: string, nowMillis: number, ttlSeconds: number): Promise<void> {
+		const key = subscriberLineageKey(originCentreId, dataIdRaw);
+		await this.redis.hset(key, pubtime, String(nowMillis));
+		await this.redis.expire(key, ttlSeconds);
+	}
+
+	async getGlobalCacheLineagePubtimes(globalCache: string, dataIdRaw: string): Promise<string[]> {
+		const hash = await this.redis.hgetall(subscriberGlobalCacheLineageKey(globalCache, dataIdRaw));
+		return Object.keys(hash);
+	}
+
+	async recordGlobalCacheLineagePubtime(globalCache: string, dataIdRaw: string, pubtime: string, nowMillis: number, ttlSeconds: number): Promise<void> {
+		const key = subscriberGlobalCacheLineageKey(globalCache, dataIdRaw);
+		await this.redis.hset(key, pubtime, String(nowMillis));
+		await this.redis.expire(key, ttlSeconds);
 	}
 
 	async quit(): Promise<void> {

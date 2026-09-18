@@ -12,6 +12,35 @@
 // nodes build, not a guess.
 export const wnmIdDedupKey = (wnmId: string): string => `wis2gc:subscriber:wnmid:${wnmId}`;
 
+// NOT a port of anything in flows.json -- added 2026-09-17 for
+// subscriber/lineage.ts's origin-topic data_id-reuse check (see that
+// file's header for the full rationale). One hash per (origin centre,
+// raw data_id), field = every pubtime string seen for that data_id so
+// far, value = the millis this instance first recorded it -- mirrors
+// the "Sensor Global Cache" tool's own independently-built "wnm#"
+// hash (node a93bb330271ec030 in that tool's flows.json), which the
+// maintainer pointed to as the validated shape to follow. Keyed by the
+// origin centre id parsed straight from the topic
+// (topic.split('/')[3]), NOT global["centre-id"] -- this hash tracks a
+// PRODUCER's publishing history, not anything about this GC itself.
+export const subscriberLineageKey = (originCentreId: string, dataIdRaw: string): string =>
+	`wis2gc:subscriber:lineage:${originCentreId}:${dataIdRaw}`;
+
+// NOT a port of anything in flows.json -- added 2026-09-17, same day as
+// subscriberLineageKey above, for the second half of the maintainer's
+// request ("if a GC is pushing multiple times the same data_id, same
+// pubtime and no rel=update this it is a duplicate"): a MISBEHAVING
+// Global Cache repeating its OWN cache/... publication of a data_id
+// without setting rel=update, as distinct from several DIFFERENT
+// Global Caches each legitimately relaying the same origin publish
+// once. Deliberately a SEPARATE hash, keyed by the `global-cache`
+// label on the message (not the origin centre) -- two different GCs
+// relaying the identical data_id+pubtime must never collide into the
+// same history and get flagged against each other; each GC's own
+// repeat-publishing pattern is tracked independently.
+export const subscriberGlobalCacheLineageKey = (globalCache: string, dataIdRaw: string): string =>
+	`wis2gc:subscriber:lineage:gc:${globalCache}:${dataIdRaw}`;
+
 export const downloaderHashKey = (downloaderId: string): string => `wis2gc:downloader:downloader_id:${downloaderId}`;
 export const downloaderClaimKey = (downloaderId: string): string => `wis2gc:downloader:set:downloader_id:${downloaderId}`;
 export const downloaderCompleteKey = (downloaderId: string): string => `wis2gc:downloader:complete:downloader_id:${downloaderId}`;

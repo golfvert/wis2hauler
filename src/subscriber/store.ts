@@ -124,6 +124,38 @@ export interface SubscriberStore {
 	// configured would never even attempt the DEL).
 	releaseClaim(downloaderId: string): Promise<void>;
 
+	// NOT a port of anything in flows.json -- see lineage.ts's header
+	// for the full rationale (the maintainer's own "Sensor Global
+	// Cache" tool exposing a spec-violation origins can commit:
+	// reusing a data_id across messages without setting rel=update).
+	// Returns every pubtime string previously recorded for this
+	// (origin centre, raw data_id) pair via recordLineagePubtime below
+	// -- empty array if none (i.e. the first time this data_id has
+	// been seen from this origin, within the TTL window).
+	getLineagePubtimes(originCentreId: string, dataIdRaw: string): Promise<string[]>;
+
+	// NOT a port of anything in flows.json -- see lineage.ts. Records
+	// that `pubtime` has now been seen for this (origin centre, raw
+	// data_id) pair, refreshing the whole key's TTL to ttlSeconds.
+	// nowMillis is stored as the field's value purely for operator
+	// debugging (mirrors SCGC's own "WNM" node, which stores $millis()
+	// as the hash field's value) -- nothing in this port reads it back.
+	recordLineagePubtime(originCentreId: string, dataIdRaw: string, pubtime: string, nowMillis: number, ttlSeconds: number): Promise<void>;
+
+	// NOT a port of anything in flows.json -- see lineage.ts and
+	// subscriberGlobalCacheLineageKey's own doc comment (redis-keys.ts)
+	// for the full rationale: catching a single Global Cache repeating
+	// its OWN publication of a data_id without rel=update, as opposed
+	// to several different Global Caches each legitimately relaying the
+	// same origin publish once (that case is NOT a duplicate and must
+	// never reach this). Keyed by the `global-cache` label on the
+	// message itself, NOT the origin centre -- a separate history per
+	// GC. Empty array if this (GC, data_id) pair has no prior record.
+	getGlobalCacheLineagePubtimes(globalCache: string, dataIdRaw: string): Promise<string[]>;
+
+	// NOT a port of anything in flows.json -- see getGlobalCacheLineagePubtimes above.
+	recordGlobalCacheLineagePubtime(globalCache: string, dataIdRaw: string, pubtime: string, nowMillis: number, ttlSeconds: number): Promise<void>;
+
 	// Graceful shutdown of the underlying client(s).
 	quit(): Promise<void>;
 }

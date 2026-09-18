@@ -22,6 +22,10 @@ export class FakeStore implements SubscriberStore {
 	expirations = new Map<string, number>();
 	workQueue: { queue: string; downloaderId: string; href: string; topic: string; content: boolean }[] = [];
 	releasedClaims: string[] = [];
+	/** One entry per (originCentreId, dataIdRaw), fields = pubtime strings, value = nowMillis recorded. */
+	lineage = new Map<string, Record<string, string>>();
+	/** Same shape as `lineage` above, but keyed per (globalCache, dataIdRaw) -- a separate history per Global Cache, never shared across different GCs. */
+	globalCacheLineage = new Map<string, Record<string, string>>();
 	private nextStreamId = 0;
 
 	async claimMessageId(wnmId: string): Promise<boolean> {
@@ -86,6 +90,36 @@ export class FakeStore implements SubscriberStore {
 
 	async releaseClaim(downloaderId: string): Promise<void> {
 		this.releasedClaims.push(downloaderId);
+	}
+
+	async getLineagePubtimes(originCentreId: string, dataIdRaw: string): Promise<string[]> {
+		const h = this.lineage.get(`${originCentreId}:${dataIdRaw}`);
+		return h ? Object.keys(h) : [];
+	}
+
+	async recordLineagePubtime(originCentreId: string, dataIdRaw: string, pubtime: string, nowMillis: number): Promise<void> {
+		const key = `${originCentreId}:${dataIdRaw}`;
+		let h = this.lineage.get(key);
+		if (!h) {
+			h = {};
+			this.lineage.set(key, h);
+		}
+		h[pubtime] = String(nowMillis);
+	}
+
+	async getGlobalCacheLineagePubtimes(globalCache: string, dataIdRaw: string): Promise<string[]> {
+		const h = this.globalCacheLineage.get(`${globalCache}:${dataIdRaw}`);
+		return h ? Object.keys(h) : [];
+	}
+
+	async recordGlobalCacheLineagePubtime(globalCache: string, dataIdRaw: string, pubtime: string, nowMillis: number): Promise<void> {
+		const key = `${globalCache}:${dataIdRaw}`;
+		let h = this.globalCacheLineage.get(key);
+		if (!h) {
+			h = {};
+			this.globalCacheLineage.set(key, h);
+		}
+		h[pubtime] = String(nowMillis);
 	}
 
 	async quit(): Promise<void> {}

@@ -17,6 +17,7 @@ import { evaluateOverride } from './override.ts';
 import { prepareMessage } from './prepare.ts';
 import { computeDownloaderId } from './content-id.ts';
 import { decideClaimAction } from './claim.ts';
+import { decideLineage, hasUpdateRel, LINEAGE_TTL_SECONDS } from './lineage.ts';
 import { selectLink, firstOf, type Wnm } from '../wis2/wnm.ts';
 import type { OverrideRule } from '../config/schema.ts';
 import type { RawStreamEntry, SubscriberStore } from './store.ts';
@@ -112,6 +113,19 @@ export interface ConsumerDeps {
 	// anything in flows.json (same as decisionLog). Optional for the
 	// same reason as every other logger field here.
 	publishLog?: SourceLogger;
+	// NOT a port of anything in flows.json -- added 2026-09-17 for the
+	// origin-topic data_id lineage check (see lineage.ts's header for
+	// the full rationale: an origin republishing the same data_id
+	// without rel=update, discovered via the maintainer's separate
+	// "Sensor Global Cache" tool). Emitted at INFO per the maintainer's
+	// explicit answer when asked how a caught duplicate should surface
+	// ("Just logs in a duplicate log file. info level.") -- its own
+	// dedicated `wis2gc-duplicate-<hour>.info.log` file, not folded
+	// into decisionLog/publishLog, since this is a distinct, named
+	// class of event the maintainer wants to be able to find on its
+	// own. Optional for the same reason as every other logger field
+	// here.
+	duplicateLog?: SourceLogger;
 }
 
 export const defaultSleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
@@ -192,6 +206,35 @@ function buildPublishOnlyMessages(
 	return { cacheTopic, cacheWnm, cachePayload, monitorTopic, monitorEvent, monitorPayload };
 }
 
+// Shared by both lineage checks in processEntry below (origin-topic and
+// cache-topic) -- see lineage.ts's header for the full rationale behind
+// there being two, separately-keyed checks. `get`/`record` close over
+// whichever history (origin-scoped or GC-scoped) applies; `logFields`
+// carries the caller's own key parts (originCentreId or globalCache)
+// into the duplicateLog line so the two cases stay distinguishable in
+// the shared `wis2gc-duplicate-*.info.log` file. Returns true when the
+// message was a duplicate (caller must drop it), false when it was
+// new/an update (and has already been recorded).
+async function checkLineageAndRecord(
+	deps: ConsumerDeps,
+	entry: RawStreamEntry,
+	wnm: Wnm,
+	dataIdRaw: string,
+	get: () => Promise<string[]>,
+	record: (nowMillis: number) => Promise<void>,
+	logFields: Record<string, unknown>,
+): Promise<boolean> {
+	const pubtime = wnm.properties.pubtime;
+	const knownPubtimes = await get();
+	const decision = decideLineage(pubtime, hasUpdateRel(wnm), knownPubtimes);
+	if (decision.kind === 'duplicate') {
+		deps.duplicateLog?.info({ topic: entry.topic, dataId: dataIdRaw, pubtime, reason: decision.reason, ...logFields });
+		return true;
+	}
+	await record(deps.now().getTime());
+	return false;
+}
+
 export async function processEntry(entry: RawStreamEntry, deps: ConsumerDeps): Promise<void> {
 	let wnm: Wnm;
 	try {
@@ -218,6 +261,59 @@ export async function processEntry(entry: RawStreamEntry, deps: ConsumerDeps): P
 	if (classification.kind === 'ignore') {
 		if (deps.isDebugEnabled()) deps.log.log(`consumer: ignoring ${entry.topic} (neither origin nor a recognized cache source)`);
 		return;
+	}
+
+	// Data_id lineage checks -- see lineage.ts's header for the full
+	// rationale and ConsumerDeps.duplicateLog's doc comment for the
+	// logging policy. Two SEPARATE checks, against two separate
+	// histories, never merged:
+	if (classification.kind === 'origin') {
+		// 1. An ORIGIN reusing a data_id without rel=update. Keyed by
+		// (origin centre, data_id) -- originCentreId comes from the
+		// topic itself (matching buildPublishOnlyMessages' own
+		// `originid` derivation just below and SCGC's identical
+		// `$split(topic,"/")[3]`), NOT deps.centreId -- this hash
+		// tracks a PRODUCER's publishing history, not anything about
+		// this GC.
+		const originCentreId = entry.topic.split('/')[3] ?? '';
+		const dataIdRaw = wnm.properties.data_id;
+		const isDuplicate = await checkLineageAndRecord(
+			deps,
+			entry,
+			wnm,
+			dataIdRaw,
+			() => deps.store.getLineagePubtimes(originCentreId, dataIdRaw),
+			(nowMillis) => deps.store.recordLineagePubtime(originCentreId, dataIdRaw, wnm.properties.pubtime, nowMillis, LINEAGE_TTL_SECONDS),
+			{ originCentreId },
+		);
+		if (isDuplicate) return;
+	} else if (classification.kind === 'cache' || classification.kind === 'cache-unprioritized') {
+		// 2. A single Global Cache repeating ITS OWN publication of a
+		// data_id without rel=update -- added 2026-09-17 at the
+		// maintainer's explicit follow-up ("if a GC is pushing multiple
+		// times the same data_id, same pubtime and no rel=update this
+		// it is a duplicate" / "if a Global Cache goes crazy, it must
+		// be controlled..."). Keyed by the message's OWN `global-cache`
+		// label (not the origin centre, not deps.centreId) so this
+		// NEVER collides with a different GC's legitimate, independent
+		// relay of the identical data_id+pubtime -- that fan-out case
+		// must keep passing through untouched. Skipped entirely when
+		// the message carries no (string) `global-cache` label at all
+		// -- nothing to key the history on.
+		const globalCache = wnm.properties['global-cache'];
+		if (typeof globalCache === 'string') {
+			const dataIdRaw = wnm.properties.data_id;
+			const isDuplicate = await checkLineageAndRecord(
+				deps,
+				entry,
+				wnm,
+				dataIdRaw,
+				() => deps.store.getGlobalCacheLineagePubtimes(globalCache, dataIdRaw),
+				(nowMillis) => deps.store.recordGlobalCacheLineagePubtime(globalCache, dataIdRaw, wnm.properties.pubtime, nowMillis, LINEAGE_TTL_SECONDS),
+				{ globalCache },
+			);
+			if (isDuplicate) return;
+		}
 	}
 
 	const staggerSeconds = staggerDelaySeconds(classification);

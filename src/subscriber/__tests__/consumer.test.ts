@@ -518,6 +518,189 @@ describe('processEntry', () => {
 	});
 });
 
+// Origin-topic data_id lineage check -- see lineage.ts's header and
+// ConsumerDeps.duplicateLog's doc comment. Regression coverage for
+// the real ca-eccc-msc case the maintainer found via their separate
+// "Sensor Global Cache" tool: an origin republishing the same
+// data_id at the same (or non-newer) pubtime with rel=canonical,
+// which computeDownloaderId's own pubtime-in-the-key formula fails
+// to catch on its own.
+describe('lineage (origin-topic data_id duplicate detection)', () => {
+	const originTopic = 'origin/a/wis2/fr-meteofrance/data/foo';
+
+	function wnmWithLinks(id: string, dataId: string, pubtime: string, rel: 'canonical' | 'update'): Wnm {
+		return { id, links: [{ rel, href: 'https://origin.example.org/file.grib2' }], properties: { pubtime, data_id: dataId } };
+	}
+
+	test('the first message for a data_id is processed normally, not dropped', async () => {
+		const store = new FakeStore();
+		const { logger, infoCalls } = fakeInfoLogger();
+		const deps = baseDeps(store, { duplicateLog: logger });
+		const w = wnmWithLinks('l1', 'data-l1', '2026-01-01T00:00:00Z', 'canonical');
+
+		await processEntry(entry(originTopic, w), deps);
+
+		expect(infoCalls).toHaveLength(0);
+		expect(store.workQueue).toHaveLength(1);
+	});
+
+	test('a repeat: same data_id, same pubtime, rel=canonical both times -> silently dropped, logged to duplicateLog', async () => {
+		const store = new FakeStore();
+		const { logger, infoCalls } = fakeInfoLogger();
+		const deps = baseDeps(store, { duplicateLog: logger });
+		const first = wnmWithLinks('l2a', 'data-l2', '2026-01-01T00:00:00Z', 'canonical');
+		const second = wnmWithLinks('l2b', 'data-l2', '2026-01-01T00:00:00Z', 'canonical');
+
+		await processEntry(entry(originTopic, first, '1-0'), deps);
+		await processEntry(entry(originTopic, second, '1-1'), deps);
+
+		expect(store.workQueue).toHaveLength(1); // only the first ever reached the claim/download logic
+		expect(infoCalls).toHaveLength(1);
+		expect(infoCalls[0]).toEqual({
+			topic: originTopic,
+			originCentreId: 'fr-meteofrance',
+			dataId: 'data-l2',
+			pubtime: '2026-01-01T00:00:00Z',
+			reason: 'pubtime is not newer than a previously seen publish for this data_id',
+		});
+	});
+
+	test('a repeat with a NEWER pubtime but still rel=canonical -> still a duplicate', async () => {
+		const store = new FakeStore();
+		const { logger, infoCalls } = fakeInfoLogger();
+		const deps = baseDeps(store, { duplicateLog: logger });
+		const first = wnmWithLinks('l3a', 'data-l3', '2026-01-01T00:00:00Z', 'canonical');
+		const second = wnmWithLinks('l3b', 'data-l3', '2026-01-02T00:00:00Z', 'canonical');
+
+		await processEntry(entry(originTopic, first, '1-0'), deps);
+		await processEntry(entry(originTopic, second, '1-1'), deps);
+
+		expect(store.workQueue).toHaveLength(1);
+		expect(infoCalls).toHaveLength(1);
+		expect(infoCalls[0]!.reason).toMatch(/rel is not "update"/);
+	});
+
+	test('a repeat with a NEWER pubtime AND rel=update -> accepted as a legitimate update, not dropped', async () => {
+		const store = new FakeStore();
+		const { logger, infoCalls } = fakeInfoLogger();
+		const deps = baseDeps(store, { duplicateLog: logger });
+		const first = wnmWithLinks('l4a', 'data-l4', '2026-01-01T00:00:00Z', 'canonical');
+		const second = wnmWithLinks('l4b', 'data-l4', '2026-01-02T00:00:00Z', 'update');
+
+		await processEntry(entry(originTopic, first, '1-0'), deps);
+		await processEntry(entry(originTopic, second, '1-1'), deps);
+
+		expect(infoCalls).toHaveLength(0);
+		expect(store.workQueue).toHaveLength(2); // both processed through to the normal claim/download path
+	});
+
+	// The maintainer's explicit scope clarification: "It is normal to
+	// received multiple identical data_id and same pubtime coming from
+	// the various GC. So these are not duplicates!" -- two DIFFERENT
+	// Global Caches relaying the exact same origin publish must never
+	// be flagged against each other, however many of them there are.
+	// (A single GC repeating ITS OWN publish is a separate case --
+	// covered by the "misbehaving Global Cache" describe block below.)
+	test('cache-topic traffic with identical data_id+pubtime from DIFFERENT relays is never flagged against each other', async () => {
+		const store = new FakeStore();
+		const { logger, infoCalls } = fakeInfoLogger();
+		const deps = baseDeps(store, { duplicateLog: logger, priorityGlobalCache: ['gc-a', 'gc-b'], sleep: async () => {} });
+		const fromA = { ...wnmWithLinks('c1a', 'data-c1', '2026-01-01T00:00:00Z', 'canonical'), properties: { pubtime: '2026-01-01T00:00:00Z', data_id: 'data-c1', 'global-cache': 'gc-a' } };
+		const fromB = { ...wnmWithLinks('c1b', 'data-c1', '2026-01-01T00:00:00Z', 'canonical'), properties: { pubtime: '2026-01-01T00:00:00Z', data_id: 'data-c1', 'global-cache': 'gc-b' } };
+
+		await processEntry(entry('cache/a/wis2/fr-meteofrance/data/foo', fromA, '1-0'), deps);
+		await processEntry(entry('cache/a/wis2/fr-meteofrance/data/foo', fromB, '1-1'), deps);
+
+		expect(infoCalls).toHaveLength(0); // neither GC's publish counts as "prior history" for the other
+		expect(store.lineage.size).toBe(0); // the origin-scoped history is untouched by cache-topic traffic
+		expect(store.globalCacheLineage.size).toBe(2); // but each GC DOES get its own recorded history
+	});
+
+	// Added 2026-09-17 at the maintainer's explicit follow-up request:
+	// a single Global Cache repeating ITS OWN publication of a data_id
+	// without rel=update ("if a GC is pushing multiple times the same
+	// data_id, same pubtime and no rel=update this it is a duplicate" /
+	// "if a Global Cache goes crazy, it must be controlled...").
+	describe('a single Global Cache repeating its own publication', () => {
+		function cacheWnm(id: string, dataId: string, pubtime: string, globalCache: string, rel: 'canonical' | 'update'): Wnm {
+			return { id, links: [{ rel, href: 'https://origin.example.org/file.grib2' }], properties: { pubtime, data_id: dataId, 'global-cache': globalCache } };
+		}
+
+		test('same data_id, same pubtime, rel=canonical both times, from the SAME GC -> dropped, logged with the globalCache label', async () => {
+			const store = new FakeStore();
+			const { logger, infoCalls } = fakeInfoLogger();
+			const deps = baseDeps(store, { duplicateLog: logger, priorityGlobalCache: ['gc-a'], sleep: async () => {} });
+			const first = cacheWnm('g1a', 'data-g1', '2026-01-01T00:00:00Z', 'gc-a', 'canonical');
+			const second = cacheWnm('g1b', 'data-g1', '2026-01-01T00:00:00Z', 'gc-a', 'canonical');
+
+			await processEntry(entry('cache/a/wis2/fr-meteofrance/data/foo', first, '1-0'), deps);
+			await processEntry(entry('cache/a/wis2/fr-meteofrance/data/foo', second, '1-1'), deps);
+
+			expect(infoCalls).toHaveLength(1);
+			expect(infoCalls[0]).toEqual({
+				topic: 'cache/a/wis2/fr-meteofrance/data/foo',
+				dataId: 'data-g1',
+				pubtime: '2026-01-01T00:00:00Z',
+				reason: 'pubtime is not newer than a previously seen publish for this data_id',
+				globalCache: 'gc-a',
+			});
+		});
+
+		test('a newer pubtime but still rel=canonical, from the SAME GC -> still a duplicate', async () => {
+			const store = new FakeStore();
+			const { logger, infoCalls } = fakeInfoLogger();
+			const deps = baseDeps(store, { duplicateLog: logger, priorityGlobalCache: ['gc-a'], sleep: async () => {} });
+			const first = cacheWnm('g2a', 'data-g2', '2026-01-01T00:00:00Z', 'gc-a', 'canonical');
+			const second = cacheWnm('g2b', 'data-g2', '2026-01-02T00:00:00Z', 'gc-a', 'canonical');
+
+			await processEntry(entry('cache/a/wis2/fr-meteofrance/data/foo', first, '1-0'), deps);
+			await processEntry(entry('cache/a/wis2/fr-meteofrance/data/foo', second, '1-1'), deps);
+
+			expect(infoCalls).toHaveLength(1);
+			expect(infoCalls[0]!.reason).toMatch(/rel is not "update"/);
+		});
+
+		test('a newer pubtime WITH rel=update, from the SAME GC -> accepted, not dropped', async () => {
+			const store = new FakeStore();
+			const { logger, infoCalls } = fakeInfoLogger();
+			const deps = baseDeps(store, { duplicateLog: logger, priorityGlobalCache: ['gc-a'], sleep: async () => {} });
+			const first = cacheWnm('g3a', 'data-g3', '2026-01-01T00:00:00Z', 'gc-a', 'canonical');
+			const second = cacheWnm('g3b', 'data-g3', '2026-01-02T00:00:00Z', 'gc-a', 'update');
+
+			await processEntry(entry('cache/a/wis2/fr-meteofrance/data/foo', first, '1-0'), deps);
+			await processEntry(entry('cache/a/wis2/fr-meteofrance/data/foo', second, '1-1'), deps);
+
+			expect(infoCalls).toHaveLength(0);
+		});
+
+		test('applies even with no priority-global-cache configured (cache-unprioritized classification)', async () => {
+			const store = new FakeStore();
+			const { logger, infoCalls } = fakeInfoLogger();
+			const deps = baseDeps(store, { duplicateLog: logger }); // priorityGlobalCache: undefined (default)
+			const first = cacheWnm('g4a', 'data-g4', '2026-01-01T00:00:00Z', 'gc-a', 'canonical');
+			const second = cacheWnm('g4b', 'data-g4', '2026-01-01T00:00:00Z', 'gc-a', 'canonical');
+
+			await processEntry(entry('cache/a/wis2/fr-meteofrance/data/foo', first, '1-0'), deps);
+			await processEntry(entry('cache/a/wis2/fr-meteofrance/data/foo', second, '1-1'), deps);
+
+			expect(infoCalls).toHaveLength(1);
+		});
+
+		test('a cache-topic message with no "global-cache" label at all is skipped -- nothing to key the history on', async () => {
+			const store = new FakeStore();
+			const { logger, infoCalls } = fakeInfoLogger();
+			const deps = baseDeps(store, { duplicateLog: logger });
+			const noLabel: Wnm = { id: 'g5', links: [{ rel: 'canonical', href: 'https://origin.example.org/file.grib2' }], properties: { pubtime: '2026-01-01T00:00:00Z', data_id: 'data-g5' } };
+
+			await processEntry(entry('cache/a/wis2/fr-meteofrance/data/foo', noLabel), deps);
+			await processEntry(entry('cache/a/wis2/fr-meteofrance/data/foo', noLabel), deps);
+
+			expect(infoCalls).toHaveLength(0);
+			expect(store.globalCacheLineage.size).toBe(0);
+		});
+	});
+});
+
 describe('runConsumerLoop', () => {
 	test('processes entries from the store and stops once the signal is aborted', async () => {
 		const store = new FakeStore();
