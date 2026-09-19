@@ -31,6 +31,16 @@ describe('transformKV', () => {
 		expect(transformKV(['topic', 'a/b/c/centre-x']).subtopic).toBeNull();
 	});
 
+	test('subtopic falls back to level 6 alone when levels 7-9 are absent', () => {
+		expect(transformKV(['topic', 'origin/a/wis2/centre-1/data/core']).subtopic).toBe('core');
+		expect(transformKV(['topic', 'origin/a/wis2/centre-1/data/core/weather']).subtopic).toBe('core/weather');
+	});
+
+	test('subtopic falls back to level 5 ("data"/"metadata") when level 6 itself is absent, instead of null', () => {
+		expect(transformKV(['topic', 'origin/a/wis2/centre-1/data']).subtopic).toBe('data');
+		expect(transformKV(['topic', 'origin/a/wis2/centre-1/metadata']).subtopic).toBe('metadata');
+	});
+
 	test('source is read from the "src:<field>" sibling of whichever field value starts with "complete"', () => {
 		const record = transformKV(['href', 'complete', 'src:href', 'origin-worker-1']);
 		expect(record.source).toBe('origin-worker-1');

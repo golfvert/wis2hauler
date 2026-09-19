@@ -19,7 +19,7 @@
 // over each topic's QoS) is Subscriber-role state, not config-module
 // state, and belongs with that role's own implementation.
 
-import { isValidMqttTopic, isValidCredentialTopic, isValidTopicPattern, enforceCoreCacheRule } from './topics.ts';
+import { isValidMqttTopic, isValidCredentialTopic, isValidTopicPattern } from './topics.ts';
 import { VALID_ROLES, type OverrideRule, type Role } from './schema.ts';
 import { DEBUG_CATEGORIES, type DebugCategory } from '../debug.ts';
 
@@ -113,15 +113,14 @@ function validateOverridelist(items: unknown[]): string[] {
 	return errs;
 }
 
-// Extra context validatePatch needs beyond the patch body and active
-// roles, for the WIS2 core/cache rule (../config/topics.ts's
-// enforceCoreCacheRule) applied to whitelist/blacklist below: whether
-// this replica is a Global Cache (global.global-cache), and where to
-// log a rewrite when the rule fires.
-export interface ValidatePatchOptions {
-	globalCacheMode: boolean;
-	warn: (message: string) => void;
-}
+// REMOVED 2026-09-19: this used to declare ValidatePatchOptions
+// (globalCacheMode + warn) purely to feed the WIS2 core/cache rule
+// (../config/topics.ts's now-removed enforceCoreCacheRule) applied to
+// a whitelist/blacklist patch below. See topics.ts's removal comment
+// for why that rewrite was replaced with an ingest-time blacklist
+// filter (../subscriber/ingest.ts) instead -- a live POST /set patch
+// gets the same protection for free now, since it runs against every
+// message's real topic regardless of when/how the whitelist was set.
 
 // Validates one PATCH body against every key present in it. Mirrors
 // the original's per-key branch (enum / array / objarray / crud)
@@ -129,7 +128,7 @@ export interface ValidatePatchOptions {
 // original lets other, valid keys in the same body still apply — see
 // PatchResult.errors vs. .values: a rejected key is simply absent from
 // .values, not a reason to fail the whole patch).
-export function validatePatch(body: unknown, activeRoles: ReadonlySet<Role>, options: ValidatePatchOptions): PatchResult {
+export function validatePatch(body: unknown, activeRoles: ReadonlySet<Role>): PatchResult {
 	const errors: string[] = [];
 	const values: ValidatedPatch = {};
 
@@ -180,11 +179,7 @@ export function validatePatch(body: unknown, activeRoles: ReadonlySet<Role>, opt
 					? items.flatMap((t, i) => { const e = isValidMqttTopic(t); return e ? [`whitelist[${i}]: '${t}' — ${e}`] : []; })
 					: items.flatMap((t, i) => (isValidTopicPattern(t) ? [] : [`blacklist[${i}]: '${t}' — only alphanumeric, -, +, # and / allowed`]));
 				if (itemErrors.length > 0) { errors.push(...itemErrors); break; }
-				// WIS2 core/cache rule (see ../config/topics.ts) -- applied
-				// here too, not just at static-config load time, since a
-				// POST /set can introduce a fresh origin/.../core/... entry
-				// just as easily as the YAML file can.
-				values[key] = enforceCoreCacheRule(items, options.globalCacheMode, (message) => options.warn(`${key}: ${message}`));
+				values[key] = items;
 				break;
 			}
 			case 'overridelist': {

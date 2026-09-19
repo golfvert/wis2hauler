@@ -4,10 +4,17 @@
 //
 // FIDELITY NOTES (all derived from reading the literal source, not
 // inferred):
-//   - A hash MISMATCH, a rename-target name COLLISION (date/topic), and an
-//     UNSUPPORTED hash method are all deliberate, already-handled outcomes
-//     in the original (HASH_NOK / FAIL, explicit `return`s) -- ported here
-//     as ordinary return values, never thrown.
+//   - A hash MISMATCH and an UNSUPPORTED hash method are deliberate,
+//     already-handled outcomes in the original (HASH_NOK, explicit
+//     `return`s) -- ported here as ordinary return values, never thrown.
+//   - A rename-target name COLLISION (date/topic) was ALSO one of these in
+//     the original (delete the new file, FAIL) -- CHANGED 2026-09-19 (the
+//     maintainer: "I'd like adding eg a timestamp including millisecond"):
+//     a plain collision is now resolved by renaming to a
+//     millisecond-timestamp-disambiguated name instead of giving up. See
+//     renameIntoDir()/withTimestampSuffix() below. The old delete-and-FAIL
+//     behavior survives only for the pathological case where even the
+//     disambiguated name is already taken.
 //   - A genuine filesystem failure during date/topic renaming (mkdirSync/
 //     renameSync throwing) is thrown by handleRename() SYNCHRONOUSLY,
 //     which happens *during the evaluation of the argument* to
@@ -128,6 +135,14 @@ export interface HashIO {
 	 * isUnsupportedHashMethod is how the caller tells the two apart.
 	 */
 	hashFileBase64(filepath: string, method: string): Promise<string>;
+	/**
+	 * Date.now() -- injected so the rename-collision disambiguation below
+	 * (withTimestampSuffix) is deterministic in tests. NOT a port: the
+	 * original had no equivalent, since a rename-target collision used to
+	 * just delete the new file and give up (see handleRename's own header
+	 * comment and git history around 2026-09-19).
+	 */
+	now(): number;
 	isUnsupportedHashMethod(err: unknown): boolean;
 	uploadToS3(bucket: string, objectName: string, filepath: string): Promise<void>;
 	warn(message: string): void;
@@ -150,36 +165,65 @@ interface RenameOutcome {
 	filepath: string;
 }
 
+/**
+ * Inserts `_<timestampMs>` right before the file's extension (or at the end
+ * if there is no extension, or the "extension" is actually the whole name --
+ * e.g. a leading dot with nothing before it, like ".gitignore" -- in which
+ * case dotIndex <= 0 and we just append). e.g. "data.grib2" @ 1758270000123
+ * -> "data_1758270000123.grib2".
+ */
+export function withTimestampSuffix(filename: string, timestampMs: number): string {
+	const dotIndex = filename.lastIndexOf('.');
+	if (dotIndex <= 0) return `${filename}_${timestampMs}`;
+	return `${filename.slice(0, dotIndex)}_${timestampMs}${filename.slice(dotIndex)}`;
+}
+
+/**
+ * Shared by both the renameToDate and renameToTopic branches below (they
+ * only differ in how targetDir is computed). NOT a port: the original just
+ * deleted the newly-downloaded file and gave up on a name collision at the
+ * destination (FAIL) -- per the maintainer, 2026-09-19 ("I'd like adding eg
+ * a timestamp including millisecond"), a plain collision is now resolved by
+ * renaming to a millisecond-timestamp-suffixed name instead. The old
+ * delete-and-FAIL behavior is kept only for the pathological case where even
+ * THAT disambiguated name is already taken -- so this still can't loop
+ * forever or silently keep trying more names.
+ */
+function renameIntoDir(filepath: string, targetDir: string, io: HashIO): RenameOutcome {
+	const filename = io.basename(filepath);
+	const targetPath = io.join(targetDir, filename);
+	if (!io.exists(targetPath)) {
+		io.renameSync(filepath, targetPath);
+		return { renamed: true, failed: false, filepath: targetPath };
+	}
+	const disambiguatedPath = io.join(targetDir, withTimestampSuffix(filename, io.now()));
+	if (io.exists(disambiguatedPath)) {
+		// Pathological: even the timestamped name is already taken. Bail
+		// out exactly like the old behavior rather than looping to try yet
+		// another name.
+		io.unlinkSync(filepath);
+		return { renamed: false, failed: true, filepath };
+	}
+	io.renameSync(filepath, disambiguatedPath);
+	return { renamed: true, failed: false, filepath: disambiguatedPath };
+}
+
 async function handleRename(filepath: string, input: HashInput, config: HashConfig, io: HashIO): Promise<RenameOutcome> {
 	if (config.renameToDate && input.wnmpubtime) {
 		try {
 			const baseDir = io.dirname(filepath);
-			const filename = io.basename(filepath);
 			const dateDir = io.join(baseDir, formatDateDir(input.wnmpubtime));
 			io.mkdirRecursive(dateDir);
-			const newFilepath = io.join(dateDir, filename);
-			if (io.exists(newFilepath)) {
-				io.unlinkSync(filepath);
-				return { renamed: false, failed: true, filepath };
-			}
-			io.renameSync(filepath, newFilepath);
-			return { renamed: true, failed: false, filepath: newFilepath };
+			return renameIntoDir(filepath, dateDir, io);
 		} catch (err) {
 			throw new RenameIoError(`Failed to move file to date directory: ${(err as Error).message}`);
 		}
 	} else if (config.renameToTopic && input.wnmtopic) {
 		try {
 			const baseDir = io.dirname(filepath);
-			const filename = io.basename(filepath);
 			const topicDir = io.join(baseDir, formatTopicDir(input.wnmtopic));
 			io.mkdirRecursive(topicDir);
-			const newFilepath = io.join(topicDir, filename);
-			if (io.exists(newFilepath)) {
-				io.unlinkSync(filepath);
-				return { renamed: false, failed: true, filepath };
-			}
-			io.renameSync(filepath, newFilepath);
-			return { renamed: true, failed: false, filepath: newFilepath };
+			return renameIntoDir(filepath, topicDir, io);
 		} catch (err) {
 			throw new RenameIoError(`Failed to move file to topic directory: ${(err as Error).message}`);
 		}

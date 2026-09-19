@@ -8,7 +8,6 @@
 import { readFileSync } from 'node:fs';
 import { load as parseYaml } from 'js-yaml';
 import { validateConfig, type ValidationResult } from './validate.ts';
-import { enforceCoreCacheRule } from './topics.ts';
 import type { Config } from './schema.ts';
 
 export class ConfigError extends Error {
@@ -21,27 +20,16 @@ export class ConfigError extends Error {
 	}
 }
 
-// WIS2 core/cache rule (../config/topics.ts's enforceCoreCacheRule),
-// applied once here to the static config's subscriber.mqtt.whitelist/
-// blacklist -- unless global.global-cache is true, neither may
-// subscribe to core data (level 6 == 'core') straight from origin.
-// Mutates `config` in place (so every later reader -- RuntimeConfigStore's
-// seed, the config object handed to registerAdminRoutes -- sees the
-// corrected topics) and appends one message per rewrite to `result.warnings`,
-// which every existing caller (main.ts's `for (const w of result.warnings)
-// log.warn(...)`) already prints -- no separate logging plumbing needed.
-// The exact same rule is applied again, independently, to a live POST
-// /set patch (../config/runtime.ts's validatePatch) -- a fresh
-// whitelist/blacklist entry can arrive that way just as easily as
-// through this file.
-function applyCoreCacheRule(config: Config, warnings: string[]): void {
-	if (!config.subscriber?.mqtt) return;
-	const globalCacheMode = config.global['global-cache'] ?? false;
-	const m = config.subscriber.mqtt;
-	const log = (message: string) => warnings.push(`subscriber.mqtt: ${message}`);
-	m.whitelist = enforceCoreCacheRule(m.whitelist, globalCacheMode, log);
-	if (m.blacklist) m.blacklist = enforceCoreCacheRule(m.blacklist, globalCacheMode, log);
-}
+// REMOVED 2026-09-19: this used to call ../config/topics.ts's
+// (now-removed) enforceCoreCacheRule here to rewrite an EXACT
+// 'origin/.../core/...' whitelist/blacklist entry to 'cache/...' --
+// see that removal's own comment in topics.ts for why (a broad
+// wildcard subscription bypassed it entirely, and nothing re-checked
+// a message's ACTUAL topic once received). subscriber.mqtt.whitelist/
+// blacklist are no longer touched here; the equivalent protection now
+// runs at message-ingest time against the real received topic (see
+// ../subscriber/ingest.ts's ORIGIN_CORE_BLACKLIST_RULE /
+// ORIGIN_METADATA_BLACKLIST_RULE, wired in ../subscriber/run.ts).
 
 // Parses and validates only — does not read a file. Useful for tests
 // and for validating config received some other way (e.g. handed in
@@ -65,7 +53,6 @@ export function parseConfig(yamlText: string): { config: Config; result: Validat
 		throw new ConfigError(`config validation failed: ${result.errors.join('; ')}`, result);
 	}
 	const config = raw as Config;
-	applyCoreCacheRule(config, result.warnings);
 	return { config, result };
 }
 

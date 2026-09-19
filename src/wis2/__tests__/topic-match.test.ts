@@ -40,4 +40,41 @@ describe('isBlacklisted', () => {
 	test('no pattern matches -> not blacklisted', () => {
 		expect(isBlacklisted('origin/a/wis2/us-noaa/data/x', ['cache/a/wis2/+/+/+'])).toBe(false);
 	});
+
+	// ../../subscriber/ingest.ts's ORIGIN_CORE_BLACKLIST_RULE /
+	// ORIGIN_METADATA_BLACKLIST_RULE -- the ingest-time safeguard that
+	// replaced config-time whitelist rewriting (see that file's and
+	// ../../config/topics.ts's removal comments). Exercised here against
+	// the real matcher, since the whole point is that these patterns
+	// catch a message's ACTUAL topic regardless of how broadly it was
+	// subscribed to.
+	describe('the origin core/metadata safeguard patterns', () => {
+		// Literal values, same convention as the "recommended" pattern
+		// test above -- kept identical to ../../subscriber/ingest.ts's
+		// exported ORIGIN_CORE_BLACKLIST_RULE / ORIGIN_METADATA_BLACKLIST_RULE.
+		const rules = ['origin/+/+/+/data/core/#', 'origin/+/+/+/metadata/#'];
+
+		test('blocks a core-data topic pulled straight from origin, at any depth', () => {
+			expect(isBlacklisted('origin/a/wis2/fr-meteofrance/data/core/weather/surface', rules)).toBe(true);
+			expect(isBlacklisted('origin/a/wis2/fr-meteofrance/data/core', rules)).toBe(true);
+		});
+		test('blocks a metadata notification straight from origin, whether or not it goes deeper', () => {
+			expect(isBlacklisted('origin/a/wis2/fr-meteofrance/metadata', rules)).toBe(true);
+			expect(isBlacklisted('origin/a/wis2/fr-meteofrance/metadata/discovery', rules)).toBe(true);
+		});
+		test('does not block recommended data from origin', () => {
+			expect(isBlacklisted('origin/a/wis2/fr-meteofrance/data/recommended/x', rules)).toBe(false);
+		});
+		test('does not block core/metadata once republished under cache/... (only origin/... is restricted)', () => {
+			expect(isBlacklisted('cache/a/wis2/fr-meteofrance/data/core/weather/surface', rules)).toBe(false);
+			expect(isBlacklisted('cache/a/wis2/fr-meteofrance/metadata', rules)).toBe(false);
+		});
+		test('a broad wildcard whitelist subscription does not matter -- this runs against the real received topic', () => {
+			// This is exactly the case that the old config-time whitelist
+			// rewrite could not catch: someone subscribed to everything
+			// under a centre with 'origin/a/wis2/#', and a core-data
+			// message arrives on it regardless.
+			expect(isBlacklisted('origin/a/wis2/fr-meteofrance/data/core/weather/surface', rules)).toBe(true);
+		});
+	});
 });

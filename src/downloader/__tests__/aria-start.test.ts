@@ -43,18 +43,21 @@ describe('startRealDownload', () => {
 
 		await startRealDownload(deps, entry);
 
+		// Filename is built from the (already-unique) streamId, not
+		// downloaderId's content-derived tail -- see startRealDownload's
+		// collision-avoidance comment.
 		expect(store.streamEntries.get('downloader1:1694198400000-0-999999')).toEqual({
 			streamId: '1694198400000-0-999999',
 			downloaderId: 'wis2:centre:abc',
 			downloadEntryId: '1694198400000-0',
 			href: 'https://example.com/foo/bar.grib2',
-			filename: 'abc_bar.grib2',
+			filename: '1694198400000-0-999999_bar.grib2',
 		});
 		expect(store.streamExpires.has('downloader1:1694198400000-0-999999')).toBe(true);
 
 		expect(calls).toHaveLength(1);
 		expect(calls[0]!.href).toBe('https://example.com/foo/bar.grib2');
-		expect(calls[0]!.options).toEqual({ filename: 'abc_bar.grib2', checkCertificate: undefined, credentials: undefined });
+		expect(calls[0]!.options).toEqual({ filename: '1694198400000-0-999999_bar.grib2', checkCertificate: undefined, credentials: undefined });
 
 		const promoted = store.aria2GidRecords.get('downloader1:aria2-gid-1');
 		expect(promoted).toEqual([
@@ -67,7 +70,7 @@ describe('startRealDownload', () => {
 			'href',
 			'https://example.com/foo/bar.grib2',
 			'filename',
-			'abc_bar.grib2',
+			'1694198400000-0-999999_bar.grib2',
 		]);
 		expect(store.cancelSchedule.has('downloader1|aria2-gid-1')).toBe(true);
 	});
@@ -89,7 +92,7 @@ describe('startRealDownload', () => {
 		await startRealDownload(deps, entry);
 
 		expect(debugCalls).toHaveLength(1);
-		expect(debugCalls[0]).toMatchObject({ href: entry.href, filename: 'abc_bar.grib2', gid: 'aria2-gid-debug', hasCredentials: false });
+		expect(debugCalls[0]).toMatchObject({ href: entry.href, filename: '1694198400000-0-999999_bar.grib2', gid: 'aria2-gid-debug', hasCredentials: false });
 	});
 
 	test('looks up credentials by topic and forwards checkCertificate', async () => {
@@ -107,7 +110,7 @@ describe('startRealDownload', () => {
 
 		await startRealDownload(deps, entry);
 
-		expect(calls[0]!.options).toEqual({ filename: 'abc_bar.grib2', checkCertificate: false, credentials: { username: 'alice', password: 'secret' } });
+		expect(calls[0]!.options).toEqual({ filename: '1694198400000-0-111111_bar.grib2', checkCertificate: false, credentials: { username: 'alice', password: 'secret' } });
 	});
 
 	test('a topic with no matching credentials entry passes credentials: undefined', async () => {
@@ -154,5 +157,42 @@ describe('startRealDownload', () => {
 		await startRealDownload(deps, retryEntry);
 
 		expect(store.streamEntries.get('downloader1:1757740000123-99-482910-654321')?.downloadEntryId).toBe('');
+	});
+
+	// 2026-09-19 (the maintainer: "avoid collision in aria2, in rename and
+	// in content"): two WNMs with no integrity block and the same href
+	// basename used to compute the identical aria2 `out` filename
+	// (downloaderId's content-derived tail falls back to just the pubtime
+	// digits, and only the href's basename -- not its full path -- was
+	// used). The deployed aria2 image defaults to allow-overwrite=true,
+	// auto-file-renaming=false (per its entrypoint.sh), so that used to
+	// mean a silent on-disk overwrite, not a rename or a rejection.
+	// Confirms two such entries now get different `out` filenames.
+	test('two entries with the same href basename never collide on the aria2 out filename', async () => {
+		const storeA = new FakeDownloaderStore();
+		const storeB = new FakeDownloaderStore();
+		const { aria2: aria2A, calls: callsA } = makeFakeAria2('aria2-gid-a');
+		const { aria2: aria2B, calls: callsB } = makeFakeAria2('aria2-gid-b');
+		const entryA: AriaStartEntry = {
+			id: '1694198400000-0',
+			downloaderId: 'wis2:centre-a:1694198400',
+			href: 'https://a.example.com/dir1/data.grib2',
+			topic: 'origin/a/wis2/centre-a/foo',
+			workQueueEntryId: '1694198400000-0',
+		};
+		const entryB: AriaStartEntry = {
+			id: '1694198400000-1',
+			downloaderId: 'wis2:centre-b:1694198400',
+			href: 'https://b.example.com/dir2/data.grib2',
+			topic: 'origin/a/wis2/centre-b/foo',
+			workQueueEntryId: '1694198400000-1',
+		};
+
+		await startRealDownload({ store: storeA, worker: 'downloader1', aria2: aria2A, credentials: () => undefined, checkCertificate: undefined, randomStreamSuffix: () => '111111' }, entryA);
+		await startRealDownload({ store: storeB, worker: 'downloader1', aria2: aria2B, credentials: () => undefined, checkCertificate: undefined, randomStreamSuffix: () => '222222' }, entryB);
+
+		const filenameA = (callsA[0]!.options as { filename: string }).filename;
+		const filenameB = (callsB[0]!.options as { filename: string }).filename;
+		expect(filenameA).not.toBe(filenameB);
 	});
 });

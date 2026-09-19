@@ -20,7 +20,7 @@ export interface KVRecord {
 	delay: number | null;
 	/** raw.topic's 4th "/"-separated segment (index 3), or null if topic is missing or has fewer than 4 segments. */
 	centreId: string | null;
-	/** raw.topic's segments 6-8 (index 5..7 inclusive), joined by "/", or null if topic is missing or has fewer than 6 segments. */
+	/** raw.topic's segments 6-8 (index 5..7 inclusive), joined by "/"; falls back to segment 5 alone (index 4, "data"/"metadata") when the topic doesn't even reach level 6; null only if topic is missing or has fewer than 5 segments. */
 	subtopic: string | null;
 	/** raw[`src:${k}`] for whichever raw field's value is a string starting with "complete" (the FIRST such field found in object-key iteration order), or null if none found or that sibling field is missing/falsy. */
 	source: string | null;
@@ -46,7 +46,25 @@ export function transformKV(flatPayload: readonly unknown[]): KVRecord {
 	if (typeof raw.topic === 'string') {
 		const parts = raw.topic.split('/');
 		if (parts.length >= 4) centreId = parts[3]!;
-		if (parts.length >= 6) subtopic = parts.slice(5, 8).join('/');
+		// A well-formed WNM topic reaches level 7+ (origin/.../wis2/<centre-id>/data/
+		// <l6>/<l7>/...), so parts.slice(5, 8) normally yields 1-3 segments (levels
+		// 6-8; level 9, index 8, is deliberately excluded to bound Prometheus label
+		// cardinality -- see kv.test.ts). When levels 7-9 are absent, slice(5, 8)
+		// already degrades naturally to level 6 alone (parts.length === 6 or 7).
+		// 2026-09-19, the maintainer, on a real deployment showing topic="null" in
+		// monitor_wis2_gc_volume_download_total (Prometheus label rendering of the
+		// `null` this used to produce -- see stats.ts's coerceKeySegment): "if 7-9
+		// levels gives nothing, put level 6 in the metrics" -- but the observed
+		// "null" cases actually have parts.length === 5 (topic ends at "data"/
+		// "metadata", e.g. an integrity_fail/download_error record -- see this
+		// file's last test), i.e. level 6 itself is missing, a case the >= 6 gate
+		// below left as null. Falling back one level further, to level 5 alone,
+		// covers that case too instead of only the one already handled for free.
+		if (parts.length >= 6) {
+			subtopic = parts.slice(5, 8).join('/');
+		} else if (parts.length === 5) {
+			subtopic = parts[4]!;
+		}
 	}
 
 	let source: string | null = null;

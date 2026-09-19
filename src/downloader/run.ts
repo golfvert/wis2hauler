@@ -186,6 +186,7 @@ export async function runDownloader(
 				stream.on('end', () => resolve(hash.digest('base64')));
 			}),
 		isUnsupportedHashMethod: (err) => err instanceof Error && /digest method not supported|invalid digest|is not supported/i.test(err.message),
+		now: () => Date.now(),
 		uploadToS3: async (_bucket, objectName, filepath) => {
 			if (!s3Client) throw new Error('uploadToS3 called without downloader.s3access configured');
 			await s3Client.write(objectName, Bun.file(filepath));

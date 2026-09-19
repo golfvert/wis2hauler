@@ -1,5 +1,9 @@
 import { describe, expect, test } from 'bun:test';
-import { formatDateDir, formatTopicDir, HashReadError, RenameIoError, runHash, type HashConfig, type HashIO } from '../hash';
+import { formatDateDir, formatTopicDir, HashReadError, RenameIoError, runHash, withTimestampSuffix, type HashConfig, type HashIO } from '../hash';
+
+// Fixed, deterministic stand-in for Date.now() -- see HashIO.now()'s doc
+// comment in hash.ts. Arbitrary value, just has to be stable across tests.
+const FIXED_NOW_MS = 1700000000123;
 
 class UnsupportedMethodError extends Error {}
 class StreamReadError extends Error {}
@@ -58,6 +62,9 @@ function makeIo(overrides: Partial<HashIO> = {}): HashIO & { warnings: string[];
 		isUnsupportedHashMethod(err) {
 			return err instanceof UnsupportedMethodError;
 		},
+		now() {
+			return FIXED_NOW_MS;
+		},
 		async uploadToS3(bucket, objectName) {
 			calls.push(`s3:${bucket}/${objectName}`);
 		},
@@ -88,6 +95,21 @@ describe('formatDateDir / formatTopicDir', () => {
 
 	test('formatTopicDir drops the first 3 "/"-segments of the topic', () => {
 		expect(formatTopicDir('origin/a/wis2/de-dwd/data/core/weather')).toBe('de-dwd/data/core/weather');
+	});
+});
+
+describe('withTimestampSuffix', () => {
+	test('inserts _<ms> right before the extension', () => {
+		expect(withTimestampSuffix('data.grib2', 1758270000123)).toBe('data_1758270000123.grib2');
+	});
+	test('a multi-dot filename splits at the LAST dot only', () => {
+		expect(withTimestampSuffix('archive.tar.gz', 123)).toBe('archive.tar_123.gz');
+	});
+	test('no extension -> appended at the end', () => {
+		expect(withTimestampSuffix('README', 123)).toBe('README_123');
+	});
+	test('a dotfile with no other dot (dotIndex is 0) -> appended at the end, not split on the leading dot', () => {
+		expect(withTimestampSuffix('.gitignore', 123)).toBe('.gitignore_123');
 	});
 });
 
@@ -135,10 +157,30 @@ describe('runHash', () => {
 		expect(io.calls).toContain('rename:/downloads/file.dat->/downloads/2024/01/15/10/file.dat');
 	});
 
-	test('renameToDate collision at the destination -> FAIL, original file removed', async () => {
+	test('renameToDate collision at the destination -> disambiguated with a millisecond timestamp, HASH_OK', async () => {
 		const io = makeIo();
 		// pre-seed the destination so it "already exists"
 		io.exists = (p: string) => p === '/downloads/2024/01/15/10/file.dat' || p === '/downloads/file.dat';
+		const config: HashConfig = { ...noRenameConfig, renameToDate: true };
+		const result = await runHash(
+			{ method: null, hash: 0, filepath: '/downloads/file.dat', wnmpubtime: '2024-01-15T10:23:45.678Z' },
+			config,
+			io,
+		);
+		const disambiguated = `/downloads/2024/01/15/10/${withTimestampSuffix('file.dat', FIXED_NOW_MS)}`;
+		expect(result.outcome).toBe('HASH_OK');
+		expect(result.uri).toBe(disambiguated);
+		expect(io.calls).toContain(`rename:/downloads/file.dat->${disambiguated}`);
+		// The original file is renamed away, never deleted, on an ordinary collision.
+		expect(io.calls.some((c) => c.startsWith('unlinkSync:'))).toBe(false);
+	});
+
+	test('renameToDate collision even on the disambiguated name (pathological) -> FAIL, original file removed', async () => {
+		const io = makeIo();
+		const disambiguated = `/downloads/2024/01/15/10/${withTimestampSuffix('file.dat', FIXED_NOW_MS)}`;
+		// Pre-seed BOTH the plain destination and the timestamp-disambiguated
+		// one, so even the fallback name is already taken.
+		io.exists = (p: string) => p === '/downloads/2024/01/15/10/file.dat' || p === disambiguated || p === '/downloads/file.dat';
 		const config: HashConfig = { ...noRenameConfig, renameToDate: true };
 		const result = await runHash(
 			{ method: null, hash: 0, filepath: '/downloads/file.dat', wnmpubtime: '2024-01-15T10:23:45.678Z' },
@@ -176,6 +218,21 @@ describe('runHash', () => {
 		);
 		expect(result.outcome).toBe('HASH_OK');
 		expect(result.uri).toBe('/downloads/de-dwd/data/core/weather/file.dat');
+	});
+
+	test('renameToTopic collision at the destination -> disambiguated with a millisecond timestamp, HASH_OK', async () => {
+		const io = makeIo();
+		io.exists = (p: string) => p === '/downloads/de-dwd/data/core/weather/file.dat' || p === '/downloads/file.dat';
+		const config: HashConfig = { ...noRenameConfig, renameToTopic: true };
+		const result = await runHash(
+			{ method: null, hash: 0, filepath: '/downloads/file.dat', wnmtopic: 'origin/a/wis2/de-dwd/data/core/weather' },
+			config,
+			io,
+		);
+		const disambiguated = `/downloads/de-dwd/data/core/weather/${withTimestampSuffix('file.dat', FIXED_NOW_MS)}`;
+		expect(result.outcome).toBe('HASH_OK');
+		expect(result.uri).toBe(disambiguated);
+		expect(io.calls.some((c) => c.startsWith('unlinkSync:'))).toBe(false);
 	});
 
 	test('rename flag set but the matching field (wnmpubtime/wnmtopic) is missing -> not renamed, warns, still HASH_OK', async () => {

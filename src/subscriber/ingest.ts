@@ -5,17 +5,23 @@
 // 2s per-message delay] -> rbe -> Black & GRep (blacklist) -> Save
 // (SETNX dedup key/value) -> SET -> "OK ?" -> Prepare -> XADD.
 //
-// Two behaviors the original's GB1/GB2 chains do NOT share, preserved
-// here exactly rather than unified:
-//   - GB2 delays every message 2s (a *fixed per-message* delay node --
-//     independent per message, not a queue/stagger) before rbe even
-//     sees it; GB1 has no such delay. See run.ts's preDelayMs.
-//   - GB1's blacklist ("Black & GRep", b1e017aa86e0e4b3) appends
-//     "+/+/+/+/+/recommended/#" to the configured blacklist when
-//     global-cache mode is on; GB2's ("Black &. GRep", 53702cb0bee173b8)
-//     does not -- it only ever uses the configured blacklist as-is.
-//     Ported as the same asymmetry via IngestDeps.appendRecommendedRule,
-//     computed once per connection in run.ts.
+// One behavior the original's GB1/GB2 chains do NOT share, preserved
+// here exactly rather than unified: GB2 delays every message 2s (a
+// *fixed per-message* delay node -- independent per message, not a
+// queue/stagger) before rbe even sees it; GB1 has no such delay. See
+// run.ts's preDelayMs.
+//
+// A SECOND asymmetry used to live here too -- GB1's blacklist ("Black
+// & GRep", b1e017aa86e0e4b3) appended RECOMMENDED_TOPIC_BLACKLIST_RULE
+// when global-cache mode was on; GB2's ("Black &. GRep",
+// 53702cb0bee173b8) did not. FIXED 2026-09-19 (the maintainer, after
+// this was surfaced as a likely bug rather than a deliberate design):
+// no rationale for the asymmetry was ever found anywhere in the
+// original flow or this port, and the two Node-RED node names differ
+// by only a stray typo ("&" vs "&."), the telltale sign of an
+// incomplete copy-paste rather than an intentional divergence. The
+// rule is now applied identically to both connections -- see run.ts's
+// single effectiveBlacklist, which both GB1 and GB2 now share.
 import type { Wnm } from '../wis2/wnm.ts';
 import { isBlacklisted, stripReplayPrefix } from '../wis2/topic-match.ts';
 import type { SubscriberStore } from './store.ts';
@@ -24,14 +30,39 @@ import type { SourceLogger } from '../logging/logger.ts';
 // "Save": [ "wis2gc:subscriber:wnmid:" & id, true, "NX", "EX", 900 ].
 export const MESSAGE_ID_DEDUP_TTL_SECONDS = 900;
 
-// The WIS2-recommended-topic exemption GB1 adds to its blacklist when
-// global-cache mode is on (flows.json's b1e017aa86e0e4b3).
+// The WIS2-recommended-topic exemption, appended to BOTH GB1's and
+// GB2's blacklist when global-cache mode is on (flows.json's
+// b1e017aa86e0e4b3 -- GB1-only there; see this file's header comment
+// for why the port made this symmetric instead of preserving that).
 export const RECOMMENDED_TOPIC_BLACKLIST_RULE = '+/+/+/+/+/recommended/#';
+
+// NOT a port -- added 2026-09-19 after a real report that
+// ../config/topics.ts's enforceCoreCacheRule (since removed, see that
+// file's own comment) was a no-op against anything but the exact
+// literal string 'origin/.../core/...' in the config: a whitelist
+// entry as broad as 'origin/a/wis2/#' subscribed this replica to core
+// data straight from origin regardless, and nothing downstream ever
+// re-checked a message's ACTUAL topic once it arrived -- it downloaded
+// completely normally. Per the WIS2 spec, only a Global Cache
+// (global.global-cache: true) is meant to pull 'core' data or
+// dataset-discovery 'metadata' notifications directly from origin, in
+// order to republish them under cache/... for everyone else; every
+// other replica should only ever see 'recommended' data straight from
+// origin. These two patterns are appended to every subscriber
+// connection's blacklist below (see run.ts) whenever global-cache mode
+// is off, so isBlacklisted() -- which runs against each message's
+// real, received topic, not the configured whitelist string -- drops
+// them regardless of how broadly the whitelist itself is written. The
+// whitelist/blacklist as configured are no longer auto-rewritten at
+// all; this is the sole enforcement now, and it's logged once at
+// SUBSCRIBER startup so it's never a silent surprise.
+export const ORIGIN_CORE_BLACKLIST_RULE = 'origin/+/+/+/data/core/#';
+export const ORIGIN_METADATA_BLACKLIST_RULE = 'origin/+/+/+/metadata/#';
 
 export interface IngestDeps {
 	store: SubscriberStore;
 	queue: string;
-	/** The connection's configured blacklist, already including RECOMMENDED_TOPIC_BLACKLIST_RULE if this connection (GB1) and global-cache mode both call for it -- see run.ts. */
+	/** The connection's effective blacklist -- the configured blacklist plus RECOMMENDED_TOPIC_BLACKLIST_RULE (global-cache mode on) or ORIGIN_CORE_BLACKLIST_RULE/ORIGIN_METADATA_BLACKLIST_RULE (global-cache mode off), identically for GB1 and GB2 -- see run.ts's single effectiveBlacklist. */
 	blacklist: readonly string[];
 	/** e.g. "GB1" / "GB2" -- for log/debug lines only. */
 	sourceLabel: string;

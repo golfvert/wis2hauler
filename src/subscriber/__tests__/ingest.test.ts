@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { createIngestHandler, createIngestStats, type IngestDeps } from '../ingest.ts';
+import { createIngestHandler, createIngestStats, ORIGIN_CORE_BLACKLIST_RULE, ORIGIN_METADATA_BLACKLIST_RULE, type IngestDeps } from '../ingest.ts';
 import { FakeStore } from './fakes.ts';
 import type { SourceLogger } from '../../logging/logger.ts';
 
@@ -92,6 +92,52 @@ describe('createIngestHandler', () => {
 		expect(store.rawStream).toHaveLength(0);
 		expect(store.messageIds.size).toBe(0); // never got as far as dedup
 		expect(stats.blacklisted).toBe(1);
+	});
+
+	// ORIGIN_CORE_BLACKLIST_RULE / ORIGIN_METADATA_BLACKLIST_RULE (see
+	// ingest.ts's own doc comment, wired in run.ts): the message-ingest-time
+	// safeguard that replaced the old config-time whitelist rewrite (see
+	// ../../config/topics.ts's removal comment). The key property under
+	// test here is that this runs against the topic the message actually
+	// ARRIVED on -- so it drops these messages even though the ingest
+	// handler doesn't otherwise care what the whitelist was subscribed
+	// to (this handler only ever sees what a real broker delivered).
+	describe('the origin core/metadata safeguard (global-cache mode off)', () => {
+		const blacklist = [ORIGIN_CORE_BLACKLIST_RULE, ORIGIN_METADATA_BLACKLIST_RULE];
+
+		test('drops a core-data notification received straight from origin', async () => {
+			const store = new FakeStore();
+			const stats = createIngestStats();
+			const handler = createIngestHandler(baseDeps(store, { blacklist }), stats);
+
+			await handler('origin/a/wis2/fr-meteofrance/data/core/weather/surface', Buffer.from(wnm('msg-core')));
+
+			expect(store.rawStream).toHaveLength(0);
+			expect(stats.blacklisted).toBe(1);
+		});
+
+		test('drops a metadata notification received straight from origin', async () => {
+			const store = new FakeStore();
+			const stats = createIngestStats();
+			const handler = createIngestHandler(baseDeps(store, { blacklist }), stats);
+
+			await handler('origin/a/wis2/fr-meteofrance/metadata', Buffer.from(wnm('msg-metadata')));
+
+			expect(store.rawStream).toHaveLength(0);
+			expect(stats.blacklisted).toBe(1);
+		});
+
+		test('still ingests recommended data from origin, and core data already republished under cache/...', async () => {
+			const store = new FakeStore();
+			const stats = createIngestStats();
+			const handler = createIngestHandler(baseDeps(store, { blacklist }), stats);
+
+			await handler('origin/a/wis2/fr-meteofrance/data/recommended/x', Buffer.from(wnm('msg-recommended')));
+			await handler('cache/a/wis2/fr-meteofrance/data/core/weather/surface', Buffer.from(wnm('msg-cache-core')));
+
+			expect(store.rawStream).toHaveLength(2);
+			expect(stats.blacklisted).toBe(0);
+		});
 	});
 
 	test('blacklist matching strips the replay/a/wis2/... wrapper first', async () => {

@@ -21,17 +21,41 @@
 //
 // Wired field-for-field against nodered/flows.json's Subscriber tab:
 // GB2 gets a fixed 2s per-message ingest delay GB1 doesn't (see
-// ingest.ts), GB1's blacklist gets an extra global-cache exemption
-// rule GB2's doesn't (also ingest.ts), and the consumer loop polls
-// (not blocks) once a second starting from the very beginning of the
-// raw stream, matching the original's "Poll" inject node + "Read" ->
-// "XREAD" (no BLOCK) chain and the Setup tab's lastMqttId = "0-0"
-// initialization.
+// ingest.ts), and the consumer loop polls (not blocks) once a second
+// starting from the very beginning of the raw stream, matching the
+// original's "Poll" inject node + "Read" -> "XREAD" (no BLOCK) chain
+// and the Setup tab's lastMqttId = "0-0" initialization.
+//
+// The original ALSO had GB1's blacklist gain an extra global-cache
+// exemption rule GB2's didn't -- an asymmetry with no documented
+// rationale anywhere, traced to a stray typo between two near-duplicate
+// Node-RED node names ("Black & GRep" vs "Black &. GRep"), the
+// signature of an incomplete copy-paste rather than intentional
+// design. FIXED 2026-09-19 (the maintainer, after this was flagged and
+// confirmed to have no rationale): both connections now use the exact
+// same effectiveBlacklist below, computed once and shared -- this is a
+// deliberate departure from the literal port, not an oversight.
+//
+// NOT a port, added 2026-09-19 (same day, separate change): both
+// connections also get ingest.ts's ORIGIN_CORE_BLACKLIST_RULE /
+// ORIGIN_METADATA_BLACKLIST_RULE appended whenever global-cache mode
+// is off -- see that file's doc comment for why (replaces the old
+// config-time whitelist/blacklist rewrite, which a broad wildcard
+// subscription could bypass entirely). Folded into the same
+// effectiveBlacklist below, so GB1 and GB2 are symmetric on both
+// safeguards now, not just the new one.
 import type { Config } from '../config/schema.ts';
 import type { DebugController } from '../debug.ts';
 import { createRedisConnection, IoredisStore } from '../redis/ioredis-store.ts';
 import type { MqttLike } from '../mqtt/types.ts';
-import { createIngestHandler, createIngestStats, defaultSleep, RECOMMENDED_TOPIC_BLACKLIST_RULE } from './ingest.ts';
+import {
+	createIngestHandler,
+	createIngestStats,
+	defaultSleep,
+	RECOMMENDED_TOPIC_BLACKLIST_RULE,
+	ORIGIN_CORE_BLACKLIST_RULE,
+	ORIGIN_METADATA_BLACKLIST_RULE,
+} from './ingest.ts';
 import { runConsumerLoop, type ConsumerDeps } from './consumer.ts';
 import { createSourceLogger, type LevelGate } from '../logging/logger.ts';
 import type { LogSink } from '../logging/sink.ts';
@@ -63,8 +87,35 @@ export async function runSubscriber(
 
 	const whitelist = sub.mqtt.whitelist;
 	const baseBlacklist = sub.mqtt.blacklist ?? [];
-	// GB1 only -- see ingest.ts's header comment on the GB1/GB2 blacklist asymmetry.
-	const gb1Blacklist = globalCacheMode ? [...baseBlacklist, RECOMMENDED_TOPIC_BLACKLIST_RULE] : baseBlacklist;
+	// One shared blacklist for BOTH GB1 and GB2 -- see this file's
+	// header comment. global-cache mode on: add the recommended-topic
+	// exemption (this replica IS a Global Cache, so recommended data is
+	// meant to come in via the separate credentials-based pull path, not
+	// this broadcast subscription). global-cache mode off: add the
+	// core/metadata safeguard instead (this replica is NOT a Global
+	// Cache, so it must never pull core/metadata straight from origin --
+	// see ingest.ts's doc comment on those two constants). The two cases
+	// are mutually exclusive by construction (one gate on the same
+	// globalCacheMode), so this never applies both.
+	const effectiveBlacklist = globalCacheMode
+		? [...baseBlacklist, RECOMMENDED_TOPIC_BLACKLIST_RULE]
+		: [...baseBlacklist, ORIGIN_CORE_BLACKLIST_RULE, ORIGIN_METADATA_BLACKLIST_RULE];
+
+	// Informational, once per SUBSCRIBER startup -- not per connection --
+	// so this is never a silent behavior change: with global-cache mode
+	// off, every GB1/GB2 subscription (however broadly its whitelist is
+	// written) will still never see origin/.../data/core/... or
+	// origin/.../metadata/... notifications; only origin/.../data/
+	// recommended/... (and anything under cache/...) gets through. The
+	// configured whitelist itself is left exactly as written -- this is
+	// no longer a config-rewrite, see ingest.ts's doc comment on why.
+	if (!globalCacheMode) {
+		log.log(
+			'SUBSCRIBER: global.global-cache is not set -- ignoring any origin/.../data/core/... or origin/.../metadata/... ' +
+				'notification regardless of the configured whitelist (only origin/.../data/recommended/... and cache/... are processed); ' +
+				'the whitelist/blacklist themselves are not being modified',
+		);
+	}
 
 	// Shared across both GB1/GB2 handlers below -- see ingest.ts's own
 	// IngestDeps.receivedLog doc comment; each connection's own line
@@ -80,7 +131,7 @@ export async function runSubscriber(
 			{
 				store,
 				queue,
-				blacklist: i === 0 ? gb1Blacklist : baseBlacklist,
+				blacklist: effectiveBlacklist,
 				sourceLabel: label,
 				preDelayMs: i === 0 ? 0 : GB2_INGEST_DELAY_MS,
 				sleep: defaultSleep,

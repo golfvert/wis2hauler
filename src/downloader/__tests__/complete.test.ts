@@ -23,6 +23,7 @@ function makeHashIo(overrides: Partial<HashIO> = {}): HashIO {
 		unlinkAsync: async () => {},
 		hashFileBase64: async () => 'expected-digest',
 		isUnsupportedHashMethod: () => false,
+		now: () => 1700000000000,
 		uploadToS3: async () => {},
 		warn: () => {},
 		error: () => {},

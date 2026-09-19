@@ -85,7 +85,27 @@ export interface AriaStartDeps {
 
 export async function startRealDownload(deps: AriaStartDeps, entry: AriaStartEntry): Promise<void> {
 	const streamId = `${entry.id}-${deps.randomStreamSuffix()}`;
-	const filename = `${entry.downloaderId.split(':').pop()}_${entry.href.split('/').pop()}`;
+	// NOT a port -- the original (and this port until 2026-09-19) built
+	// this from `${downloaderId's content-derived tail}_${href's basename}`,
+	// which is NOT guaranteed unique: computeDownloaderId's tail falls
+	// back to just the WNM's pubtime digits whenever there's no integrity
+	// block, and only the href's basename (not its full path) is used --
+	// so two genuinely different files (different centres, different
+	// source subdirectories) can land on the exact same aria2 `out` path.
+	// That matters a lot more than it would with stock aria2: the
+	// deployed image (golfvert/aria2, per its entrypoint.sh) sets
+	// allow-overwrite=true and auto-file-renaming=false by DEFAULT
+	// (opposite of upstream aria2's own defaults), and the Deployment
+	// repo's compose file doesn't override either -- so a same-name
+	// collision here isn't rejected or renamed by aria2, it's a SILENT
+	// overwrite on disk, possibly while the first download is still being
+	// written or hashed. Using streamId (already unique per attempt --
+	// entry.id + a random suffix) instead removes the collision
+	// possibility at the source, regardless of aria2's overwrite
+	// behavior. Per the maintainer, 2026-09-19: "avoid collision in
+	// aria2, in rename and in content" -- this is the aria2 half; see
+	// hash.ts (rename) and decode-write.ts (content) for the other two.
+	const filename = `${streamId}_${entry.href.split('/').pop()}`;
 
 	// "Aria" -> HSET (register) + Expire -> SET (expire), fanned from the
 	// same change node in the original -- fired concurrently here.

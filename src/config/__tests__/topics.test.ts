@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { isValidMqttTopic, isValidCredentialTopic, isValidTopicPattern, enforceCoreCacheRule } from '../topics.ts';
+import { isValidMqttTopic, isValidCredentialTopic, isValidTopicPattern } from '../topics.ts';
 
 describe('isValidMqttTopic', () => {
 	test('accepts a well-formed WIS2 data topic', () => {
@@ -45,58 +45,10 @@ describe('isValidTopicPattern', () => {
 	});
 });
 
-describe('enforceCoreCacheRule', () => {
-	test('rewrites origin/.../core/... to cache/... and logs, when not a Global Cache', () => {
-		const messages: string[] = [];
-		const result = enforceCoreCacheRule(
-			['origin/a/wis2/fr-meteofrance/data/core/weather/surface'],
-			false,
-			(m) => messages.push(m),
-		);
-		expect(result).toEqual(['cache/a/wis2/fr-meteofrance/data/core/weather/surface']);
-		expect(messages).toHaveLength(1);
-		expect(messages[0]).toContain("'origin/a/wis2/fr-meteofrance/data/core/weather/surface'");
-		expect(messages[0]).toContain("'cache/a/wis2/fr-meteofrance/data/core/weather/surface'");
-	});
-
-	test('leaves origin/.../core/... alone when this replica IS a Global Cache', () => {
-		const messages: string[] = [];
-		const result = enforceCoreCacheRule(
-			['origin/a/wis2/fr-meteofrance/data/core/weather/surface'],
-			true,
-			(m) => messages.push(m),
-		);
-		expect(result).toEqual(['origin/a/wis2/fr-meteofrance/data/core/weather/surface']);
-		expect(messages).toEqual([]);
-	});
-
-	test('leaves a non-core topic under origin untouched', () => {
-		const result = enforceCoreCacheRule(['origin/a/wis2/fr-meteofrance/data/recommended/x'], false, () => {});
-		expect(result).toEqual(['origin/a/wis2/fr-meteofrance/data/recommended/x']);
-	});
-
-	test('leaves a topic already under cache untouched', () => {
-		const result = enforceCoreCacheRule(['cache/a/wis2/fr-meteofrance/data/core/x'], false, () => {});
-		expect(result).toEqual(['cache/a/wis2/fr-meteofrance/data/core/x']);
-	});
-
-	test('does not guess at wildcards -- a "+" at level 1 or level 6 is left alone', () => {
-		const result = enforceCoreCacheRule(
-			['+/a/wis2/fr-meteofrance/data/core/x', 'origin/a/wis2/fr-meteofrance/data/+/x'],
-			false,
-			() => {},
-		);
-		expect(result).toEqual(['+/a/wis2/fr-meteofrance/data/core/x', 'origin/a/wis2/fr-meteofrance/data/+/x']);
-	});
-
-	test('applies identically to a blacklist-style pattern (with a trailing #)', () => {
-		const messages: string[] = [];
-		const result = enforceCoreCacheRule(['origin/a/wis2/fr-meteofrance/data/core/#'], false, (m) => messages.push(m));
-		expect(result).toEqual(['cache/a/wis2/fr-meteofrance/data/core/#']);
-		expect(messages).toHaveLength(1);
-	});
-
-	test('is a no-op on an empty list', () => {
-		expect(enforceCoreCacheRule([], false, () => {})).toEqual([]);
-	});
-});
+// enforceCoreCacheRule (config-time whitelist/blacklist string rewrite)
+// was removed 2026-09-19 -- see topics.ts's own removal comment. The
+// WIS2 core/cache protection it used to provide is now covered by
+// ../../subscriber/ingest.ts's ORIGIN_CORE_BLACKLIST_RULE /
+// ORIGIN_METADATA_BLACKLIST_RULE tests instead, since that's where the
+// real enforcement now lives (against each message's actual received
+// topic, not the configured whitelist string).

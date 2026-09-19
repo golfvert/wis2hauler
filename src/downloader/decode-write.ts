@@ -97,12 +97,26 @@ export function runDecodeWrite(entry: DecodeWriteEntry, wnmJson: string, ariaDow
 		// fast path and the real-aria2 path can never write to two
 		// different places. See schema.ts's doc comment on the field.
 		const ariaDir = ariaDownloadDir;
-		const filename = `${entry.downloaderId.split(':').pop()}_${entry.href.split('/').pop()}`;
+		// gid minted here (not after the write) so its already-unique
+		// value (entry.id + a random suffix -- same shape as
+		// aria-start.ts's streamId) can also disambiguate the filename.
+		// NOT a port -- the original (and this port until 2026-09-19) built
+		// the filename from `${downloaderId's content-derived tail}_${href's
+		// basename}` alone, which two DIFFERENT WNMs can collide on (see
+		// aria-start.ts's matching comment for exactly why), and this
+		// function -- unlike aria2 -- has never checked for an existing
+		// file at all: writeFileSync just truncates and overwrites
+		// whatever's already there. Folding the synthetic gid into the
+		// filename removes the collision at the source instead. Per the
+		// maintainer, 2026-09-19: "avoid collision in aria2, in rename and
+		// in content" -- this is the content half; see aria-start.ts
+		// (aria2) and hash.ts (rename) for the other two.
+		const gid = `${entry.id}-${io.randomStreamSuffix()}`;
+		const filename = `${gid}_${entry.href.split('/').pop()}`;
 		const filepath = io.join(ariaDir, filename);
 		io.mkdirRecursive(io.dirname(filepath));
 		io.writeFileSync(filepath, buffer);
 
-		const gid = `${entry.id}-${io.randomStreamSuffix()}`;
 		return { kind: 'written', gid, filename, filepath };
 	} catch (err) {
 		io.warn(`Embedded content processing error, falling back to href (${entry.id}): ${err instanceof Error ? err.message : String(err)}`);
