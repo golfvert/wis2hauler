@@ -175,8 +175,8 @@ After the fixes above, some `data_id`s were still reported missing (fewer than b
 
 | Stage | Logger (source name) | Log file (when `to: "file"`) | Fires |
 | --- | --- | --- | --- |
-| `ingest.ts`, arrival | `Received` | `wis2gc-received-*.debug.log` | Unconditionally, for every message that arrives on the wire — before any parsing, so it never has a `data_id`. This is the ground truth for "did anything arrive on this topic at all". |
-| `ingest.ts`, per-message outcome | `Filter` | `wis2gc-filter-*.debug.log` | For every one of the five ingest-side outcomes: `unchanged` (rbe), `blacklisted`, `malformed`, `duplicate` (repeat `wnm.id`), `ingested`. Carries `wnmId`/`dataId` whenever the payload was parseable enough to extract them. |
+| `ingest.ts`, arrival | `Received` | `wis2gc-received-*.debug.log` | Unconditionally, for every message that arrives on the wire — before any parsing. This is the ground truth for "did anything arrive on this topic at all". Carries `wnmId`/`dataId` too (added same day — see below), whenever the payload was parseable enough to extract them, so it's no longer just a topic/byte-count firehose. |
+| `ingest.ts`, per-message outcome | `Filter` | `wis2gc-filter-*.debug.log` | For every one of the five ingest-side outcomes: `unchanged` (rbe), `blacklisted`, `malformed`, `duplicate` (repeat `wnm.id`), `ingested`. Carries `wnmId`/`dataId` *and the full parsed `wnm`* (added 2026-09-20 — see below) whenever the payload was parseable enough. |
 | `consumer.ts`, per-notification decision | `Decision` | `wis2gc-decision-*.debug.log` | For every classified stream entry's outcome: `ignore` (added 2026-09-20 — see below), `already-complete`, `download`, `wait`, `drop`, `publish-only`. Carries `dataId`/`wnmId`/`pubtime`/`href`/`action`, and for `ignore`, the specific `reason` (from `classifyTopic`). |
 | `consumer.ts`, data_id lineage | `Duplicate` | `wis2gc-duplicate-*.info.log` | Only when a data_id-reuse-without-`rel=update` duplicate is caught (see the `weight-sources` section above's neighbor, `lineage.ts`). Carries `dataId`/`wnmId`/`pubtime`/`reason`. |
 
@@ -191,6 +191,24 @@ For a dedicated debug build/deployment used specifically to chase a reported-mis
 **Is this safe to run everywhere, not just a special debug build?** Yes. `Received`/`Decision`/`Duplicate` were already unconditional before this feature existed — they build a small object and hand it to the logger regardless of level, and the logger itself does one cheap boolean check before deciding whether to actually write. `Filter` follows the same rule for three of its five outcomes (`duplicate`/`ingested`/`malformed`), since the message is already parsed by that point for the pipeline's own sake anyway — logging it is free.
 
 The two outcomes that need care are `unchanged` (rbe) and `blacklisted`: they run *before* this role's own parse, so producing `wnmId`/`dataId` for them means an extra `JSON.parse` of a payload that's about to be discarded regardless — real, avoidable cost if paid on every message at a normal (`info`) log level, on exactly the kind of high-volume path that caused the 2026-09-20 production incident above. That extra parse only happens when the logger itself reports that `global.log.level` (or a per-role override) actually admits `debug` — at any other level it's a single boolean check, nothing more. In short: this is the normal build, safe to run on every replica; the only thing that changes at `log.level: debug` is that you get the full trace, not that anything behaves differently below it.
+
+### `Received` gained `data_id` too (2026-09-20, same day)
+
+Originally `Received` logged only `{source, topic, bytes}` — deliberately, since it fires before any parsing at all, ahead of every filter, so it's the ground truth for "did this arrive on the wire." In practice that made it close to useless for chasing a specific missing `data_id`: a topic string never contains one, so the one file guaranteed to have a line for every message ever received couldn't be grepped for the message you actually cared about (per the maintainer, plainly: "typically the content of wis2gc-received-*.debug.log is useless").
+
+Fixed the same way as `Filter`'s `unchanged`/`blacklisted` outcomes above: `Received` now also carries `wnmId`/`dataId`, extracted with the same best-effort, throws-nothing parse — but only when `receivedLog.debugEnabled()` says the configured level actually admits `debug`. This call site fires on literally every message received, unconditionally, at any log level — the hottest path this whole effort touches — so an unconditional extra `JSON.parse` here would have been worse than the `Filter` case, not equivalent to it. Below `debug`, it costs one boolean check; at `debug`, every `Received` line is now groupable by `data_id` like everything else.
+
+### `Filter` logs the full WNM, not just its extracted ids (2026-09-20, same day)
+
+Immediately after the `Received` fix above, the maintainer pushed back on the whole *extraction* approach it (and `Filter`) used: *"What should be logged is the WNM (probably full content) after deduplication. Not that 'extract'..."* Fair — `wnmId`/`dataId` alone can confirm a message existed, but can't explain *why* it was decided the way it was (a malformed notification missing an expected field, two genuinely different messages colliding on `wnm.id`, and so on); only the notification's own content answers that.
+
+`Filter`'s five outcomes now each carry a `wnm` field — the actual parsed object, not a two-field summary of it — with the id extraction kept alongside it purely as a convenience for grepping/structured queries:
+
+- **`duplicate` and `ingested`** (the two outcomes that fire strictly *after* this handler's own wnm.id dedup check has run) get this at **zero extra cost**: by the time either outcome is decided, `ingest.ts` has already parsed the payload into `wnm` for its own real control flow (the dedup check itself needs it), so handing that same in-memory object to `filterLog.debug()` adds no extra parse, at any log level. This is the literal "after deduplication" case the maintainer asked for.
+- **`unchanged` and `blacklisted`** piggyback on the same `filterLog.debugEnabled()`-gated extra parse these two outcomes already needed (see above) — now that parse's result is kept whole rather than reduced to two fields, at no additional cost beyond what was already being paid once `debug` is the configured level.
+- **`malformed`** already parsed unconditionally (a rare, error-path call, never the routine case) — its result is attached too, when the isolated parse got far enough to produce an object at all. A payload that isn't even valid JSON still has no `wnm` to attach, same as before.
+
+Same safety story as everywhere else in this effort: nothing here changes what gets parsed or when — it only changes what's done with an object this code was already going to hold in memory regardless.
 
 ### The same tracing, extended through DOWNLOADER (2026-09-20)
 

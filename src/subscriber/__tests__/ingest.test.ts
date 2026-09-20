@@ -239,7 +239,44 @@ describe('createIngestHandler', () => {
 
 			await handler('origin/a/wis2/fr-meteofrance/data/foo', payload);
 
-			expect(debugCalls).toEqual([{ source: 'GB2', topic: 'origin/a/wis2/fr-meteofrance/data/foo', bytes: payload.length }]);
+			expect(debugCalls).toEqual([{ source: 'GB2', topic: 'origin/a/wis2/fr-meteofrance/data/foo', bytes: payload.length, wnmId: 'msg-recv-1', dataId: 'x' }]);
+		});
+
+		// 2026-09-20 (NOT a port): the maintainer, after living with this
+		// file: "typically the content of wis2gc-received-*.debug.log is
+		// useless" -- true before this fix, since {source, topic, bytes}
+		// alone can't be grepped for a specific missing data_id (a topic
+		// string never contains one). Fixed the same way as filterLog's
+		// unchanged/blacklisted outcomes: the extraction only runs when
+		// receivedLog.debugEnabled() says debug is the configured level --
+		// this call site fires on EVERY message, unconditionally, so it's
+		// the hottest path this whole tracing effort touches.
+		test('log.level below debug (debugEnabled: false): wnmId/dataId are omitted, no JSON.parse attempted', async () => {
+			const store = new FakeStore();
+			const stats = createIngestStats();
+			const debugCalls: Record<string, unknown>[] = [];
+			const handler = createIngestHandler(
+				baseDeps(store, { receivedLog: { info: () => {}, warn: () => {}, debug: (d) => debugCalls.push(d), debugEnabled: () => false } }),
+				stats,
+			);
+
+			await handler('origin/a/wis2/fr-meteofrance/data/foo', Buffer.from(wnm('msg-recv-nodebug')));
+
+			expect(debugCalls).toEqual([{ source: 'GB1', topic: 'origin/a/wis2/fr-meteofrance/data/foo', bytes: Buffer.from(wnm('msg-recv-nodebug')).length }]);
+		});
+
+		test('log.level: debug (debugEnabled: true): wnmId/dataId are populated', async () => {
+			const store = new FakeStore();
+			const stats = createIngestStats();
+			const debugCalls: Record<string, unknown>[] = [];
+			const handler = createIngestHandler(
+				baseDeps(store, { receivedLog: { info: () => {}, warn: () => {}, debug: (d) => debugCalls.push(d), debugEnabled: () => true } }),
+				stats,
+			);
+
+			await handler('origin/a/wis2/fr-meteofrance/data/foo', Buffer.from(wnm('msg-recv-withdebug')));
+
+			expect(debugCalls[0]).toMatchObject({ wnmId: 'msg-recv-withdebug', dataId: 'x' });
 		});
 
 		test('fires for a topic that then gets blacklisted -- this is the only place such a message is individually identifiable', async () => {
@@ -317,10 +354,39 @@ describe('createIngestHandler', () => {
 
 			await handler('origin/a/wis2/fr-meteofrance/data/foo', Buffer.from(wnm('msg-filter-1')));
 
-			expect(debugCalls).toEqual([{ source: 'GB1', topic: 'origin/a/wis2/fr-meteofrance/data/foo', wnmId: 'msg-filter-1', dataId: 'x', outcome: 'ingested' }]);
+			expect(debugCalls).toEqual([
+				{
+					source: 'GB1',
+					topic: 'origin/a/wis2/fr-meteofrance/data/foo',
+					wnmId: 'msg-filter-1',
+					dataId: 'x',
+					outcome: 'ingested',
+					wnm: JSON.parse(wnm('msg-filter-1')),
+				},
+			]);
 		});
 
-		test('a "duplicate" wnm.id logs the SAME wnmId/dataId that were ingested the first time, unconditionally', async () => {
+		// 2026-09-20 (same day, NOT a port): the maintainer, right after the
+		// receivedLog fix above, pushed back on the whole extraction approach
+		// -- "What should be logged is the WNM (probably full content) after
+		// deduplication. Not that 'extract'...". This is the direct test for
+		// that: the 'ingested' outcome (the one place a message is definitely
+		// "after deduplication") must carry the WHOLE parsed object, with
+		// fields extractIdsForLogging never touched -- not just wnm.id/
+		// properties.data_id.
+		test('an "ingested" message carries the FULL wnm, not just its extracted id fields', async () => {
+			const store = new FakeStore();
+			const stats = createIngestStats();
+			const { logger, debugCalls } = fakeReceivedLogger();
+			const handler = createIngestHandler(baseDeps(store, { filterLog: logger }), stats);
+			const fullWnm = { id: 'msg-full-1', links: [{ href: 'https://example.com/a.grib2', rel: 'canonical' }], properties: { pubtime: '2026-01-01T00:00:00Z', data_id: 'data-full-1', integrity: { method: 'sha512', value: 'abc' } } };
+
+			await handler('origin/a/wis2/fr-meteofrance/data/foo', Buffer.from(JSON.stringify(fullWnm)));
+
+			expect(debugCalls[0]!.wnm).toEqual(fullWnm);
+		});
+
+		test('a "duplicate" wnm.id logs the SAME wnmId/dataId/wnm that were ingested the first time, unconditionally', async () => {
 			const store = new FakeStore();
 			const stats = createIngestStats();
 			const { logger, debugCalls } = fakeReceivedLogger();
@@ -330,12 +396,12 @@ describe('createIngestHandler', () => {
 			await handler('origin/a/wis2/fr-meteofrance/data/bar', Buffer.from(wnm('msg-filter-dup')));
 
 			expect(debugCalls).toEqual([
-				{ source: 'GB1', topic: 'origin/a/wis2/fr-meteofrance/data/foo', wnmId: 'msg-filter-dup', dataId: 'x', outcome: 'ingested' },
-				{ source: 'GB1', topic: 'origin/a/wis2/fr-meteofrance/data/bar', wnmId: 'msg-filter-dup', dataId: 'x', outcome: 'duplicate' },
+				{ source: 'GB1', topic: 'origin/a/wis2/fr-meteofrance/data/foo', wnmId: 'msg-filter-dup', dataId: 'x', outcome: 'ingested', wnm: JSON.parse(wnm('msg-filter-dup')) },
+				{ source: 'GB1', topic: 'origin/a/wis2/fr-meteofrance/data/bar', wnmId: 'msg-filter-dup', dataId: 'x', outcome: 'duplicate', wnm: JSON.parse(wnm('msg-filter-dup')) },
 			]);
 		});
 
-		test('a "malformed" (unparseable) payload logs the parse error, with no wnmId/dataId to extract', async () => {
+		test('a "malformed" (unparseable) payload logs the parse error, with no wnmId/dataId/wnm to extract', async () => {
 			const store = new FakeStore();
 			const stats = createIngestStats();
 			const { logger, debugCalls } = fakeReceivedLogger();
@@ -347,19 +413,21 @@ describe('createIngestHandler', () => {
 			expect(debugCalls[0]!.outcome).toBe('malformed');
 			expect(debugCalls[0]!.wnmId).toBeUndefined();
 			expect(debugCalls[0]!.dataId).toBeUndefined();
+			expect(debugCalls[0]!.wnm).toBeUndefined();
 			expect(typeof debugCalls[0]!.error).toBe('string');
 		});
 
-		test('a "malformed" payload that parses but is missing wnm.id still surfaces its data_id', async () => {
+		test('a "malformed" payload that parses but is missing wnm.id still surfaces its data_id and full content', async () => {
 			const store = new FakeStore();
 			const stats = createIngestStats();
 			const { logger, debugCalls } = fakeReceivedLogger();
 			const handler = createIngestHandler(baseDeps(store, { filterLog: logger }), stats);
+			const orphan = { links: [], properties: { data_id: 'orphan-data-id' } };
 
-			await handler('origin/a/wis2/fr-meteofrance/data/foo', Buffer.from(JSON.stringify({ links: [], properties: { data_id: 'orphan-data-id' } })));
+			await handler('origin/a/wis2/fr-meteofrance/data/foo', Buffer.from(JSON.stringify(orphan)));
 
 			expect(debugCalls).toHaveLength(1);
-			expect(debugCalls[0]).toEqual(expect.objectContaining({ outcome: 'malformed', dataId: 'orphan-data-id', wnmId: undefined }));
+			expect(debugCalls[0]).toEqual(expect.objectContaining({ outcome: 'malformed', dataId: 'orphan-data-id', wnmId: undefined, wnm: orphan }));
 		});
 
 		// unchanged/blacklisted run BEFORE this handler's own JSON.parse, so
@@ -384,12 +452,12 @@ describe('createIngestHandler', () => {
 			await handler('origin/a/wis2/fr-meteofrance/data/foo', payload);
 
 			expect(debugCalls).toEqual([
-				{ source: 'GB1', topic: 'origin/a/wis2/fr-meteofrance/data/foo', wnmId: 'msg-filter-unchanged', dataId: 'x', outcome: 'ingested' },
-				{ source: 'GB1', topic: 'origin/a/wis2/fr-meteofrance/data/foo', wnmId: 'msg-filter-unchanged', dataId: 'x', outcome: 'unchanged' },
+				{ source: 'GB1', topic: 'origin/a/wis2/fr-meteofrance/data/foo', wnmId: 'msg-filter-unchanged', dataId: 'x', outcome: 'ingested', wnm: JSON.parse(wnm('msg-filter-unchanged')) },
+				{ source: 'GB1', topic: 'origin/a/wis2/fr-meteofrance/data/foo', wnmId: 'msg-filter-unchanged', dataId: 'x', outcome: 'unchanged', wnm: JSON.parse(wnm('msg-filter-unchanged')) },
 			]);
 		});
 
-		test('a "blacklisted" drop logs wnmId/dataId when filterLog has no debugEnabled() (assume yes)', async () => {
+		test('a "blacklisted" drop logs wnmId/dataId/wnm when filterLog has no debugEnabled() (assume yes)', async () => {
 			const store = new FakeStore();
 			const stats = createIngestStats();
 			const { logger, debugCalls } = fakeReceivedLogger();
@@ -399,7 +467,7 @@ describe('createIngestHandler', () => {
 			await handler('origin/a/wis2/fr-meteofrance/data/recommended/foo', Buffer.from(wnm('msg-filter-bl')));
 
 			expect(debugCalls).toEqual([
-				{ source: 'GB1', topic: 'origin/a/wis2/fr-meteofrance/data/recommended/foo', wnmId: 'msg-filter-bl', dataId: 'x', outcome: 'blacklisted' },
+				{ source: 'GB1', topic: 'origin/a/wis2/fr-meteofrance/data/recommended/foo', wnmId: 'msg-filter-bl', dataId: 'x', outcome: 'blacklisted', wnm: JSON.parse(wnm('msg-filter-bl')) },
 			]);
 		});
 
@@ -428,7 +496,7 @@ describe('createIngestHandler', () => {
 			await handler('origin/a/wis2/fr-meteofrance/data/recommended/foo', Buffer.from(wnm('msg-filter-info-level-2'))); // blacklisted -- same, skipped
 
 			expect(debugCalls).toEqual([
-				{ source: 'GB1', topic: 'origin/a/wis2/fr-meteofrance/data/foo', wnmId: 'msg-filter-info-level', dataId: 'x', outcome: 'ingested' },
+				{ source: 'GB1', topic: 'origin/a/wis2/fr-meteofrance/data/foo', wnmId: 'msg-filter-info-level', dataId: 'x', outcome: 'ingested', wnm: JSON.parse(wnm('msg-filter-info-level')) },
 			]);
 		});
 
@@ -445,7 +513,7 @@ describe('createIngestHandler', () => {
 			await handler('origin/a/wis2/fr-meteofrance/data/recommended/foo', Buffer.from(wnm('msg-filter-debug-level-2'))); // blacklisted
 
 			expect(debugCalls.map((c) => c.outcome)).toEqual(['ingested', 'unchanged', 'blacklisted']);
-			expect(debugCalls[1]).toEqual({ source: 'GB1', topic: 'origin/a/wis2/fr-meteofrance/data/foo', wnmId: 'msg-filter-debug-level', dataId: 'x', outcome: 'unchanged' });
+			expect(debugCalls[1]).toEqual({ source: 'GB1', topic: 'origin/a/wis2/fr-meteofrance/data/foo', wnmId: 'msg-filter-debug-level', dataId: 'x', outcome: 'unchanged', wnm: JSON.parse(wnm('msg-filter-debug-level')) });
 		});
 	});
 });

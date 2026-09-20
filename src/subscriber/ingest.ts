@@ -96,6 +96,17 @@ export interface IngestDeps {
 	// signal, so this is emitted at DEBUG, never info. Optional so
 	// every existing hand-built IngestDeps in this file's own tests
 	// keeps compiling without it.
+	//
+	// wnmId/dataId (2026-09-20, NOT a port): originally just
+	// `{source, topic, bytes}` -- the maintainer, after living with this
+	// file: "typically the content of wis2gc-received-*.debug.log is
+	// useless." Correct -- a topic string never contains a data_id, so
+	// the one log guaranteed to have a line for every message ever
+	// received couldn't be grepped for a specific one. See
+	// createIngestHandler's own call site for how the extraction is kept
+	// free below `log.level: debug` despite firing on every message
+	// unconditionally (this is the hottest of every call site this
+	// tracing effort touches).
 	receivedLog?: SourceLogger;
 	// NOT a port -- added 2026-09-20, alongside consumer.ts's decisionLog
 	// enrichment (see that file's ConsumerDeps.decisionLog doc comment for
@@ -168,6 +179,39 @@ export interface IngestDeps {
 	// same level policy as every other non-ported addition here. Optional
 	// so every existing hand-built IngestDeps in this file's own tests
 	// keeps compiling without it.
+	//
+	// wnm, not just wnmId/dataId (2026-09-20, same day, NOT a port): this
+	// log originally carried only the two extracted id fields above --
+	// right after living with the equally-minimal receivedLog fix for all
+	// of ten minutes, the maintainer pushed back on the whole approach:
+	// "What should be logged is the WNM (probably full content) after
+	// deduplication. Not that 'extract'...". Fair -- two bare id strings
+	// can confirm THAT a message existed, but not diagnose WHY it was
+	// treated the way it was (a malformed WNM missing an expected field, a
+	// legitimately-different message wrongly colliding on wnm.id, etc.);
+	// only the full notification answers that.
+	//
+	// The "after deduplication" half of that feedback is what makes this
+	// free rather than a repeat of the unchanged/blacklisted cost problem
+	// above: by the time the 'duplicate' or 'ingested' outcome is decided,
+	// this handler has ALREADY parsed the payload into `wnm` for its own
+	// real control flow (the wnm.id dedup check itself needs it) -- so
+	// passing that same in-memory object to filterLog.debug() below adds
+	// no extra parse, no extra work, at any log level. It costs nothing
+	// until debug is actually admitted and the sink turns it into bytes on
+	// disk (levelAdmits, in createSourceLogger's emit -- see
+	// logging/logger.ts), same as everything else here.
+	//
+	// unchanged/blacklisted/malformed also switched from returning just
+	// {wnmId, dataId} to the full parsed object where one exists (see
+	// parseForLogging below, renamed from extractIdsForLogging) -- for
+	// unchanged/blacklisted this piggybacks on the SAME debugEnabled()-
+	// gated parse that already existed for the id fields, so it's the same
+	// cost as before, just fuller content once paid for; malformed already
+	// parses unconditionally today (a rare, error-path call), and its
+	// result is now attached too, when JSON.parse got far enough to
+	// produce an object at all (a fully unparseable payload still has no
+	// `wnm` to attach -- there is nothing to log beyond the raw error).
 	filterLog?: SourceLogger;
 }
 
@@ -201,36 +245,71 @@ export const defaultSleep = (ms: number): Promise<void> => new Promise((resolve)
 export function createIngestHandler(deps: IngestDeps, stats: IngestStats): (topic: string, payload: Buffer) => Promise<void> {
 	const lastPayloadByTopic = new Map<string, string>();
 
-	// Best-effort id extraction, purely for filterLog's sake -- never
-	// throws, and its result is never fed into any control-flow decision
-	// (the real pipeline keeps working exactly as before, off raw strings/
-	// the separately-parsed `wnm` below). Returns undefined fields when the
-	// payload isn't even valid JSON, or doesn't shape up as a WNM -- there's
-	// nothing to extract in that case, and filterLog's 'malformed' call
-	// site already reports the parse error itself.
-	const extractIdsForLogging = (raw: string): { wnmId?: string; dataId?: string } => {
+	// Best-effort parse, purely for filterLog's sake -- never throws, and
+	// its result is never fed into any control-flow decision (the real
+	// pipeline keeps working exactly as before, off raw strings/the
+	// separately-parsed `wnm` below). Renamed from extractIdsForLogging
+	// (2026-09-20, same day, NOT a port): it used to return only the two
+	// extracted id fields; the maintainer, immediately after seeing that
+	// pattern applied to receivedLog too, pushed back on the whole idea --
+	// "What should be logged is the WNM (probably full content) after
+	// deduplication. Not that 'extract'...". Now returns the parsed object
+	// itself (wnmId/dataId are pulled from it at each call site below,
+	// same as they always were straight off `wnm` for the ingested/
+	// duplicate outcomes) -- callers attach the full `wnm` to their log
+	// line rather than just its id and data_id. Returns an empty object
+	// when the payload isn't even valid JSON -- there's nothing to attach
+	// in that case, and filterLog's 'malformed' call site already reports
+	// the parse error itself.
+	const parseForLogging = (raw: string): { wnm?: Partial<Wnm> } => {
 		try {
-			const parsed = JSON.parse(raw) as Partial<Wnm>;
-			return {
-				wnmId: typeof parsed?.id === 'string' ? parsed.id : undefined,
-				dataId: typeof parsed?.properties?.data_id === 'string' ? parsed.properties.data_id : undefined,
-			};
+			return { wnm: JSON.parse(raw) as Partial<Wnm> };
 		} catch {
 			return {};
 		}
 	};
 
 	return async (topic: string, payload: Buffer) => {
-		// Unconditional, before EVEN the GB2 fixed pre-delay -- as close
-		// to "the message arrived" as this handler ever gets, and ahead
-		// of every filter below (rbe/blacklist/parse/dedup) that can
+		// `raw` hoisted up here (2026-09-20, NOT a port) -- it used to be
+		// computed further down, after the pre-delay/stats bump, purely
+		// because nothing above it needed it yet. Buffer#toString('utf8')
+		// itself costs nothing extra either way (this handler always did
+		// it, unconditionally, for the real pipeline below) -- the ONLY
+		// reason to have it in hand this early is receivedLog next.
+		const raw = payload.toString('utf8');
+
+		// Unconditional CALL, before EVEN the GB2 fixed pre-delay -- as
+		// close to "the message arrived" as this handler ever gets, and
+		// ahead of every filter below (rbe/blacklist/parse/dedup) that can
 		// otherwise make a message vanish without individual trace. See
 		// this field's own doc comment (IngestDeps.receivedLog) for why.
-		deps.receivedLog?.debug({ source: deps.sourceLabel, topic, bytes: payload.length });
+		//
+		// wnmId/dataId (2026-09-20, NOT a port -- the maintainer: "the
+		// content of wis2gc-received-*.debug.log is typically useless").
+		// Fair: `{source, topic, bytes}` alone can't be grepped for a
+		// specific missing data_id at all -- data_id lives in the JSON
+		// BODY, never the topic string, so the one file guaranteed to have
+		// a line for every single message that ever arrived was also the
+		// one file useless for the actual investigation this whole effort
+		// is for. Fixed the same way as filterLog's unchanged/blacklisted
+		// outcomes just above: the extraction only runs when
+		// receivedLog.debugEnabled() says `debug` is actually the
+		// configured level -- this call site fires on EVERY message
+		// received, unconditionally, at any log level, so an unconditional
+		// JSON.parse here would be an even hotter path than the one that
+		// caused the original incident. `?? true` for a hand-built test
+		// fake with no debugEnabled() at all -- same fallback policy as
+		// filterLog's.
+		if (deps.receivedLog) {
+			const receivedLogWantsIt = deps.receivedLog.debugEnabled?.() ?? true;
+			const { wnm: receivedWnm } = receivedLogWantsIt ? parseForLogging(raw) : {};
+			const wnmId = typeof receivedWnm?.id === 'string' ? receivedWnm.id : undefined;
+			const dataId = typeof receivedWnm?.properties?.data_id === 'string' ? receivedWnm.properties.data_id : undefined;
+			deps.receivedLog.debug({ source: deps.sourceLabel, topic, bytes: payload.length, wnmId, dataId });
+		}
 		if (deps.preDelayMs > 0) await deps.sleep(deps.preDelayMs);
 
 		stats.received++;
-		const raw = payload.toString('utf8');
 
 		const previous = lastPayloadByTopic.get(topic);
 		lastPayloadByTopic.set(topic, raw);
@@ -254,9 +333,11 @@ export function createIngestHandler(deps: IngestDeps, stats: IngestStats): (topi
 			// text -- not needed to get the full traced picture.
 			const filterLogWantsIt = deps.filterLog !== undefined && (deps.filterLog.debugEnabled?.() ?? true);
 			if (deps.isDebugEnabled() || filterLogWantsIt) {
-				const { wnmId, dataId } = extractIdsForLogging(raw);
+				const { wnm: parsedWnm } = parseForLogging(raw);
+				const wnmId = typeof parsedWnm?.id === 'string' ? parsedWnm.id : undefined;
+				const dataId = typeof parsedWnm?.properties?.data_id === 'string' ? parsedWnm.properties.data_id : undefined;
 				if (deps.isDebugEnabled()) deps.log.log(`[${deps.sourceLabel}] unchanged payload (rbe), dropping: ${topic}${dataId ? ` (data_id ${dataId})` : ''}`);
-				if (filterLogWantsIt) deps.filterLog!.debug({ source: deps.sourceLabel, topic, wnmId, dataId, outcome: 'unchanged' });
+				if (filterLogWantsIt) deps.filterLog!.debug({ source: deps.sourceLabel, topic, wnmId, dataId, outcome: 'unchanged', wnm: parsedWnm });
 			}
 			return;
 		}
@@ -266,9 +347,11 @@ export function createIngestHandler(deps: IngestDeps, stats: IngestStats): (topi
 			stats.blacklisted++;
 			const filterLogWantsIt = deps.filterLog !== undefined && (deps.filterLog.debugEnabled?.() ?? true);
 			if (deps.isDebugEnabled() || filterLogWantsIt) {
-				const { wnmId, dataId } = extractIdsForLogging(raw);
+				const { wnm: parsedWnm } = parseForLogging(raw);
+				const wnmId = typeof parsedWnm?.id === 'string' ? parsedWnm.id : undefined;
+				const dataId = typeof parsedWnm?.properties?.data_id === 'string' ? parsedWnm.properties.data_id : undefined;
 				if (deps.isDebugEnabled()) deps.log.log(`[${deps.sourceLabel}] blacklisted, dropping: ${topic}${dataId ? ` (data_id ${dataId})` : ''}`);
-				if (filterLogWantsIt) deps.filterLog!.debug({ source: deps.sourceLabel, topic, wnmId, dataId, outcome: 'blacklisted' });
+				if (filterLogWantsIt) deps.filterLog!.debug({ source: deps.sourceLabel, topic, wnmId, dataId, outcome: 'blacklisted', wnm: parsedWnm });
 			}
 			return;
 		}
@@ -283,12 +366,16 @@ export function createIngestHandler(deps: IngestDeps, stats: IngestStats): (topi
 			deps.log.error(`[${deps.sourceLabel}] malformed WNM on ${topic}: ${message}`);
 			// Best-effort -- JSON.parse may have actually succeeded before the
 			// "missing wnm.id" throw fired just above, so there can still be a
-			// data_id worth surfacing even though the message itself is
-			// unusable (no id to dedup on). extractIdsForLogging does its own
-			// isolated parse rather than reaching for the (possibly
-			// unassigned) `wnm` above.
-			const { wnmId, dataId } = extractIdsForLogging(raw);
-			deps.filterLog?.debug({ source: deps.sourceLabel, topic, wnmId, dataId, outcome: 'malformed', error: message });
+			// full object (and a data_id within it) worth surfacing even
+			// though the message itself is unusable (no id to dedup on).
+			// parseForLogging does its own isolated parse rather than reaching
+			// for the (possibly unassigned) `wnm` above; when even THAT parse
+			// fails, parsedWnm is undefined and only the raw error is logged --
+			// there's nothing else to attach.
+			const { wnm: parsedWnm } = parseForLogging(raw);
+			const wnmId = typeof parsedWnm?.id === 'string' ? parsedWnm.id : undefined;
+			const dataId = typeof parsedWnm?.properties?.data_id === 'string' ? parsedWnm.properties.data_id : undefined;
+			deps.filterLog?.debug({ source: deps.sourceLabel, topic, wnmId, dataId, outcome: 'malformed', error: message, wnm: parsedWnm });
 			return;
 		}
 
@@ -298,13 +385,22 @@ export function createIngestHandler(deps: IngestDeps, stats: IngestStats): (topi
 		if (!isNew) {
 			stats.duplicate++;
 			if (deps.isDebugEnabled()) deps.log.log(`[${deps.sourceLabel}] duplicate wnm.id ${wnm.id}, dropping: ${topic}`);
-			deps.filterLog?.debug({ source: deps.sourceLabel, topic, wnmId: wnm.id, dataId, outcome: 'duplicate' });
+			// wnm, not just wnmId/dataId (2026-09-20, same day, NOT a port):
+			// see IngestDeps.filterLog's doc comment -- `wnm` is already
+			// sitting in scope from this handler's own real parse above (the
+			// dedup check itself needs it), so attaching the whole thing here
+			// costs nothing beyond what this call already paid.
+			deps.filterLog?.debug({ source: deps.sourceLabel, topic, wnmId: wnm.id, dataId, outcome: 'duplicate', wnm });
 			return;
 		}
 
 		await deps.store.appendRawMessage(deps.queue, topic, raw, deps.now());
 		stats.ingested++;
 		if (deps.isDebugEnabled()) deps.log.log(`[${deps.sourceLabel}] ingested ${wnm.id}: ${topic}`);
-		deps.filterLog?.debug({ source: deps.sourceLabel, topic, wnmId: wnm.id, dataId, outcome: 'ingested' });
+		// Same rationale as the 'duplicate' outcome just above -- `wnm` is
+		// the exact object this handler already parsed and is about to hand
+		// to appendRawMessage; logging it here is the "after deduplication"
+		// full-content record the maintainer asked for, at zero extra cost.
+		deps.filterLog?.debug({ source: deps.sourceLabel, topic, wnmId: wnm.id, dataId, outcome: 'ingested', wnm });
 	};
 }
