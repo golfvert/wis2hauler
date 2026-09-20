@@ -39,6 +39,8 @@ export interface AriaStartEntry {
 	downloaderId: string;
 	href: string;
 	topic: string;
+	/** WorkQueueEntry.dataId (or '' for a retry -- error-retry.ts's runRetryDecision now reads it off the downloader_id hash record's own `data_id` field, see store.ts's doc comments). Threaded through purely for ariaLog below and the registered stream_id/aria2_gid records. NOT a port (2026-09-20). */
+	dataId: string;
 	/**
 	 * The real work-queue stream entry id to XACK/XDEL once this
 	 * attempt reaches ack.ts's startAck() -- omit for a retry.
@@ -116,6 +118,7 @@ export async function startRealDownload(deps: AriaStartDeps, entry: AriaStartEnt
 			downloadEntryId: entry.workQueueEntryId ?? '',
 			href: entry.href,
 			filename,
+			dataId: entry.dataId,
 		}),
 		deps.store.expireStreamEntry(deps.worker, streamId),
 	]);
@@ -126,7 +129,7 @@ export async function startRealDownload(deps: AriaStartDeps, entry: AriaStartEnt
 		checkCertificate: deps.checkCertificate,
 		credentials: creds,
 	});
-	deps.ariaLog?.debug({ href: entry.href, filename, gid, hasCredentials: creds !== undefined });
+	deps.ariaLog?.debug({ dataId: entry.dataId, downloaderId: entry.downloaderId, href: entry.href, filename, gid, hasCredentials: creds !== undefined });
 
 	// "Map" -> HGETALL -> "Aria2" -> HSET -> "Cancel" -> ZADD: promote the
 	// pre-registration record to the gid-keyed hash, verbatim, then

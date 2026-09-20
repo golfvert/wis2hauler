@@ -82,7 +82,19 @@ export interface SubscriberStore {
 	// attempt=1, then EXPIRE that key 7200 seconds. The hash FIELD name
 	// is the href itself (not a fixed schema name) -- ported exactly as
 	// written, odd as that field layout looks.
-	writeDownloadJob(downloaderId: string, href: string, source: string, wnmJson: string, topic: string, published: string): Promise<void>;
+	//
+	// `dataId` (2026-09-20, NOT a port -- added at the maintainer's
+	// explicit request while chasing missing data_id: "data_id is the
+	// key to identify missing downloads... this is the thread that can
+	// be followed from begin to end. downloaderId is only an internal
+	// variable"): stored as an EXTRA `data_id` hash field alongside the
+	// ported ones above. It's already embedded inside `wnmJson`, but
+	// every DOWNLOADER-side call site that fetches this record (the
+	// retry-decision 30s-later HGETALL in error-retry.ts chief among
+	// them) can now read it straight off the flat record for free,
+	// instead of having to JSON.parse `wnm` just to log which message a
+	// job is for.
+	writeDownloadJob(downloaderId: string, href: string, source: string, wnmJson: string, topic: string, published: string, dataId: string | undefined): Promise<void>;
 
 	// "Queue" -> "XADD" (0bb92d3863dcdad7/54710069ff7a89e7): XADD
 	// workQueueStreamKey(queue) * downloader_id=<downloaderId> href=<href>
@@ -90,7 +102,16 @@ export interface SubscriberStore {
 	// Downloader role. Runs in parallel with writeDownloadJob in the
 	// original (both fed by the same link-in junction) -- callers should
 	// issue both, order doesn't matter.
-	enqueueWork(queue: string, downloaderId: string, href: string, topic: string, hasContent: boolean): Promise<void>;
+	//
+	// `dataId` (2026-09-20, NOT a port -- see writeDownloadJob's doc
+	// comment above, same request): an extra `data_id` field on the
+	// work-queue entry itself, so every DOWNLOADER-side log site that
+	// reads a queue entry off XREADGROUP (consumer.ts's whole
+	// processQueueEntry/decode-write.ts/aria-start.ts chain) has the
+	// data_id available immediately, with NO extra Redis round trip --
+	// the same reasoning as ../downloader/store.ts's WorkQueueEntry.dataId
+	// doc comment.
+	enqueueWork(queue: string, downloaderId: string, href: string, topic: string, hasContent: boolean, dataId: string | undefined): Promise<void>;
 
 	// "HSET" (914f3f9e75a3e351/8f1c48c936bd32b5): the 'wait' outcome.
 	// HSET downloaderHashKey(downloaderId) <href>="wait" "src:"+href=<source>.

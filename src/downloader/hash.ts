@@ -94,6 +94,18 @@ export interface HashConfig {
 
 export interface HashResult {
 	outcome: HashOutcome;
+	/**
+	 * Set only for outcome === 'HASH_NOK', distinguishing the two cases
+	 * that outcome has always silently collapsed together: a genuine
+	 * digest mismatch (the download is corrupt/wrong) vs. an unsupported
+	 * hash method (a config/algorithm-name problem, nothing wrong with
+	 * the file itself). NOT a port (2026-09-20) -- added specifically so
+	 * consumer.ts's correctLog can say which one happened instead of
+	 * just "HASH_NOK", per the maintainer's "data_id is the key... this
+	 * is the thread that can be followed from begin to end" push for
+	 * more legible downloader-side logging.
+	 */
+	detail?: 'digest-mismatch' | 'unsupported-method';
 	length: number;
 	/** Only set when outcome === 'HASH_OK'. */
 	localhref?: string;
@@ -291,7 +303,7 @@ export async function runHash(input: HashInput, config: HashConfig, io: HashIO):
 		digestBase64 = await io.hashFileBase64(input.filepath, input.method);
 	} catch (err) {
 		if (io.isUnsupportedHashMethod(err)) {
-			return { outcome: 'HASH_NOK', length };
+			return { outcome: 'HASH_NOK', detail: 'unsupported-method', length };
 		}
 		throw new HashReadError(`Failed to read or hash the file: ${(err as Error).message}`);
 	}
@@ -310,5 +322,5 @@ export async function runHash(input: HashInput, config: HashConfig, io: HashIO):
 	} catch (err) {
 		io.error(`Failed to delete file with incorrect hash: ${(err as Error).message}`);
 	}
-	return { outcome: 'HASH_NOK', length };
+	return { outcome: 'HASH_NOK', detail: 'digest-mismatch', length };
 }

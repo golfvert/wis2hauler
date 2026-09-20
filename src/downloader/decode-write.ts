@@ -37,6 +37,8 @@ export interface DecodeWriteEntry {
 	id: string;
 	downloaderId: string;
 	href: string;
+	/** WorkQueueEntry.dataId, threaded through purely for the io.warn() messages below and the aria2_gid record this path registers -- see store.ts's doc comment. '' when the original message had none. NOT a port (2026-09-20). */
+	dataId: string;
 }
 
 export interface DecodeWriteIO {
@@ -66,7 +68,7 @@ export function runDecodeWrite(entry: DecodeWriteEntry, wnmJson: string, ariaDow
 		const wnm = JSON.parse(wnmJson) as EmbeddedWnm;
 		const content = wnm.properties?.content;
 		if (!content) {
-			io.warn(`Content flag set but properties.content is missing, falling back to href: ${entry.id}`);
+			io.warn(`Content flag set but properties.content is missing, falling back to href: ${entry.id} (data_id ${entry.dataId || '(none)'})`);
 			return { kind: 'fallback' };
 		}
 
@@ -86,7 +88,7 @@ export function runDecodeWrite(entry: DecodeWriteEntry, wnmJson: string, ariaDow
 		if (integrity && integrity.value) {
 			const digest = io.hashBase64(integrity.method ?? '', buffer);
 			if (digest !== integrity.value) {
-				io.warn(`Embedded content failed integrity check, falling back to href: ${entry.id}`);
+				io.warn(`Embedded content failed integrity check, falling back to href: ${entry.id} (data_id ${entry.dataId || '(none)'})`);
 				return { kind: 'fallback' };
 			}
 		}
@@ -119,7 +121,7 @@ export function runDecodeWrite(entry: DecodeWriteEntry, wnmJson: string, ariaDow
 
 		return { kind: 'written', gid, filename, filepath };
 	} catch (err) {
-		io.warn(`Embedded content processing error, falling back to href (${entry.id}): ${err instanceof Error ? err.message : String(err)}`);
+		io.warn(`Embedded content processing error, falling back to href (${entry.id}, data_id ${entry.dataId || '(none)'}): ${err instanceof Error ? err.message : String(err)}`);
 		return { kind: 'fallback' };
 	}
 }

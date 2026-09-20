@@ -82,6 +82,8 @@ export class FakeDownloaderStore implements DownloaderStore {
 			fields.href,
 			'filename',
 			fields.filename,
+			'data_id',
+			fields.dataId,
 		];
 	}
 

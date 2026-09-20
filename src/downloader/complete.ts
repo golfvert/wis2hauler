@@ -28,6 +28,8 @@ export interface CompleteDeps {
 
 export interface CompleteOutcome {
 	hashOutcome: HashOutcome;
+	/** hash.ts's HashResult.detail -- distinguishes a genuine digest mismatch from an unsupported hash method when hashOutcome === 'HASH_NOK'. NOT a port (2026-09-20). */
+	hashDetail?: 'digest-mismatch' | 'unsupported-method';
 	downloaderId: string;
 	/**
 	 * The rebuilt WNM: a fresh `id` (the original's "K/V + UUID" step),
@@ -43,6 +45,8 @@ export interface CompleteOutcome {
 	wnmTopic: string;
 	/** wnm.links[0].href -- the ORIGINAL remote href, needed by finishing.ts's completeHref() call. */
 	href: string;
+	/** wnm.properties.data_id, pulled out for logging convenience (consumer.ts's correctLog on HASH_NOK/FAIL) -- it's already sitting in `wnm` above, this just saves every caller its own optional-chaining reach-in. '' if absent. NOT a port (2026-09-20). */
+	dataId: string;
 	length: number;
 	/** Only set when hashOutcome === 'HASH_OK'. */
 	localHref?: string;
@@ -98,6 +102,7 @@ export async function runComplete(deps: CompleteDeps, downloaderId: string, gid:
 	const hash: string | number = wnm.properties?.integrity?.value ?? 0;
 	const href = firstOf(wnm.links?.[0]?.href) ?? '';
 	const wnmTopic = fields.topic ?? '';
+	const dataId = typeof wnm.properties?.data_id === 'string' ? wnm.properties.data_id : '';
 
 	await Promise.all([
 		deps.store.deleteAria2GidRecord(deps.worker, gid),
@@ -105,7 +110,7 @@ export async function runComplete(deps: CompleteDeps, downloaderId: string, gid:
 		deps.store.unscheduleCleanerCancel(deps.worker, gid),
 	]);
 
-	let hashResult: { outcome: HashOutcome; length: number; localhref?: string; uri?: string; localPath?: string };
+	let hashResult: { outcome: HashOutcome; detail?: 'digest-mismatch' | 'unsupported-method'; length: number; localhref?: string; uri?: string; localPath?: string };
 	try {
 		hashResult = await runHash(
 			{ method, hash, filepath, wnmpubtime: wnm.properties?.pubtime, wnmtopic: wnmTopic },
@@ -120,7 +125,7 @@ export async function runComplete(deps: CompleteDeps, downloaderId: string, gid:
 		// retry/error pipeline as an ordinary HASH_NOK instead of being
 		// swallowed.
 		if (err instanceof RenameIoError || err instanceof HashReadError) {
-			deps.duplicatesLog?.debug({ downloaderId, filepath, error: err.message });
+			deps.duplicatesLog?.debug({ downloaderId, dataId, filepath, error: err.message });
 			hashResult = { outcome: 'HASH_NOK', length: 0 };
 		} else {
 			throw err;
@@ -129,10 +134,12 @@ export async function runComplete(deps: CompleteDeps, downloaderId: string, gid:
 
 	return {
 		hashOutcome: hashResult.outcome,
+		hashDetail: hashResult.detail,
 		downloaderId,
 		wnm,
 		wnmTopic,
 		href,
+		dataId,
 		length: hashResult.length,
 		localHref: hashResult.localhref,
 		uri: hashResult.uri,

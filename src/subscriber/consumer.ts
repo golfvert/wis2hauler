@@ -97,6 +97,20 @@ export interface ConsumerDeps {
 	// topic", this one is "what did SUBSCRIBER do with it once parsed
 	// and classified". Optional so every existing hand-built
 	// ConsumerDeps in this file's own tests keeps compiling without it.
+	//
+	// ENRICHED, 2026-09-20 -- see this file's own processEntry, right
+	// where `dataId`/`wnmId` are pulled out of the WNM up front, for the
+	// full rationale (the maintainer, after the loop-blocking and hard-cap
+	// fixes above, still reporting missing data_id and asking for much
+	// heavier tracing than the existing debug level provides -- "LOGS LOGS
+	// LOGS"). Every call site now also carries `dataId`/`wnmId`/`pubtime`,
+	// and the 'ignore' classification -- which used to leave NO trace here
+	// at all (see the removed "logs nothing" test) -- now logs too, with
+	// `action: 'ignore'` and order-links.ts's own new
+	// TopicClassification.reason, so a data_id the maintainer's separate
+	// "these are the origin messages I expected" tool reports as missing
+	// can be grepped straight through to the exact reason it never entered
+	// the delay/claim race, if that's where it was dropped.
 	decisionLog?: SourceLogger;
 	// Added 2026-09-16 at the maintainer's request, mirroring downloader/
 	// finishing.ts's own "Publish" fix from the same day: that log used
@@ -236,7 +250,13 @@ async function checkLineageAndRecord(
 	const knownPubtimes = await get();
 	const decision = decideLineage(pubtime, hasUpdateRel(wnm), knownPubtimes);
 	if (decision.kind === 'duplicate') {
-		deps.duplicateLog?.info({ topic: entry.topic, dataId: dataIdRaw, pubtime, reason: decision.reason, ...logFields });
+		// wnmId added 2026-09-20 alongside decisionLog's own enrichment (see
+		// ConsumerDeps.decisionLog's doc comment) -- same data_id tracing
+		// effort, same reasoning: every log line this role emits should
+		// carry the raw wnm.id too, not just data_id, so the maintainer can
+		// cross-reference against ingest.ts's own filterLog/receivedLog
+		// entries for the exact same wire message.
+		deps.duplicateLog?.info({ topic: entry.topic, dataId: dataIdRaw, wnmId: wnm.id, pubtime, reason: decision.reason, ...logFields });
 		return true;
 	}
 	await record(deps.now().getTime());
@@ -252,6 +272,22 @@ export async function processEntry(entry: RawStreamEntry, deps: ConsumerDeps): P
 		return;
 	}
 
+	// dataId/wnmId -- pulled out once, up front, added 2026-09-20 at the
+	// maintainer's request while chasing STILL-missing data_id after the
+	// loop-blocking and hard-cap fixes above ("I still see some data_id
+	// missing... I would like a debug version... LOGS LOGS LOGS"): every
+	// log call in this function, including the 'ignore' early-return below
+	// (which never used to reach downloaderId/decisionLog at all), now
+	// carries these so a data_id the maintainer's separate "these are the
+	// origin messages I expected" tool reports as missing can be grepped
+	// straight through this role's logs end-to-end. Best-effort against
+	// runtime data that doesn't match the WnmProperties type exactly (a
+	// malformed-but-parseable message) -- never throws, never affects any
+	// actual pipeline decision below, which keeps reading straight off
+	// `wnm` exactly as before.
+	const dataId = typeof wnm.properties?.data_id === 'string' ? wnm.properties.data_id : undefined;
+	const wnmId = typeof wnm.id === 'string' ? wnm.id : undefined;
+
 	const classification = classifyTopic(entry.topic, wnm, deps.weightSources);
 	// "Order links" (Warn) -- REMOVED, 2026-09-20: the original's own
 	// function node fanned this message onward to a Warn-level logIO call
@@ -265,7 +301,13 @@ export async function processEntry(entry: RawStreamEntry, deps: ConsumerDeps): P
 	// is invented here; deps.decisionLog below already records every
 	// classified entry's outcome.
 	if (classification.kind === 'ignore') {
-		if (deps.isDebugEnabled()) deps.log.log(`consumer: ignoring ${entry.topic} (neither origin nor a recognized cache source)`);
+		if (deps.isDebugEnabled()) deps.log.log(`consumer: ignoring ${dataId ?? '(no data_id)'} on ${entry.topic} (${classification.reason})`);
+		// ENRICHED, 2026-09-20 -- this outcome used to leave NO trace here
+		// at all (see ConsumerDeps.decisionLog's own doc comment): a
+		// classification of 'ignore' is exactly as much "what SUBSCRIBER
+		// decided" as 'drop'/'already-complete' below, and was the single
+		// most likely place for a data_id to vanish without explanation.
+		deps.decisionLog?.debug({ dataId, wnmId, topic: entry.topic, pubtime: wnm.properties?.pubtime, action: 'ignore', reason: classification.reason });
 		return;
 	}
 
@@ -348,7 +390,7 @@ export async function processEntry(entry: RawStreamEntry, deps: ConsumerDeps): P
 	// which otherwise leave zero trace anywhere -- gets one record of
 	// what SUBSCRIBER decided and why.
 	const href = firstOf(selectLink(wnm)?.href) ?? '';
-	deps.decisionLog?.debug({ downloaderId, topic: entry.topic, href, action: action.kind });
+	deps.decisionLog?.debug({ downloaderId, dataId, wnmId, topic: entry.topic, pubtime: wnm.properties?.pubtime, href, action: action.kind });
 
 	switch (action.kind) {
 		case 'already-complete':
@@ -365,8 +407,8 @@ export async function processEntry(entry: RawStreamEntry, deps: ConsumerDeps): P
 			// unlike the publish-only path's republished copy.
 			const wnmJson = JSON.stringify({ ...wnm, downloader_id: downloaderId });
 			await Promise.all([
-				deps.store.writeDownloadJob(downloaderId, href, prepared.source, wnmJson, entry.topic, wnm.properties.pubtime),
-				deps.store.enqueueWork(deps.queue, downloaderId, href, entry.topic, hasContent),
+				deps.store.writeDownloadJob(downloaderId, href, prepared.source, wnmJson, entry.topic, wnm.properties.pubtime, dataId),
+				deps.store.enqueueWork(deps.queue, downloaderId, href, entry.topic, hasContent, dataId),
 			]);
 			return;
 		}

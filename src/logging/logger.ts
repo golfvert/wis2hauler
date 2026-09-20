@@ -28,6 +28,20 @@ export interface SourceLogger {
 	info(data: Record<string, unknown>): void;
 	warn(data: Record<string, unknown>): void;
 	debug(data: Record<string, unknown>): void;
+	// Added 2026-09-20 (subscriber/ingest.ts's `Filter` log): a cheap,
+	// side-effect-free admission check so a caller can skip building an
+	// EXPENSIVE argument (e.g. an extra JSON.parse of a payload that's
+	// about to be discarded regardless) when debug() would just discard it
+	// anyway -- `if (deps.filterLog?.debugEnabled?.() ?? true) { ...expensive
+	// extraction...; deps.filterLog.debug(...) }` costs nothing beyond one
+	// boolean check at any log level below debug, in the real
+	// implementation below. Optional so every existing hand-built
+	// SourceLogger fake across this codebase's tests keeps compiling
+	// without it -- callers should treat a missing implementation as "yes,
+	// go ahead" (`?? true`), never "no" -- a test fake that doesn't care
+	// about this distinction should still observe the same log calls it
+	// always did, not silently stop receiving them.
+	debugEnabled?(): boolean;
 }
 
 /**
@@ -49,5 +63,6 @@ export function createSourceLogger(name: string, sink: LogSink, gate: LevelGate,
 		info: (data) => emit('info', data),
 		warn: (data) => emit('warn', data),
 		debug: (data) => emit('debug', data),
+		debugEnabled: () => levelAdmits(gate.effectiveLevel(role), 'debug'),
 	};
 }

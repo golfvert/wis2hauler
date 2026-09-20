@@ -39,7 +39,17 @@ export function reorderLinks(wnm: Wnm): Wnm {
 export type TopicClassification =
 	| { kind: 'origin'; weight: number } // a true origin/a/wis2/... topic
 	| { kind: 'cache'; weight: number } // cache/a/wis2/... from a recognized global-cache source
-	| { kind: 'ignore' }; // neither pattern matched, a cache message with no/unrecognized global-cache label, or a source resolved to weight 0 — drop
+	| { kind: 'ignore'; reason: string }; // neither pattern matched, a cache message with no/unrecognized global-cache label, or a source resolved to weight 0 — drop
+// `reason` on the 'ignore' variant -- added 2026-09-20 at the maintainer's
+// request while chasing still-missing data_id after the loop-blocking and
+// hard-cap fixes ("I still see some data_id missing... I would like a
+// debug version... LOGS LOGS LOGS"): an 'ignore' classification used to
+// carry nothing beyond its kind, so consumer.ts's processEntry (see that
+// file's own decisionLog doc comment) had no way to log WHY a given
+// message never even entered the delay/claim race -- the single most
+// common way a data_id can go missing without a trace anywhere. Every
+// call site below now states its own reason inline, so classifyTopic
+// remains the one place that decision is made.
 
 // The two default rules for subscriber['weight-sources'] (a config map
 // from source key -- "origin", or the full raw wnm.properties['global-cache']
@@ -72,18 +82,22 @@ export function resolveWeight(key: string, weightSources: ReadonlyMap<string, nu
 export function classifyTopic(topic: string, wnm: Wnm, weightSources: ReadonlyMap<string, number> | undefined): TopicClassification {
 	if (topic.includes('origin/a/wis2')) {
 		const weight = resolveWeight('origin', weightSources);
-		return weight > 0 ? { kind: 'origin', weight } : { kind: 'ignore' };
+		if (weight > 0) return { kind: 'origin', weight };
+		return { kind: 'ignore', reason: 'origin resolved to weight 0 (missing from weight-sources, or explicitly weighted 0)' };
 	}
 
 	if (topic.includes('cache/a/wis2')) {
 		const globalCache = wnm.properties['global-cache'];
-		if (typeof globalCache !== 'string') return { kind: 'ignore' };
+		if (typeof globalCache !== 'string') {
+			return { kind: 'ignore', reason: 'cache topic has no (string) global-cache property to classify by' };
+		}
 
 		const weight = resolveWeight(globalCache, weightSources);
-		return weight > 0 ? { kind: 'cache', weight } : { kind: 'ignore' };
+		if (weight > 0) return { kind: 'cache', weight };
+		return { kind: 'ignore', reason: `source '${globalCache}' resolved to weight 0 (missing from weight-sources, or explicitly weighted 0)` };
 	}
 
-	return { kind: 'ignore' };
+	return { kind: 'ignore', reason: 'topic matches neither origin/a/wis2 nor cache/a/wis2' };
 }
 
 // Seconds to wait before this classification enters the claim race.

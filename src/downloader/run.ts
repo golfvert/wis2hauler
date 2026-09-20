@@ -87,6 +87,10 @@ export async function runDownloader(
 	const ackLog = logSink && gate ? createSourceLogger('Ack', logSink, gate, 'DOWNLOADER') : undefined;
 	const duplicatesLog = logSink && gate ? createSourceLogger('Duplicates', logSink, gate, 'DOWNLOADER') : undefined;
 	const ariaLog = logSink && gate ? createSourceLogger('Aria', logSink, gate, 'DOWNLOADER') : undefined;
+	// NOT a port (2026-09-20): see consumer.ts's ConsumerDeps.errorLog doc
+	// comment -- a file-backed home for pollOnce()'s per-entry catch,
+	// which previously only ever reached plain console.error.
+	const errorLog = logSink && gate ? createSourceLogger('Poll Error', logSink, gate, 'DOWNLOADER') : undefined;
 
 	const redisConn = createRedisConnection(config.global.redis);
 	const store = new IoredisDownloaderStore(redisConn);
@@ -300,6 +304,7 @@ export async function runDownloader(
 		outputCompleteLog,
 		outputErrorLog,
 		ackLog,
+		errorLog,
 	};
 
 	const cleanerIpc: CleanerIpcDeps = {

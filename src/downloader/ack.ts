@@ -55,6 +55,8 @@ export interface AckedEntry {
 	downloadEntryId: string;
 	href: string;
 	filename: string;
+	/** fields.data_id off the aria2_gid record -- see store.ts's StreamRegistration.dataId doc comment. '' if somehow absent. NOT a port (2026-09-20). */
+	dataId: string;
 }
 
 /**
@@ -104,11 +106,14 @@ export async function startAck(
 	}
 
 	if (!streamId || !FIRST_REGEX.test(streamId)) {
+		// No data_id available here -- the record itself never resolved, so
+		// there's nothing to correlate this gid to yet.
 		ackLog?.warn({ worker, gid, retries: attempt, reason: 'no aria2_gid record found after retrying (First ? check)' });
 		return null;
 	}
 
 	const downloadEntryId = fields.download_entry_id ?? '';
+	const dataId = fields.data_id ?? '';
 
 	// Promise.allSettled, not Promise.all: matches the original's 5
 	// independent redis-command nodes, each with its OWN Catch node
@@ -139,7 +144,7 @@ export async function startAck(
 	]);
 	for (const result of results) {
 		if (result.status === 'rejected') {
-			ackLog?.debug({ worker, gid, streamId, error: result.reason instanceof Error ? result.reason.message : String(result.reason) });
+			ackLog?.debug({ worker, gid, streamId, dataId, error: result.reason instanceof Error ? result.reason.message : String(result.reason) });
 		}
 	}
 
@@ -149,5 +154,6 @@ export async function startAck(
 		downloadEntryId,
 		href: fields.href ?? '',
 		filename: fields.filename ?? '',
+		dataId,
 	};
 }

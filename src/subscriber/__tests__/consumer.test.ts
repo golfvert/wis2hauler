@@ -92,7 +92,8 @@ describe('processEntry', () => {
 		expect(store.expirations.get(downloaderId)).toBe(7200);
 
 		expect(store.workQueue).toHaveLength(1);
-		expect(store.workQueue[0]).toEqual({ queue: 'q1', downloaderId, href: 'https://origin.example.org/file.grib2', topic: 'origin/a/wis2/fr-meteofrance/data/foo', content: false });
+		expect(store.workQueue[0]).toEqual({ queue: 'q1', downloaderId, href: 'https://origin.example.org/file.grib2', topic: 'origin/a/wis2/fr-meteofrance/data/foo', content: false, dataId: 'data-m2' });
+		expect(hash!.data_id).toBe('data-m2'); // the downloader-side retry/complete record now also carries data_id directly (2026-09-20)
 	});
 
 	// weight-sources present but origin omitted -> origin resolves to weight
@@ -494,7 +495,7 @@ describe('processEntry', () => {
 	// new addition follows the maintainer's info/warn/debug policy from
 	// scratch, unlike a ported call site) rather than info.
 	describe('decisionLog', () => {
-		test('a "download" action logs downloaderId/topic/href/action', async () => {
+		test('a "download" action logs downloaderId/dataId/wnmId/topic/pubtime/href/action', async () => {
 			const store = new FakeStore();
 			const { logger, debugCalls } = fakeReceivedLogger();
 			const deps = baseDeps(store, { decisionLog: logger });
@@ -503,7 +504,17 @@ describe('processEntry', () => {
 
 			await processEntry(entry('origin/a/wis2/fr-meteofrance/data/foo', w), deps);
 
-			expect(debugCalls).toEqual([{ downloaderId, topic: 'origin/a/wis2/fr-meteofrance/data/foo', href: 'https://origin.example.org/file.grib2', action: 'download' }]);
+			expect(debugCalls).toEqual([
+				{
+					downloaderId,
+					dataId: 'data-d1',
+					wnmId: 'd1',
+					topic: 'origin/a/wis2/fr-meteofrance/data/foo',
+					pubtime: '2026-01-01T00:00:00Z',
+					href: 'https://origin.example.org/file.grib2',
+					action: 'download',
+				},
+			]);
 		});
 
 		test('a "wait" action (lost the claim race) logs action: wait', async () => {
@@ -516,7 +527,17 @@ describe('processEntry', () => {
 
 			await processEntry(entry('origin/a/wis2/fr-meteofrance/data/foo', w), deps);
 
-			expect(debugCalls).toEqual([{ downloaderId, topic: 'origin/a/wis2/fr-meteofrance/data/foo', href: 'https://origin.example.org/file.grib2', action: 'wait' }]);
+			expect(debugCalls).toEqual([
+				{
+					downloaderId,
+					dataId: 'data-d2',
+					wnmId: 'd2',
+					topic: 'origin/a/wis2/fr-meteofrance/data/foo',
+					pubtime: '2026-01-01T00:00:00Z',
+					href: 'https://origin.example.org/file.grib2',
+					action: 'wait',
+				},
+			]);
 		});
 
 		test('a "drop" action (lost the claim race, nocache) still logs -- otherwise this outcome leaves no trace anywhere', async () => {
@@ -529,7 +550,17 @@ describe('processEntry', () => {
 
 			await processEntry(entry('origin/a/wis2/fr-meteofrance/data/foo', w), deps);
 
-			expect(debugCalls).toEqual([{ downloaderId, topic: 'origin/a/wis2/fr-meteofrance/data/foo', href: 'https://origin.example.org/file.grib2', action: 'drop' }]);
+			expect(debugCalls).toEqual([
+				{
+					downloaderId,
+					dataId: 'data-d3',
+					wnmId: 'd3',
+					topic: 'origin/a/wis2/fr-meteofrance/data/foo',
+					pubtime: '2026-01-01T00:00:00Z',
+					href: 'https://origin.example.org/file.grib2',
+					action: 'drop',
+				},
+			]);
 		});
 
 		test('an "already-complete" action logs before short-circuiting', async () => {
@@ -542,17 +573,41 @@ describe('processEntry', () => {
 
 			await processEntry(entry('origin/a/wis2/fr-meteofrance/data/foo', w), deps);
 
-			expect(debugCalls).toEqual([{ downloaderId, topic: 'origin/a/wis2/fr-meteofrance/data/foo', href: 'https://origin.example.org/file.grib2', action: 'already-complete' }]);
+			expect(debugCalls).toEqual([
+				{
+					downloaderId,
+					dataId: 'data-d4',
+					wnmId: 'd4',
+					topic: 'origin/a/wis2/fr-meteofrance/data/foo',
+					pubtime: '2026-01-01T00:00:00Z',
+					href: 'https://origin.example.org/file.grib2',
+					action: 'already-complete',
+				},
+			]);
 		});
 
-		test('an "ignore"-classified message logs nothing (never reaches the classify/claim decision at all)', async () => {
+		// 2026-09-20: this outcome used to leave NO trace here at all -- see
+		// ConsumerDeps.decisionLog's own doc comment for why that changed
+		// (the maintainer chasing still-missing data_id after the
+		// loop-blocking/hard-cap fixes). It now logs before downloaderId is
+		// ever computed, since an ignored message never gets one.
+		test('an "ignore"-classified message now logs dataId/wnmId/topic/action/reason (used to log nothing)', async () => {
 			const store = new FakeStore();
 			const { logger, debugCalls } = fakeReceivedLogger();
 			const deps = baseDeps(store, { decisionLog: logger });
 
 			await processEntry(entry('metadata/a/wis2/fr-meteofrance/metadata/foo', wnm('d5')), deps);
 
-			expect(debugCalls).toHaveLength(0);
+			expect(debugCalls).toEqual([
+				{
+					dataId: 'data-d5',
+					wnmId: 'd5',
+					topic: 'metadata/a/wis2/fr-meteofrance/metadata/foo',
+					pubtime: '2026-01-01T00:00:00Z',
+					action: 'ignore',
+					reason: 'topic matches neither origin/a/wis2 nor cache/a/wis2',
+				},
+			]);
 		});
 	});
 });
@@ -599,6 +654,7 @@ describe('lineage (origin-topic data_id duplicate detection)', () => {
 			topic: originTopic,
 			originCentreId: 'fr-meteofrance',
 			dataId: 'data-l2',
+			wnmId: 'l2b',
 			pubtime: '2026-01-01T00:00:00Z',
 			reason: 'pubtime is not newer than a previously seen publish for this data_id',
 		});
@@ -679,6 +735,7 @@ describe('lineage (origin-topic data_id duplicate detection)', () => {
 			expect(infoCalls[0]).toEqual({
 				topic: 'cache/a/wis2/fr-meteofrance/data/foo',
 				dataId: 'data-g1',
+				wnmId: 'g1b',
 				pubtime: '2026-01-01T00:00:00Z',
 				reason: 'pubtime is not newer than a previously seen publish for this data_id',
 				globalCache: 'gc-a-global-cache',

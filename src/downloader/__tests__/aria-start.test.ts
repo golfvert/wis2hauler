@@ -25,6 +25,7 @@ const entry: AriaStartEntry = {
 	downloaderId: 'wis2:centre:abc',
 	href: 'https://example.com/foo/bar.grib2',
 	topic: 'origin/a/wis2/centre/foo',
+	dataId: 'data-abc',
 	workQueueEntryId: '1694198400000-0',
 };
 
@@ -52,6 +53,7 @@ describe('startRealDownload', () => {
 			downloadEntryId: '1694198400000-0',
 			href: 'https://example.com/foo/bar.grib2',
 			filename: '1694198400000-0-999999_bar.grib2',
+			dataId: 'data-abc',
 		});
 		expect(store.streamExpires.has('downloader1:1694198400000-0-999999')).toBe(true);
 
@@ -71,6 +73,8 @@ describe('startRealDownload', () => {
 			'https://example.com/foo/bar.grib2',
 			'filename',
 			'1694198400000-0-999999_bar.grib2',
+			'data_id',
+			'data-abc',
 		]);
 		expect(store.cancelSchedule.has('downloader1|aria2-gid-1')).toBe(true);
 	});
@@ -144,6 +148,7 @@ describe('startRealDownload', () => {
 			downloaderId: 'wis2:centre:abc',
 			href: 'https://example.com/foo/bar.grib2',
 			topic: 'origin/a/wis2/centre/foo',
+			dataId: 'data-abc',
 		};
 		const deps: AriaStartDeps = {
 			store,
@@ -178,6 +183,7 @@ describe('startRealDownload', () => {
 			downloaderId: 'wis2:centre-a:1694198400',
 			href: 'https://a.example.com/dir1/data.grib2',
 			topic: 'origin/a/wis2/centre-a/foo',
+			dataId: 'data-a',
 			workQueueEntryId: '1694198400000-0',
 		};
 		const entryB: AriaStartEntry = {
@@ -185,6 +191,7 @@ describe('startRealDownload', () => {
 			downloaderId: 'wis2:centre-b:1694198400',
 			href: 'https://b.example.com/dir2/data.grib2',
 			topic: 'origin/a/wis2/centre-b/foo',
+			dataId: 'data-b',
 			workQueueEntryId: '1694198400000-1',
 		};
 

@@ -50,4 +50,24 @@ describe('createSourceLogger', () => {
 		log.debug({ x: 1 });
 		expect(calls).toHaveLength(0);
 	});
+
+	// debugEnabled() -- added 2026-09-20 so a caller (subscriber/ingest.ts's
+	// Filter log) can cheaply check whether debug() would actually write
+	// anything BEFORE doing expensive work to build its argument, without
+	// needing a second, separate on/off switch beyond the configured level.
+	describe('debugEnabled', () => {
+		test('reports true only when the effective level is exactly "debug"', () => {
+			const { sink } = fakeSink();
+			expect(createSourceLogger('X', sink, fakeGate('debug')).debugEnabled?.()).toBe(true);
+			expect(createSourceLogger('X', sink, fakeGate('info')).debugEnabled?.()).toBe(false);
+			expect(createSourceLogger('X', sink, fakeGate('warn')).debugEnabled?.()).toBe(false);
+		});
+
+		test('reflects a per-role override, same as debug() itself', () => {
+			const { sink } = fakeSink();
+			const gate = fakeGate('info', { SUBSCRIBER: 'debug' });
+			expect(createSourceLogger('X', sink, gate, 'SUBSCRIBER').debugEnabled?.()).toBe(true);
+			expect(createSourceLogger('X', sink, gate, 'DOWNLOADER').debugEnabled?.()).toBe(false);
+		});
+	});
 });

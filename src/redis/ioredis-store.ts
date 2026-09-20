@@ -95,7 +95,7 @@ export class IoredisStore implements SubscriberStore {
 		await this.redis.hset(downloaderHashKey(downloaderId), 'attempt', '1');
 	}
 
-	async writeDownloadJob(downloaderId: string, href: string, source: string, wnmJson: string, topic: string, published: string): Promise<void> {
+	async writeDownloadJob(downloaderId: string, href: string, source: string, wnmJson: string, topic: string, published: string, dataId: string | undefined): Promise<void> {
 		const key = downloaderHashKey(downloaderId);
 		await this.redis.hset(key, {
 			[href]: 'queue',
@@ -104,11 +104,12 @@ export class IoredisStore implements SubscriberStore {
 			topic,
 			published,
 			attempt: '1',
+			data_id: dataId ?? '', // see store.ts's doc comment -- NOT a port, an extra field
 		});
 		await this.redis.expire(key, 7200);
 	}
 
-	async enqueueWork(queue: string, downloaderId: string, href: string, topic: string, hasContent: boolean): Promise<void> {
+	async enqueueWork(queue: string, downloaderId: string, href: string, topic: string, hasContent: boolean, dataId: string | undefined): Promise<void> {
 		await this.redis.xadd(
 			workQueueStreamKey(queue),
 			'*',
@@ -120,6 +121,8 @@ export class IoredisStore implements SubscriberStore {
 			topic,
 			'content',
 			String(hasContent),
+			'data_id', // see store.ts's doc comment -- NOT a port, an extra field
+			dataId ?? '',
 		);
 	}
 

@@ -72,17 +72,24 @@ describe('classifyTopic', () => {
 	test('a cache topic whose global-cache label is not in a configured weight-sources map resolves to weight 0 -> ignored', () => {
 		const wnm = baseWnm('unknown-global-cache');
 		const weightSources = new Map([['origin', 1], ['gb1-global-cache', 1]]);
-		expect(classifyTopic('cache/a/wis2/fr-meteofrance/data/x', wnm, weightSources)).toEqual({ kind: 'ignore' });
+		expect(classifyTopic('cache/a/wis2/fr-meteofrance/data/x', wnm, weightSources)).toEqual({
+			kind: 'ignore',
+			reason: "source 'unknown-global-cache' resolved to weight 0 (missing from weight-sources, or explicitly weighted 0)",
+		});
 	});
 
 	test('an origin topic with weight-sources configured but no "origin" key resolves to weight 0 -> ignored', () => {
 		const weightSources = new Map([['de-dwd-global-cache', 1]]);
-		expect(classifyTopic('origin/a/wis2/fr-meteofrance/data/x', baseWnm(), weightSources)).toEqual({ kind: 'ignore' });
+		expect(classifyTopic('origin/a/wis2/fr-meteofrance/data/x', baseWnm(), weightSources)).toEqual({
+			kind: 'ignore',
+			reason: 'origin resolved to weight 0 (missing from weight-sources, or explicitly weighted 0)',
+		});
 	});
 
 	test('a cache topic with no global-cache property at all is ignored regardless of weight-sources', () => {
-		expect(classifyTopic('cache/a/wis2/fr-meteofrance/data/x', baseWnm(), undefined)).toEqual({ kind: 'ignore' });
-		expect(classifyTopic('cache/a/wis2/fr-meteofrance/data/x', baseWnm(), new Map([['gb1-global-cache', 1]]))).toEqual({ kind: 'ignore' });
+		const expected = { kind: 'ignore', reason: 'cache topic has no (string) global-cache property to classify by' } as const;
+		expect(classifyTopic('cache/a/wis2/fr-meteofrance/data/x', baseWnm(), undefined)).toEqual(expected);
+		expect(classifyTopic('cache/a/wis2/fr-meteofrance/data/x', baseWnm(), new Map([['gb1-global-cache', 1]]))).toEqual(expected);
 	});
 
 	test('a source explicitly weighted to 0 is ignored even though it IS listed', () => {
@@ -91,11 +98,17 @@ describe('classifyTopic', () => {
 			['origin', 1],
 			['de-dwd-global-cache', 0],
 		]);
-		expect(classifyTopic('cache/a/wis2/fr-meteofrance/data/x', wnm, weightSources)).toEqual({ kind: 'ignore' });
+		expect(classifyTopic('cache/a/wis2/fr-meteofrance/data/x', wnm, weightSources)).toEqual({
+			kind: 'ignore',
+			reason: "source 'de-dwd-global-cache' resolved to weight 0 (missing from weight-sources, or explicitly weighted 0)",
+		});
 	});
 
 	test('neither origin nor cache -> ignored', () => {
-		expect(classifyTopic('monitor/a/wis2/fr-meteofrance/x', baseWnm(), undefined)).toEqual({ kind: 'ignore' });
+		expect(classifyTopic('monitor/a/wis2/fr-meteofrance/x', baseWnm(), undefined)).toEqual({
+			kind: 'ignore',
+			reason: 'topic matches neither origin/a/wis2 nor cache/a/wis2',
+		});
 	});
 });
 
@@ -106,7 +119,7 @@ describe('computeDelaySeconds', () => {
 	const NO_CAP = Number.POSITIVE_INFINITY;
 
 	test('an "ignore" classification is never delayed', () => {
-		expect(computeDelaySeconds({ kind: 'ignore' }, 8, NO_CAP, () => 0.5)).toBe(0);
+		expect(computeDelaySeconds({ kind: 'ignore', reason: 'test' }, 8, NO_CAP, () => 0.5)).toBe(0);
 	});
 
 	test('implements -ln(random) * (weightDelaySeconds / weight)', () => {

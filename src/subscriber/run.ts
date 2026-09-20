@@ -121,6 +121,10 @@ export async function runSubscriber(
 	// IngestDeps.receivedLog doc comment; each connection's own line
 	// carries its `source` (GB1/GB2) so one logger/file still tells them apart.
 	const receivedLog = logSink && gate ? createSourceLogger('Received', logSink, gate, 'SUBSCRIBER') : undefined;
+	// See ingest.ts's own IngestDeps.filterLog doc comment (2026-09-20,
+	// the data_id tracing effort) -- shared across GB1/GB2 the same way
+	// receivedLog is, for the same reason.
+	const filterLog = logSink && gate ? createSourceLogger('Filter', logSink, gate, 'SUBSCRIBER') : undefined;
 
 	for (let i = 0; i < upstreamClients.length; i++) {
 		const label = `GB${i + 1}`;
@@ -139,6 +143,7 @@ export async function runSubscriber(
 				log,
 				isDebugEnabled,
 				receivedLog,
+				filterLog,
 			},
 			stats,
 		);

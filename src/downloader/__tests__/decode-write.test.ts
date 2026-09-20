@@ -27,7 +27,7 @@ function makeIo(overrides: Partial<DecodeWriteIO> = {}): { io: DecodeWriteIO; wr
 	return { io, writes, mkdirs, warnings };
 }
 
-const entry = { id: '1694198400000-0', downloaderId: 'wis2:centre:1234', href: 'https://example.com/foo/bar.grib2' };
+const entry = { id: '1694198400000-0', downloaderId: 'wis2:centre:1234', href: 'https://example.com/foo/bar.grib2', dataId: 'data-1' };
 
 describe('runDecodeWrite', () => {
 	test('utf-8 content with no integrity block is written to disk and a synthetic gid is minted', () => {
@@ -112,8 +112,8 @@ describe('runDecodeWrite', () => {
 		const { io: io1 } = makeIo({ randomStreamSuffix: () => '111111' });
 		const { io: io2 } = makeIo({ randomStreamSuffix: () => '222222' });
 		const wnmJson = JSON.stringify({ properties: { content: { encoding: 'utf-8', value: 'x' } } });
-		const entryA = { id: '1694198400000-0', downloaderId: 'wis2:centre-a:1694198400', href: 'https://a.example.com/dir1/data.grib2' };
-		const entryB = { id: '1694198400000-1', downloaderId: 'wis2:centre-b:1694198400', href: 'https://b.example.com/dir2/data.grib2' };
+		const entryA = { id: '1694198400000-0', downloaderId: 'wis2:centre-a:1694198400', href: 'https://a.example.com/dir1/data.grib2', dataId: 'data-a' };
+		const entryB = { id: '1694198400000-1', downloaderId: 'wis2:centre-b:1694198400', href: 'https://b.example.com/dir2/data.grib2', dataId: 'data-b' };
 
 		const outcomeA = runDecodeWrite(entryA, wnmJson, '/downloads', io1);
 		const outcomeB = runDecodeWrite(entryB, wnmJson, '/downloads', io2);

@@ -268,7 +268,7 @@ describe('runHash', () => {
 			noRenameConfig,
 			io,
 		);
-		expect(result).toEqual({ outcome: 'HASH_NOK', length: 42 });
+		expect(result).toEqual({ outcome: 'HASH_NOK', detail: 'digest-mismatch', length: 42 });
 		expect(io.calls).toContain('unlinkAsync:/downloads/file.dat');
 	});
 
@@ -297,7 +297,7 @@ describe('runHash', () => {
 			},
 		});
 		const result = await runHash({ method: 'not-a-real-algo', hash: 'x', filepath: '/downloads/file.dat' }, noRenameConfig, io);
-		expect(result).toEqual({ outcome: 'HASH_NOK', length: 42 });
+		expect(result).toEqual({ outcome: 'HASH_NOK', detail: 'unsupported-method', length: 42 });
 		expect(io.calls).not.toContain('unlinkAsync:/downloads/file.dat');
 	});
 

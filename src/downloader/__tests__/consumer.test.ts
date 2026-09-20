@@ -140,7 +140,7 @@ describe('processQueueEntry', () => {
 		store.hashes.set('wis2:centre:abc', { wnm: JSON.stringify(embeddedWnmRecord(href)), topic: 'origin/a/wis2/centre/foo', [href]: 'queue' });
 		const { client, published } = makeMqttClient();
 		const deps = makeDeps(store, { finishing: { store, worker: 'downloader1', centreId: 'my-centre', publishClients: [client] } });
-		const entry: WorkQueueEntry = { id: '1694198400000-0', downloaderId: 'wis2:centre:abc', href, topic: 'origin/a/wis2/centre/foo', content: 'true' };
+		const entry: WorkQueueEntry = { id: '1694198400000-0', downloaderId: 'wis2:centre:abc', href, topic: 'origin/a/wis2/centre/foo', content: 'true', dataId: 'data-abc' };
 
 		await processQueueEntry(deps, entry);
 
@@ -153,7 +153,7 @@ describe('processQueueEntry', () => {
 		const store = new FakeDownloaderStore();
 		store.hashes.set('wis2:centre:abc', { wnm: JSON.stringify({ properties: {} }), topic: 'origin/a/wis2/centre/foo' });
 		const deps = makeDeps(store);
-		const entry: WorkQueueEntry = { id: '1694198400000-0', downloaderId: 'wis2:centre:abc', href: 'https://example.com/g.grib2', topic: 'origin/a/wis2/centre/foo', content: 'true' };
+		const entry: WorkQueueEntry = { id: '1694198400000-0', downloaderId: 'wis2:centre:abc', href: 'https://example.com/g.grib2', topic: 'origin/a/wis2/centre/foo', content: 'true', dataId: 'data-abc' };
 
 		await processQueueEntry(deps, entry);
 
@@ -164,7 +164,7 @@ describe('processQueueEntry', () => {
 	test('content=false: goes straight to a real aria2 download, decode-write is never consulted', async () => {
 		const store = new FakeDownloaderStore();
 		const deps = makeDeps(store);
-		const entry: WorkQueueEntry = { id: '1694198400000-0', downloaderId: 'wis2:centre:abc', href: 'https://example.com/h.grib2', topic: 'origin/a/wis2/centre/foo', content: 'false' };
+		const entry: WorkQueueEntry = { id: '1694198400000-0', downloaderId: 'wis2:centre:abc', href: 'https://example.com/h.grib2', topic: 'origin/a/wis2/centre/foo', content: 'false', dataId: 'data-abc' };
 
 		await processQueueEntry(deps, entry);
 
@@ -178,7 +178,7 @@ describe('processQueueEntry', () => {
 		store.hashes.set('wis2:centre:abc', { wnm: JSON.stringify(embeddedWnmRecord(href)) });
 		// A non-numeric entry id makes the minted synthetic gid fail FIRST_REGEX.
 		const deps = makeDeps(store);
-		const entry: WorkQueueEntry = { id: 'not-a-stream-id', downloaderId: 'wis2:centre:abc', href, topic: 'origin/a/wis2/centre/foo', content: 'true' };
+		const entry: WorkQueueEntry = { id: 'not-a-stream-id', downloaderId: 'wis2:centre:abc', href, topic: 'origin/a/wis2/centre/foo', content: 'true', dataId: 'data-abc' };
 
 		await processQueueEntry(deps, entry);
 
@@ -249,7 +249,7 @@ describe('handleAriaNotification', () => {
 
 		await handleAriaNotification(deps, notification, async () => status);
 
-		expect(warnCalls).toEqual([{ downloaderId: 'wis2:centre:abc', hashOutcome: 'HASH_NOK' }]);
+		expect(warnCalls).toEqual([{ downloaderId: 'wis2:centre:abc', dataId: '', hashOutcome: 'HASH_NOK', hashDetail: 'digest-mismatch' }]);
 	});
 
 	test('a Complete notification for a real download acks it and runs completion', async () => {
@@ -358,7 +358,7 @@ describe('pollOnce', () => {
 	test('does nothing when already at the in-flight ceiling (ariaInQueue)', async () => {
 		const store = new FakeDownloaderStore();
 		store.queueLengths.set('wis2gc:downloader-queue', 10);
-		store.workQueues.set('wis2gc:downloader-queue', [{ id: '1-0', downloaderId: 'wis2:centre:abc', href: 'https://example.com/a.grib2', topic: 'x', content: 'false' }]);
+		store.workQueues.set('wis2gc:downloader-queue', [{ id: '1-0', downloaderId: 'wis2:centre:abc', href: 'https://example.com/a.grib2', topic: 'x', content: 'false', dataId: 'data-abc' }]);
 		const inFlight = new InFlightCounter();
 		inFlight.add(5);
 		const deps = makeDeps(store, { ariaInQueue: 5, inFlight });
@@ -371,7 +371,7 @@ describe('pollOnce', () => {
 	test('reads and processes entries when the queue is non-empty and under the ceiling', async () => {
 		const store = new FakeDownloaderStore();
 		store.queueLengths.set('wis2gc:downloader-queue', 1);
-		store.workQueues.set('wis2gc:downloader-queue', [{ id: '1-0', downloaderId: 'wis2:centre:abc', href: 'https://example.com/a.grib2', topic: 'x', content: 'false' }]);
+		store.workQueues.set('wis2gc:downloader-queue', [{ id: '1-0', downloaderId: 'wis2:centre:abc', href: 'https://example.com/a.grib2', topic: 'x', content: 'false', dataId: 'data-abc' }]);
 		const deps = makeDeps(store);
 
 		await pollOnce(deps);
@@ -383,8 +383,9 @@ describe('pollOnce', () => {
 	test('an error processing one entry is logged, not thrown, and does not stop the batch', async () => {
 		const store = new FakeDownloaderStore();
 		store.queueLengths.set('wis2gc:downloader-queue', 1);
-		store.workQueues.set('wis2gc:downloader-queue', [{ id: '1-0', downloaderId: 'wis2:centre:abc', href: 'https://example.com/a.grib2', topic: 'x', content: 'false' }]);
+		store.workQueues.set('wis2gc:downloader-queue', [{ id: '1-0', downloaderId: 'wis2:centre:abc', href: 'https://example.com/a.grib2', topic: 'x', content: 'false', dataId: 'data-abc' }]);
 		const errors: string[] = [];
+		const { logger: errorLog, warnCalls: errorLogCalls } = fakeSourceLogger();
 		const deps = makeDeps(store, {
 			ariaStart: {
 				store,
@@ -399,11 +400,18 @@ describe('pollOnce', () => {
 				randomStreamSuffix: () => '111111',
 			},
 			log: { ...console, error: (m: string) => errors.push(m) },
+			errorLog,
 		});
 
 		await pollOnce(deps);
 
 		expect(errors).toHaveLength(1);
+		// 2026-09-20 (NOT a port): the same failure is now ALSO captured by
+		// a file-backed logger, with data_id -- the console-only version
+		// above is never captured by global.log's file sink regardless of
+		// log.to, which used to mean a whole download could vanish with
+		// nothing on disk (see consumer.ts's ConsumerDeps.errorLog doc).
+		expect(errorLogCalls).toEqual([{ downloaderId: 'wis2:centre:abc', dataId: 'data-abc', href: 'https://example.com/a.grib2', error: 'aria2 unreachable' }]);
 	});
 
 	test('processes every entry in a batch CONCURRENTLY, not one at a time -- a slow entry must not delay the others', async () => {
@@ -422,8 +430,8 @@ describe('pollOnce', () => {
 		const store = new FakeDownloaderStore();
 		store.queueLengths.set('wis2gc:downloader-queue', 2);
 		store.workQueues.set('wis2gc:downloader-queue', [
-			{ id: '1-0', downloaderId: 'wis2:centre:slow', href: 'https://example.com/slow.grib2', topic: 'x', content: 'false' },
-			{ id: '1-1', downloaderId: 'wis2:centre:fast', href: 'https://example.com/fast.grib2', topic: 'x', content: 'false' },
+			{ id: '1-0', downloaderId: 'wis2:centre:slow', href: 'https://example.com/slow.grib2', topic: 'x', content: 'false', dataId: 'data-slow' },
+			{ id: '1-1', downloaderId: 'wis2:centre:fast', href: 'https://example.com/fast.grib2', topic: 'x', content: 'false', dataId: 'data-fast' },
 		]);
 
 		const SLOW_MS = 200;

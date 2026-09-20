@@ -142,12 +142,41 @@ describe('startAck', () => {
 			downloadEntryId: '1694198400000-0',
 			href: 'https://example.com/f.grib2',
 			filename: 'abc_f.grib2',
+			dataId: '', // no data_id field on this fixture's flat record -- see AckedEntry.dataId's doc comment
 		});
 		expect(store.acked).toEqual([{ queue: 'wis2gc:downloader-queue', entryId: '1694198400000-0' }]);
 		expect(store.xdeleted).toEqual([{ queue: 'wis2gc:downloader-queue', entryId: '1694198400000-0' }]);
 		expect(store.deletedStreamEntries).toEqual(['downloader1:1694198400000-0-999999']);
 		expect(store.deletedStreamEntryExpires).toEqual(['downloader1:1694198400000-0-999999']);
 		expect(store.deletedAria2GidRecords).toEqual(['downloader1:gid-1']);
+	});
+
+	// 2026-09-20 (NOT a port): confirms AckedEntry.dataId is read straight
+	// off the record's own `data_id` field -- the point of threading it
+	// all the way through registerStreamEntry/decode-write's flatFields,
+	// per the maintainer's "data_id is the key to identify missing
+	// downloads... this is the thread that can be followed from begin to
+	// end. downloaderId is only an internal variable."
+	test('data_id is read straight off the aria2_gid record when present', async () => {
+		const store = new FakeDownloaderStore();
+		store.aria2GidRecords.set('downloader1:gid-with-dataid', [
+			'stream_id',
+			'1694198400000-0-999999',
+			'downloader_id',
+			'wis2:centre:abc',
+			'download_entry_id',
+			'1694198400000-0',
+			'href',
+			'https://example.com/f.grib2',
+			'filename',
+			'abc_f.grib2',
+			'data_id',
+			'data-abc',
+		]);
+
+		const result = await startAck(store, 'wis2gc:downloader-queue', 'downloader1', 'gid-with-dataid');
+
+		expect(result?.dataId).toBe('data-abc');
 	});
 
 	test('a synthetic (decode-write) gid shaped like <millis>-<seq>-<random> also passes the regex', async () => {
@@ -240,6 +269,7 @@ describe('startAck', () => {
 			downloaderId: 'wis2:centre:abc',
 			href: 'https://example.com/f.grib2',
 			topic: 'origin/a/wis2/centre/foo',
+			dataId: 'data-abc',
 		};
 
 		await startRealDownload(ariaStart, retryEntry);

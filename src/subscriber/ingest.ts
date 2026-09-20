@@ -97,6 +97,78 @@ export interface IngestDeps {
 	// every existing hand-built IngestDeps in this file's own tests
 	// keeps compiling without it.
 	receivedLog?: SourceLogger;
+	// NOT a port -- added 2026-09-20, alongside consumer.ts's decisionLog
+	// enrichment (see that file's ConsumerDeps.decisionLog doc comment for
+	// the same rationale): the maintainer, after the loop-blocking and
+	// hard-cap fixes above, reported STILL seeing some data_id missing
+	// ("Probably a bit less than before but still...") and asked for a
+	// debug build with logging well beyond the current debug level --
+	// "LOGS LOGS LOGS" -- specifically to grep a data_id (reported missing
+	// by the maintainer's own separate "origin messages" tool) end-to-end
+	// through this role's logs.
+	//
+	// receivedLog (above) already answers "did this topic arrive on the
+	// wire at all" -- but it fires BEFORE any parsing, by design (as close
+	// to "the message arrived" as this handler ever gets, ahead of every
+	// filter), so it can never carry a data_id. This is the missing half:
+	// WHY a specific, already-arrived message never made it onto the raw
+	// stream for consumer.ts to see. Every one of this handler's five
+	// outcomes (unchanged/rbe, blacklisted, malformed, duplicate wnm.id,
+	// ingested) logs here, carrying wnm.id/data_id whenever the payload was
+	// parseable enough to extract them (see extractIdsForLogging below --
+	// best-effort, never throws, never affects the real filter decisions,
+	// which still operate on raw strings/already-parsed wnm exactly as
+	// before).
+	//
+	// Fires for all five outcomes, gated by a SINGLE switch --
+	// `global.log.level: debug` (or a per-role override), same as every
+	// other logger here -- not by deps.isDebugEnabled() (the older,
+	// separate per-role runtime toggle -- see debug.ts). Two earlier
+	// designs were tried and rejected here:
+	//
+	// 1. Gate the whole thing behind deps.isDebugEnabled(), requiring a
+	// SEPARATE POST /set call on top of `log.level: debug` to get the full
+	// trace. The maintainer pushed back ("I'd prefer that debug in
+	// log-level is enough to enable all debug. Don't get why this...") --
+	// rightly so, since every other logger here already worked off
+	// `log.level` alone.
+	// 2. Just call this unconditionally, same as duplicate/ingested/
+	// malformed below, and let SourceLogger's own level check decide
+	// whether to WRITE. This is correct for THOSE three outcomes (the
+	// message is already parsed regardless, for the real pipeline's own
+	// sake -- logging it costs nothing extra). It is NOT correct for
+	// unchanged/blacklisted specifically: they run BEFORE this handler's
+	// own JSON.parse, so logging them needs an EXTRA parse of a payload
+	// that's about to be discarded regardless -- calling this
+	// unconditionally would pay that parse cost on every single
+	// rbe-suppressed or blacklisted message, at ANY log level, even
+	// 'info' -- a real, always-on cost with no way to avoid it, on
+	// exactly the kind of high-volume, easy-to-overlook hot path that
+	// caused the 2026-09-20 production incident above.
+	//
+	// The actual fix: SourceLogger.debugEnabled() (logging/logger.ts) is a
+	// cheap, real check against the CONFIGURED level -- so the extra parse
+	// for unchanged/blacklisted only happens when `filterLog.debugEnabled()`
+	// is true, i.e. `global.log.level: debug` (or a per-role override) is
+	// actually set. At any other level, it's one boolean check, nothing
+	// more -- safe to ship and run everywhere, not just a special debug
+	// build. See each call site (`filterLogWantsIt`) below.
+	//
+	// `deps.isDebugEnabled()` remains relevant only for the separate
+	// plain-text stdout lines below, which just duplicate this same
+	// information unstructured, and independently ALSO triggers the extra
+	// parse when it's on (so flipping that legacy toggle still works
+	// exactly as it always did) -- ignore it entirely if all you want is
+	// the traced file logs via `log.level: debug`.
+	//
+	// Named "Filter" -- the ingest-side counterpart to consumer.ts's own
+	// "Decision" log: this is "what did THIS wire message's ingest stage do
+	// with it", not "what did the parsed, classified stream entry get
+	// decided" (that's decisionLog's job, downstream). Emitted at DEBUG,
+	// same level policy as every other non-ported addition here. Optional
+	// so every existing hand-built IngestDeps in this file's own tests
+	// keeps compiling without it.
+	filterLog?: SourceLogger;
 }
 
 export interface IngestStats {
@@ -129,6 +201,25 @@ export const defaultSleep = (ms: number): Promise<void> => new Promise((resolve)
 export function createIngestHandler(deps: IngestDeps, stats: IngestStats): (topic: string, payload: Buffer) => Promise<void> {
 	const lastPayloadByTopic = new Map<string, string>();
 
+	// Best-effort id extraction, purely for filterLog's sake -- never
+	// throws, and its result is never fed into any control-flow decision
+	// (the real pipeline keeps working exactly as before, off raw strings/
+	// the separately-parsed `wnm` below). Returns undefined fields when the
+	// payload isn't even valid JSON, or doesn't shape up as a WNM -- there's
+	// nothing to extract in that case, and filterLog's 'malformed' call
+	// site already reports the parse error itself.
+	const extractIdsForLogging = (raw: string): { wnmId?: string; dataId?: string } => {
+		try {
+			const parsed = JSON.parse(raw) as Partial<Wnm>;
+			return {
+				wnmId: typeof parsed?.id === 'string' ? parsed.id : undefined,
+				dataId: typeof parsed?.properties?.data_id === 'string' ? parsed.properties.data_id : undefined,
+			};
+		} catch {
+			return {};
+		}
+	};
+
 	return async (topic: string, payload: Buffer) => {
 		// Unconditional, before EVEN the GB2 fixed pre-delay -- as close
 		// to "the message arrived" as this handler ever gets, and ahead
@@ -145,14 +236,40 @@ export function createIngestHandler(deps: IngestDeps, stats: IngestStats): (topi
 		lastPayloadByTopic.set(topic, raw);
 		if (previous === raw) {
 			stats.unchanged++;
-			if (deps.isDebugEnabled()) deps.log.log(`[${deps.sourceLabel}] unchanged payload (rbe), dropping: ${topic}`);
+			// `global.log.level: debug` (or a per-role override) is the ONE
+			// switch that governs every structured log this file emits --
+			// see IngestDeps.filterLog's doc comment. That's what
+			// filterLog.debugEnabled() reflects (SourceLogger.debugEnabled's
+			// own doc comment, logging/logger.ts): a cheap, real check
+			// against the ACTUAL configured level, so the extra JSON.parse
+			// this needs (unchanged/blacklisted run before this handler's
+			// own parse) is only paid when something would actually consume
+			// it -- unlike the first cut of this feature, which paid it
+			// unconditionally regardless of log level. `?? true` if filterLog
+			// doesn't implement debugEnabled() at all (a hand-built fake, in
+			// tests) -- assume yes rather than silently going quiet.
+			// isDebugEnabled() (the separate, older per-role runtime toggle)
+			// still independently gates the plain stdout console.log line
+			// below, which duplicates this same information as unstructured
+			// text -- not needed to get the full traced picture.
+			const filterLogWantsIt = deps.filterLog !== undefined && (deps.filterLog.debugEnabled?.() ?? true);
+			if (deps.isDebugEnabled() || filterLogWantsIt) {
+				const { wnmId, dataId } = extractIdsForLogging(raw);
+				if (deps.isDebugEnabled()) deps.log.log(`[${deps.sourceLabel}] unchanged payload (rbe), dropping: ${topic}${dataId ? ` (data_id ${dataId})` : ''}`);
+				if (filterLogWantsIt) deps.filterLog!.debug({ source: deps.sourceLabel, topic, wnmId, dataId, outcome: 'unchanged' });
+			}
 			return;
 		}
 
 		const normalisedTopic = stripReplayPrefix(topic);
 		if (isBlacklisted(normalisedTopic, deps.blacklist)) {
 			stats.blacklisted++;
-			if (deps.isDebugEnabled()) deps.log.log(`[${deps.sourceLabel}] blacklisted, dropping: ${topic}`);
+			const filterLogWantsIt = deps.filterLog !== undefined && (deps.filterLog.debugEnabled?.() ?? true);
+			if (deps.isDebugEnabled() || filterLogWantsIt) {
+				const { wnmId, dataId } = extractIdsForLogging(raw);
+				if (deps.isDebugEnabled()) deps.log.log(`[${deps.sourceLabel}] blacklisted, dropping: ${topic}${dataId ? ` (data_id ${dataId})` : ''}`);
+				if (filterLogWantsIt) deps.filterLog!.debug({ source: deps.sourceLabel, topic, wnmId, dataId, outcome: 'blacklisted' });
+			}
 			return;
 		}
 
@@ -162,19 +279,32 @@ export function createIngestHandler(deps: IngestDeps, stats: IngestStats): (topi
 			if (typeof wnm?.id !== 'string' || !wnm.id) throw new Error('missing wnm.id');
 		} catch (err) {
 			stats.malformed++;
-			deps.log.error(`[${deps.sourceLabel}] malformed WNM on ${topic}: ${err instanceof Error ? err.message : String(err)}`);
+			const message = err instanceof Error ? err.message : String(err);
+			deps.log.error(`[${deps.sourceLabel}] malformed WNM on ${topic}: ${message}`);
+			// Best-effort -- JSON.parse may have actually succeeded before the
+			// "missing wnm.id" throw fired just above, so there can still be a
+			// data_id worth surfacing even though the message itself is
+			// unusable (no id to dedup on). extractIdsForLogging does its own
+			// isolated parse rather than reaching for the (possibly
+			// unassigned) `wnm` above.
+			const { wnmId, dataId } = extractIdsForLogging(raw);
+			deps.filterLog?.debug({ source: deps.sourceLabel, topic, wnmId, dataId, outcome: 'malformed', error: message });
 			return;
 		}
+
+		const dataId = typeof wnm.properties?.data_id === 'string' ? wnm.properties.data_id : undefined;
 
 		const isNew = await deps.store.claimMessageId(wnm.id, MESSAGE_ID_DEDUP_TTL_SECONDS);
 		if (!isNew) {
 			stats.duplicate++;
 			if (deps.isDebugEnabled()) deps.log.log(`[${deps.sourceLabel}] duplicate wnm.id ${wnm.id}, dropping: ${topic}`);
+			deps.filterLog?.debug({ source: deps.sourceLabel, topic, wnmId: wnm.id, dataId, outcome: 'duplicate' });
 			return;
 		}
 
 		await deps.store.appendRawMessage(deps.queue, topic, raw, deps.now());
 		stats.ingested++;
 		if (deps.isDebugEnabled()) deps.log.log(`[${deps.sourceLabel}] ingested ${wnm.id}: ${topic}`);
+		deps.filterLog?.debug({ source: deps.sourceLabel, topic, wnmId: wnm.id, dataId, outcome: 'ingested' });
 	};
 }

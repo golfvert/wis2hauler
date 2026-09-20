@@ -56,6 +56,11 @@ export async function runRetryDecision(deps: ErrorRetryDeps, downloaderId: strin
 
 	const flat = await deps.store.getDownloaderRecord(downloaderId);
 	const decision = decideRetry(flat);
+	// data_id (2026-09-20, NOT a port): now a direct field on this same
+	// record (see ../subscriber/store.ts's writeDownloadJob doc comment)
+	// -- free to read here, no extra JSON.parse of `wnm` needed, same
+	// spirit as the downloaderId-correlation fix below.
+	const dataId = parseFlatRecord(flat).data_id ?? '';
 
 	// NOT a port -- added 2026-09-13 after a live investigation (the
 	// maintainer: "Pretty useless logs") found the original's bare
@@ -78,8 +83,8 @@ export async function runRetryDecision(deps: ErrorRetryDeps, downloaderId: strin
 	if (decision.retry === 'RETRY_OK') {
 		const fields = parseFlatRecord(flat);
 		await deps.sleep((decision.delaySeconds ?? 0) * 1000);
-		deps.requeueLog?.warn({ downloaderId, href: decision.extracted ?? '', topic: fields.topic ?? '' });
-		deps.updateLog?.warn({ downloaderId, promoteHref: decision.promoteHref, newAttempt: decision.newAttempt });
+		deps.requeueLog?.warn({ downloaderId, dataId, href: decision.extracted ?? '', topic: fields.topic ?? '' });
+		deps.updateLog?.warn({ downloaderId, dataId, promoteHref: decision.promoteHref, newAttempt: decision.newAttempt });
 		await Promise.all([
 			// workQueueEntryId deliberately omitted: the original
 			// work-queue entry was already XACK'd/XDEL'd by the startAck()
@@ -92,6 +97,7 @@ export async function runRetryDecision(deps: ErrorRetryDeps, downloaderId: strin
 				downloaderId,
 				href: decision.extracted ?? '',
 				topic: fields.topic ?? '',
+				dataId,
 			}),
 			deps.store.retryTransition(downloaderId, decision.promoteHref, decision.promoteSource, decision.newAttempt, decision.errorHref, decision.errorSource),
 		]);
@@ -99,7 +105,7 @@ export async function runRetryDecision(deps: ErrorRetryDeps, downloaderId: strin
 		await deps.store.recordError(
 			deps.queue,
 			deps.worker,
-			JSON.stringify({ downloaderId, hashFound: flat.length > 0, hash: decision.payload }),
+			JSON.stringify({ downloaderId, dataId, hashFound: flat.length > 0, hash: decision.payload }),
 		);
 	}
 	// RETRY_NONEED: no-op -- matches the "Retry ?" switch's empty 3rd wire.

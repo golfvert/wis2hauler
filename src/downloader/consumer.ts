@@ -87,6 +87,15 @@ export interface ConsumerDeps {
 	outputCompleteLog?: SourceLogger;
 	outputErrorLog?: SourceLogger;
 	ackLog?: SourceLogger;
+	/**
+	 * NOT a port (2026-09-20): a file-backed home for the per-entry
+	 * catch in pollOnce() below, which previously only ever reached
+	 * plain `console.error` -- never captured by the file sink regardless
+	 * of global.log.to. This is the one place a whole download can
+	 * vanish (aria2 unreachable, addUri rejected, ...) with literally
+	 * nothing on disk to grep. Optional, same as every other logger here.
+	 */
+	errorLog?: SourceLogger;
 }
 
 /** "Content ?" (0a6448e35af7e733) fan-out for one work-queue entry. */
@@ -95,14 +104,16 @@ export async function processQueueEntry(deps: ConsumerDeps, entry: WorkQueueEntr
 		// "Extract" -> HGETALL -> "K/V" -> "Save" (msg.hget = the parsed record).
 		const flat = await deps.store.getDownloaderRecord(entry.downloaderId);
 		const fields = parseFlatRecord(flat);
-		const outcome = runDecodeWrite({ id: entry.id, downloaderId: entry.downloaderId, href: entry.href }, fields.wnm ?? '', deps.ariaDownloadDir, deps.decodeWriteIo);
+		const outcome = runDecodeWrite({ id: entry.id, downloaderId: entry.downloaderId, href: entry.href, dataId: entry.dataId }, fields.wnm ?? '', deps.ariaDownloadDir, deps.decodeWriteIo);
 
 		if (outcome.kind === 'fallback') {
-			await startRealDownload(deps.ariaStart, { id: entry.id, downloaderId: entry.downloaderId, href: entry.href, topic: entry.topic, workQueueEntryId: entry.id });
+			await startRealDownload(deps.ariaStart, { id: entry.id, downloaderId: entry.downloaderId, href: entry.href, topic: entry.topic, dataId: entry.dataId, workQueueEntryId: entry.id });
 			return;
 		}
 
 		// stream_id === gid on this fast path (see decode-write.ts's header comment).
+		// data_id (2026-09-20, NOT a port) carried through so ack.ts's
+		// AckedEntry has it -- see store.ts's StreamRegistration.dataId doc.
 		const flatFields = [
 			'stream_id',
 			outcome.gid,
@@ -114,6 +125,8 @@ export async function processQueueEntry(deps: ConsumerDeps, entry: WorkQueueEntr
 			entry.href,
 			'filename',
 			outcome.filename,
+			'data_id',
+			entry.dataId,
 		];
 		await deps.store.setAria2GidFields(deps.worker, outcome.gid, flatFields);
 
@@ -124,7 +137,7 @@ export async function processQueueEntry(deps: ConsumerDeps, entry: WorkQueueEntr
 		return;
 	}
 
-	await startRealDownload(deps.ariaStart, { id: entry.id, downloaderId: entry.downloaderId, href: entry.href, topic: entry.topic, workQueueEntryId: entry.id });
+	await startRealDownload(deps.ariaStart, { id: entry.id, downloaderId: entry.downloaderId, href: entry.href, topic: entry.topic, dataId: entry.dataId, workQueueEntryId: entry.id });
 }
 
 /** Shared by the Decode & Write fast path and the real-aria2 onDownloadComplete handler: runs complete.ts and routes on its hashOutcome, always releasing one in-flight slot regardless of outcome. */
@@ -148,10 +161,14 @@ async function runCompletion(deps: ConsumerDeps, downloaderId: string, gid: stri
 	} else if (completeOutcome.hashOutcome === 'HASH_NOK') {
 		// "Correct ?" (Warn): the original's own switch routes both its
 		// HASH_NOK and FAIL branches to this same logIO call (see below).
-		deps.correctLog?.warn({ downloaderId: completeOutcome.downloaderId, hashOutcome: completeOutcome.hashOutcome });
+		// dataId/hashDetail (2026-09-20, NOT a port): see complete.ts's
+		// CompleteOutcome.dataId/hashDetail doc comments -- HASH_NOK used
+		// to be indistinguishable from "unsupported hash method" and
+		// carried no data_id at all.
+		deps.correctLog?.warn({ downloaderId: completeOutcome.downloaderId, dataId: completeOutcome.dataId, hashOutcome: completeOutcome.hashOutcome, hashDetail: completeOutcome.hashDetail });
 		await reportBadHash(deps.errorRetry, completeOutcome.wnmTopic);
 		void runRetryDecision(deps.errorRetry, completeOutcome.downloaderId).catch((err) =>
-			deps.log.error(`downloader: retry decision failed for ${completeOutcome.downloaderId}: ${err instanceof Error ? err.message : String(err)}`),
+			deps.log.error(`downloader: retry decision failed for ${completeOutcome.downloaderId} (data_id ${completeOutcome.dataId || '(none)'}): ${err instanceof Error ? err.message : String(err)}`),
 		);
 	} else {
 		// 'FAIL': no further action beyond the "Correct ?" Warn above --
@@ -160,7 +177,7 @@ async function runCompletion(deps: ConsumerDeps, downloaderId: string, gid: stri
 		// failure or a rename-target collision is simply abandoned, not
 		// retried or reported. Ported as-is, not fixed -- this wasn't one
 		// of the specific ambiguities the maintainer resolved this phase.)
-		deps.correctLog?.warn({ downloaderId: completeOutcome.downloaderId, hashOutcome: completeOutcome.hashOutcome });
+		deps.correctLog?.warn({ downloaderId: completeOutcome.downloaderId, dataId: completeOutcome.dataId, hashOutcome: completeOutcome.hashOutcome, hashDetail: completeOutcome.hashDetail });
 	}
 }
 
@@ -193,13 +210,17 @@ export async function handleAriaNotification(
 	} else if (notification.method.includes('Error')) {
 		// "Output - Error": result.status==='error'.
 		if (status.status !== 'error') return;
-		deps.outputErrorLog?.debug({ gid: notification.gid, status: status.status });
+		// errorCode/errorMessage (2026-09-20, NOT a port): aria2's own
+		// tellStatus reply carries these for a failed gid, but they were
+		// never read -- this line used to say only "gid X failed", never
+		// WHY (timeout, HTTP error, checksum, name resolution, ...).
+		deps.outputErrorLog?.debug({ gid: notification.gid, status: status.status, errorCode: status.errorCode, errorMessage: status.errorMessage });
 		const acked = await startAck(deps.store, deps.queue, deps.worker, notification.gid, deps.ackLog);
 		if (!acked) return;
 		deps.inFlight.release();
 		await reportDownloadError(deps.errorRetry, undefined); // wnmtopic unknown at this point, matches the original
 		void runRetryDecision(deps.errorRetry, acked.downloaderId).catch((err) =>
-			deps.log.error(`downloader: retry decision failed for ${acked.downloaderId}: ${err instanceof Error ? err.message : String(err)}`),
+			deps.log.error(`downloader: retry decision failed for ${acked.downloaderId} (data_id ${acked.dataId || '(none)'}): ${err instanceof Error ? err.message : String(err)}`),
 		);
 	}
 }
@@ -249,7 +270,14 @@ export async function pollOnce(deps: ConsumerDeps): Promise<void> {
 			try {
 				await processQueueEntry(deps, entry);
 			} catch (err) {
-				deps.log.error(`downloader: failed processing work-queue entry ${entry.id} (${entry.href}): ${err instanceof Error ? err.message : String(err)}`);
+				const message = err instanceof Error ? err.message : String(err);
+				deps.log.error(`downloader: failed processing work-queue entry ${entry.id} (${entry.href}, data_id ${entry.dataId || '(none)'}): ${message}`);
+				// NOT a port (2026-09-20): deps.log is plain console, never
+				// captured by the file sink regardless of global.log.to --
+				// this is the ONE place a whole download can silently vanish
+				// with nothing on disk (e.g. aria2 unreachable, addUri
+				// rejected). Mirrored here, file-backed, with the data_id.
+				deps.errorLog?.warn({ downloaderId: entry.downloaderId, dataId: entry.dataId, href: entry.href, error: message });
 			}
 		}),
 	);

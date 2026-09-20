@@ -32,6 +32,22 @@ export interface WorkQueueEntry {
 	href: string;
 	topic: string;
 	content: string;
+	/**
+	 * The WNM's `properties.data_id` -- '' when the original message had
+	 * none. NOT a port (2026-09-20): the original's own "Href" reshape
+	 * never carried this, and downloaderId (a hash of the WNM, see
+	 * content-id.ts) is only an internal correlation key, not something
+	 * an operator can grep a specific missing message by. Per the
+	 * maintainer: "data_id is the key to identify missing downloads...
+	 * this is the thread that can be followed from begin to end.
+	 * downloaderId is only an internal variable." Subscriber's
+	 * enqueueWork() already writes it as an extra `data_id` field (see
+	 * ../subscriber/store.ts's doc comment) specifically so it's
+	 * available here with NO extra Redis round trip -- every downstream
+	 * log site in this pipeline (decode-write.ts, aria-start.ts,
+	 * ack.ts, this file's own consumer.ts) threads it onward from here.
+	 */
+	dataId: string;
 }
 
 /** One entry read off a per-worker command stream (Cleaner role's delete/cancel instructions) by XREAD -- kept as a raw flat field array (not reshaped into a typed object) because this store only ports the Downloader tab; the Cleaner tab that WRITES these entries hasn't been traced, so inventing named fields here would be a guess. cleaner-ipc.ts (not yet written) is responsible for interpreting `fields`. */
@@ -40,13 +56,14 @@ export interface WorkerCommandEntry {
 	fields: string[];
 }
 
-/** The 5 fields every stream_id / aria2_gid hash record carries, ported field-for-field from the "Aria" change node's (0a8b0f2d698dd38b) topic-array build. */
+/** The 5 fields every stream_id / aria2_gid hash record carries, ported field-for-field from the "Aria" change node's (0a8b0f2d698dd38b) topic-array build, PLUS `dataId` (2026-09-20, not a port -- see WorkQueueEntry.dataId's doc comment above): carried through from the work-queue entry (real-aria2 path) or the embedded-content entry (decode-write.ts's own matching flatFields build) so ack.ts's AckedEntry -- and everything consumer.ts logs off it -- has the data_id available too, without re-fetching the downloader_id hash record. */
 export interface StreamRegistration {
 	streamId: string;
 	downloaderId: string;
 	downloadEntryId: string;
 	href: string;
 	filename: string;
+	dataId: string;
 }
 
 export interface DownloaderStore {

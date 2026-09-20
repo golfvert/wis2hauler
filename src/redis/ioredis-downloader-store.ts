@@ -75,6 +75,7 @@ export class IoredisDownloaderStore implements DownloaderStore {
 				href: map.href ?? '',
 				topic: map.topic ?? '',
 				content: map.content ?? '',
+				dataId: map.data_id ?? '', // see store.ts's WorkQueueEntry.dataId doc comment -- NOT a port
 			};
 		});
 	}
@@ -99,6 +100,7 @@ export class IoredisDownloaderStore implements DownloaderStore {
 			download_entry_id: fields.downloadEntryId,
 			href: fields.href,
 			filename: fields.filename,
+			data_id: fields.dataId, // see store.ts's StreamRegistration.dataId doc comment -- NOT a port
 		});
 	}
 

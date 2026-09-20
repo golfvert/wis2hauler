@@ -300,4 +300,152 @@ describe('createIngestHandler', () => {
 			expect(order).toEqual(['log', 'sleep']);
 		});
 	});
+
+	// "Filter" (Debug): added 2026-09-20 after the maintainer, chasing
+	// still-missing data_id post loop-blocking/hard-cap fixes, asked for a
+	// debug build with much heavier logging than the existing debug level
+	// provides -- see IngestDeps.filterLog's own doc comment. Unlike
+	// receivedLog (which fires once, unconditionally, before any parsing),
+	// this fires once per OUTCOME and carries wnm.id/data_id whenever the
+	// payload was parseable enough to extract them.
+	describe('filterLog', () => {
+		test('an "ingested" message logs source/topic/wnmId/dataId/outcome, unconditionally (no isDebugEnabled needed)', async () => {
+			const store = new FakeStore();
+			const stats = createIngestStats();
+			const { logger, debugCalls } = fakeReceivedLogger();
+			const handler = createIngestHandler(baseDeps(store, { filterLog: logger, sourceLabel: 'GB1' }), stats);
+
+			await handler('origin/a/wis2/fr-meteofrance/data/foo', Buffer.from(wnm('msg-filter-1')));
+
+			expect(debugCalls).toEqual([{ source: 'GB1', topic: 'origin/a/wis2/fr-meteofrance/data/foo', wnmId: 'msg-filter-1', dataId: 'x', outcome: 'ingested' }]);
+		});
+
+		test('a "duplicate" wnm.id logs the SAME wnmId/dataId that were ingested the first time, unconditionally', async () => {
+			const store = new FakeStore();
+			const stats = createIngestStats();
+			const { logger, debugCalls } = fakeReceivedLogger();
+			const handler = createIngestHandler(baseDeps(store, { filterLog: logger }), stats);
+
+			await handler('origin/a/wis2/fr-meteofrance/data/foo', Buffer.from(wnm('msg-filter-dup')));
+			await handler('origin/a/wis2/fr-meteofrance/data/bar', Buffer.from(wnm('msg-filter-dup')));
+
+			expect(debugCalls).toEqual([
+				{ source: 'GB1', topic: 'origin/a/wis2/fr-meteofrance/data/foo', wnmId: 'msg-filter-dup', dataId: 'x', outcome: 'ingested' },
+				{ source: 'GB1', topic: 'origin/a/wis2/fr-meteofrance/data/bar', wnmId: 'msg-filter-dup', dataId: 'x', outcome: 'duplicate' },
+			]);
+		});
+
+		test('a "malformed" (unparseable) payload logs the parse error, with no wnmId/dataId to extract', async () => {
+			const store = new FakeStore();
+			const stats = createIngestStats();
+			const { logger, debugCalls } = fakeReceivedLogger();
+			const handler = createIngestHandler(baseDeps(store, { filterLog: logger }), stats);
+
+			await handler('origin/a/wis2/fr-meteofrance/data/foo', Buffer.from('{not json'));
+
+			expect(debugCalls).toHaveLength(1);
+			expect(debugCalls[0]!.outcome).toBe('malformed');
+			expect(debugCalls[0]!.wnmId).toBeUndefined();
+			expect(debugCalls[0]!.dataId).toBeUndefined();
+			expect(typeof debugCalls[0]!.error).toBe('string');
+		});
+
+		test('a "malformed" payload that parses but is missing wnm.id still surfaces its data_id', async () => {
+			const store = new FakeStore();
+			const stats = createIngestStats();
+			const { logger, debugCalls } = fakeReceivedLogger();
+			const handler = createIngestHandler(baseDeps(store, { filterLog: logger }), stats);
+
+			await handler('origin/a/wis2/fr-meteofrance/data/foo', Buffer.from(JSON.stringify({ links: [], properties: { data_id: 'orphan-data-id' } })));
+
+			expect(debugCalls).toHaveLength(1);
+			expect(debugCalls[0]).toEqual(expect.objectContaining({ outcome: 'malformed', dataId: 'orphan-data-id', wnmId: undefined }));
+		});
+
+		// unchanged/blacklisted run BEFORE this handler's own JSON.parse, so
+		// logging them means an extra, otherwise-unneeded parse -- gated by
+		// filterLog.debugEnabled() (logging/logger.ts), NOT isDebugEnabled()
+		// (see IngestDeps.filterLog's doc comment: the maintainer pushed
+		// back on needing a separate switch to get the full trace -- "debug
+		// in log-level is enough"). fakeReceivedLogger()'s fake doesn't
+		// implement debugEnabled() at all, so the `?? true` fallback applies
+		// here -- these two tests exercise THAT fallback, with
+		// isDebugEnabled() left at its default (false) to prove filterLog
+		// doesn't depend on it. See the two tests further below for the
+		// real gate (an explicit debugEnabled(): boolean).
+		test('an "unchanged" (rbe) drop logs wnmId/dataId when filterLog has no debugEnabled() (assume yes)', async () => {
+			const store = new FakeStore();
+			const stats = createIngestStats();
+			const { logger, debugCalls } = fakeReceivedLogger();
+			const handler = createIngestHandler(baseDeps(store, { filterLog: logger }), stats); // isDebugEnabled: () => false (baseDeps default)
+			const payload = Buffer.from(wnm('msg-filter-unchanged'));
+
+			await handler('origin/a/wis2/fr-meteofrance/data/foo', payload);
+			await handler('origin/a/wis2/fr-meteofrance/data/foo', payload);
+
+			expect(debugCalls).toEqual([
+				{ source: 'GB1', topic: 'origin/a/wis2/fr-meteofrance/data/foo', wnmId: 'msg-filter-unchanged', dataId: 'x', outcome: 'ingested' },
+				{ source: 'GB1', topic: 'origin/a/wis2/fr-meteofrance/data/foo', wnmId: 'msg-filter-unchanged', dataId: 'x', outcome: 'unchanged' },
+			]);
+		});
+
+		test('a "blacklisted" drop logs wnmId/dataId when filterLog has no debugEnabled() (assume yes)', async () => {
+			const store = new FakeStore();
+			const stats = createIngestStats();
+			const { logger, debugCalls } = fakeReceivedLogger();
+			const blacklist = ['+/+/+/+/+/recommended/#'];
+			const handler = createIngestHandler(baseDeps(store, { filterLog: logger, blacklist }), stats); // isDebugEnabled: () => false (baseDeps default)
+
+			await handler('origin/a/wis2/fr-meteofrance/data/recommended/foo', Buffer.from(wnm('msg-filter-bl')));
+
+			expect(debugCalls).toEqual([
+				{ source: 'GB1', topic: 'origin/a/wis2/fr-meteofrance/data/recommended/foo', wnmId: 'msg-filter-bl', dataId: 'x', outcome: 'blacklisted' },
+			]);
+		});
+
+		// The real gate: a `filterLog` whose `debugEnabled()` actually
+		// reports the configured `global.log.level` (as createSourceLogger's
+		// real implementation does -- see logging/logger.ts). This is what
+		// makes it safe to run this build everywhere, not just a special
+		// debug release: at any level below 'debug', the extra parse for
+		// unchanged/blacklisted is skipped entirely, matching what a real
+		// deployment sees.
+		function fakeLevelGatedLogger(debugEnabled: boolean): { logger: SourceLogger; debugCalls: Record<string, unknown>[] } {
+			const debugCalls: Record<string, unknown>[] = [];
+			return { logger: { info: () => {}, warn: () => {}, debug: (d) => debugCalls.push(d), debugEnabled: () => debugEnabled }, debugCalls };
+		}
+
+		test('log.level below debug (debugEnabled: false): unchanged/blacklisted are skipped entirely -- only outcomes that were parsed anyway still log', async () => {
+			const store = new FakeStore();
+			const stats = createIngestStats();
+			const { logger, debugCalls } = fakeLevelGatedLogger(false);
+			const blacklist = ['+/+/+/+/+/recommended/#'];
+			const handler = createIngestHandler(baseDeps(store, { filterLog: logger, blacklist }), stats);
+			const payload = Buffer.from(wnm('msg-filter-info-level'));
+
+			await handler('origin/a/wis2/fr-meteofrance/data/foo', payload); // ingested -- already parsed, still logs
+			await handler('origin/a/wis2/fr-meteofrance/data/foo', payload); // unchanged -- would need an EXTRA parse, skipped
+			await handler('origin/a/wis2/fr-meteofrance/data/recommended/foo', Buffer.from(wnm('msg-filter-info-level-2'))); // blacklisted -- same, skipped
+
+			expect(debugCalls).toEqual([
+				{ source: 'GB1', topic: 'origin/a/wis2/fr-meteofrance/data/foo', wnmId: 'msg-filter-info-level', dataId: 'x', outcome: 'ingested' },
+			]);
+		});
+
+		test('log.level: debug (debugEnabled: true): unchanged/blacklisted log normally', async () => {
+			const store = new FakeStore();
+			const stats = createIngestStats();
+			const { logger, debugCalls } = fakeLevelGatedLogger(true);
+			const blacklist = ['+/+/+/+/+/recommended/#'];
+			const handler = createIngestHandler(baseDeps(store, { filterLog: logger, blacklist }), stats);
+			const payload = Buffer.from(wnm('msg-filter-debug-level'));
+
+			await handler('origin/a/wis2/fr-meteofrance/data/foo', payload); // ingested
+			await handler('origin/a/wis2/fr-meteofrance/data/foo', payload); // unchanged
+			await handler('origin/a/wis2/fr-meteofrance/data/recommended/foo', Buffer.from(wnm('msg-filter-debug-level-2'))); // blacklisted
+
+			expect(debugCalls.map((c) => c.outcome)).toEqual(['ingested', 'unchanged', 'blacklisted']);
+			expect(debugCalls[1]).toEqual({ source: 'GB1', topic: 'origin/a/wis2/fr-meteofrance/data/foo', wnmId: 'msg-filter-debug-level', dataId: 'x', outcome: 'unchanged' });
+		});
+	});
 });

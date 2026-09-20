@@ -20,7 +20,7 @@ export class FakeStore implements SubscriberStore {
 	/** One entry per downloader_id hash, fields exactly as HSET would store them. */
 	hashes = new Map<string, Record<string, string>>();
 	expirations = new Map<string, number>();
-	workQueue: { queue: string; downloaderId: string; href: string; topic: string; content: boolean }[] = [];
+	workQueue: { queue: string; downloaderId: string; href: string; topic: string; content: boolean; dataId: string | undefined }[] = [];
 	releasedClaims: string[] = [];
 	/** One entry per (originCentreId, dataIdRaw), fields = pubtime strings, value = nowMillis recorded. */
 	lineage = new Map<string, Record<string, string>>();
@@ -67,7 +67,7 @@ export class FakeStore implements SubscriberStore {
 		this.hashFor(downloaderId).attempt = '1';
 	}
 
-	async writeDownloadJob(downloaderId: string, href: string, source: string, wnmJson: string, topic: string, published: string): Promise<void> {
+	async writeDownloadJob(downloaderId: string, href: string, source: string, wnmJson: string, topic: string, published: string, dataId: string | undefined): Promise<void> {
 		const h = this.hashFor(downloaderId);
 		h[href] = 'queue';
 		h[`src:${href}`] = source;
@@ -75,11 +75,12 @@ export class FakeStore implements SubscriberStore {
 		h.topic = topic;
 		h.published = published;
 		h.attempt = '1';
+		h.data_id = dataId ?? '';
 		this.expirations.set(downloaderId, 7200);
 	}
 
-	async enqueueWork(queue: string, downloaderId: string, href: string, topic: string, content: boolean): Promise<void> {
-		this.workQueue.push({ queue, downloaderId, href, topic, content });
+	async enqueueWork(queue: string, downloaderId: string, href: string, topic: string, content: boolean, dataId: string | undefined): Promise<void> {
+		this.workQueue.push({ queue, downloaderId, href, topic, content, dataId });
 	}
 
 	async recordWait(downloaderId: string, href: string, source: string): Promise<void> {
