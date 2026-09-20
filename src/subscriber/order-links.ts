@@ -103,6 +103,46 @@ export function classifyTopic(topic: string, wnm: Wnm, weightSources: ReadonlyMa
 // than the typical real arrival-time skew between origin and its
 // mirrors, and holds less precisely otherwise.
 //
+// `maxDelaySeconds` (subscriber['weight-delay-max-seconds'], see
+// schema.ts) is a HARD CAP, added 2026-09-20 after a production incident
+// (see consumer.ts's runConsumerLoop doc comment for the full story): an
+// exponential distribution has NO natural upper bound, and a low enough
+// weight relative to weightDelaySeconds can produce a mean delay of tens
+// of seconds with a long right tail -- unacceptable when the maintainer's
+// operational requirement is "a download must complete, including
+// retries and transfer time, within 10 minutes", which needs the initial
+// wait itself tightly bounded. `Math.min(raw, maxDelaySeconds)` is a
+// plain truncation, not a re-normalization of the exponential -- it does
+// NOT preserve the weight_i/sum(weights) win-probability property in the
+// (rare, by design) case where a draw actually hits the cap, since every
+// candidate that gets clipped to the same `maxDelaySeconds` value then
+// effectively ties (broken by whichever's sleep timer fires first in
+// real wall-clock terms, i.e. back to arrival order for that slice of
+// outcomes). This is an accepted, deliberate trade-off: the cap exists
+// specifically to bound the worst case, and by design should trigger for
+// only a small percentage of draws -- see the percentile math below for
+// how to choose weightDelaySeconds so that holds for your own weights.
+//
+// CHOOSING weightDelaySeconds AND maxDelaySeconds together: for a given
+// weight, the resulting delay is exponential with mean
+// `mu = weightDelaySeconds / weight`. Useful quantile/tail facts for an
+// exponential with mean `mu`:
+//   - P(delay > x)      = e^(-x / mu)
+//   - median            = mu * ln(2)   ≈ 0.693 * mu
+//   - p-th percentile   = -mu * ln(1 - p)   (e.g. p=0.9 -> mu * ln(10) ≈ 2.3026 * mu)
+// To target a specific percentile bound for your WORST (lowest-weight)
+// source -- e.g. "the 90th percentile of de-dwd-global-cache's wait
+// should be <= 60s" -- solve for mu first (`mu = target / ln(1/(1-p))`,
+// e.g. `60 / ln(10) ≈ 26.06s` for p=0.9), then
+// `weightDelaySeconds = mu * weight_min`. Every OTHER (higher-weighted)
+// source then automatically gets a smaller mu (faster), since mu is
+// inversely proportional to weight. Pick maxDelaySeconds comfortably
+// above that same target percentile (never below it, or the cap would
+// itself distort the percentile you just solved for) and check
+// `e^(-maxDelaySeconds / mu)` for the worst source is small -- that's the
+// fraction of draws that will actually hit the cap. See
+// docs/configuration-and-roles.md for a fully worked example.
+//
 // `random` is injectable (defaults to Math.random via the caller) for
 // deterministic tests, following this codebase's established DI
 // convention for nondeterministic primitives (e.g. aria-start.ts's
@@ -114,9 +154,10 @@ export function classifyTopic(topic: string, wnm: Wnm, weightSources: ReadonlyMa
 // still guards against it explicitly (returning 0, i.e. no delay) rather
 // than risking a divide-by-zero/Infinity sleep if that invariant is ever
 // violated by a future caller.
-export function computeDelaySeconds(classification: TopicClassification, weightDelaySeconds: number, random: () => number): number {
+export function computeDelaySeconds(classification: TopicClassification, weightDelaySeconds: number, maxDelaySeconds: number, random: () => number): number {
 	if (classification.kind === 'ignore') return 0;
 	const { weight } = classification;
 	if (weight <= 0) return 0;
-	return -Math.log(random()) * (weightDelaySeconds / weight);
+	const raw = -Math.log(random()) * (weightDelaySeconds / weight);
+	return Math.min(raw, maxDelaySeconds);
 }

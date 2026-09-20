@@ -32,6 +32,10 @@ function baseDeps(store: FakeStore, overrides: Partial<ConsumerDeps> = {}): Cons
 		// weight/random when the scale parameter itself is 0, so tests that
 		// don't care about the delay mechanism never have to wait for one.
 		weightDelaySeconds: 0,
+		// Infinity (no cap) by default, so it never interferes with a test
+		// that isn't specifically exercising the cap -- see the dedicated
+		// maxDelaySeconds coverage below and in order-links.test.ts.
+		weightDelayMaxSeconds: Number.POSITIVE_INFINITY,
 		random: () => 0.5,
 		globalCacheMode: false,
 		centreId: 'fr-meteofrance',
@@ -441,6 +445,28 @@ describe('processEntry', () => {
 		expect(store.workQueue).toHaveLength(1); // still proceeds to a normal claim afterwards
 	});
 
+	// weightDelayMaxSeconds (2026-09-20, see order-links.ts's
+	// computeDelaySeconds doc comment for the production incident): the
+	// hard cap must actually reach processEntry's sleep call, not just
+	// exist in the formula.
+	test('weightDelayMaxSeconds caps the delay actually slept, even when the raw formula would be far larger', async () => {
+		const store = new FakeStore();
+		const sleeps: number[] = [];
+		const w: Wnm = { ...wnm('m7y'), properties: { ...wnm('m7y').properties, 'global-cache': 'low-weight-global-cache' } };
+		const deps = baseDeps(store, {
+			weightSources: new Map([['low-weight-global-cache', 0.2]]),
+			weightDelaySeconds: 10,
+			weightDelayMaxSeconds: 120,
+			random: () => 0.0001, // -ln(0.0001) * (10/0.2) ≈ 460.5s uncapped -- far past the 120s cap
+			sleep: async (ms) => void sleeps.push(ms),
+		});
+
+		await processEntry(entry('cache/a/wis2/fr-meteofrance/data/foo', w), deps);
+
+		expect(sleeps).toEqual([120000]); // clipped to exactly the 120s cap, in milliseconds
+		expect(store.workQueue).toHaveLength(1); // still proceeds to a normal claim afterwards
+	});
+
 	// weight 0 (e.g. a source explicitly zeroed out, or omitted from a
 	// configured weight-sources map) never reaches computeDelaySeconds at
 	// all -- classifyTopic itself resolves it straight to 'ignore'.
@@ -819,5 +845,127 @@ describe('runConsumerLoop', () => {
 		expect(fastClaimedAt! - startedAt).toBeLessThan(40); // the fast (origin) entry claimed almost immediately, NOT after the delayed entry's ~50ms (1000ms/20) sleep
 		expect(store.workQueue.some((j) => j.downloaderId.includes('fast-1'))).toBe(true);
 		expect(store.workQueue.some((j) => j.downloaderId.includes('stag-1'))).toBe(true); // the delayed entry still completes, just later
+	});
+
+	// Regression test for the 2026-09-20 production incident (see
+	// runConsumerLoop's own doc comment): the OLD loop awaited
+	// Promise.allSettled() over the WHOLE current batch -- including every
+	// entry's computeDelaySeconds sleep -- before calling readRawMessages()
+	// again at all. A batch dominated by a low-weight, long-mean-delay
+	// source (a real deployment saw an effective ~40s mean, unbounded tail)
+	// therefore held up reading of every LATER batch too, not just other
+	// entries within the same one -- collapsing throughput for every
+	// source, not just the slow one. This is distinct from the
+	// "processed CONCURRENTLY" test above, which only proves concurrency
+	// WITHIN one batch; this one proves a slow entry in an EARLIER batch
+	// can never hold up a fast entry in a LATER one.
+	test('a slow entry in an EARLIER batch never delays reading/processing a LATER batch (2026-09-20 regression)', async () => {
+		const slowEntry = entry('cache/a/wis2/slow-centre/data/foo', wnm('slow-1', { 'global-cache': 'slow-global-cache' }), '1-0');
+		const fastEntry = entry('origin/a/wis2/fr-meteofrance/data/bar', wnm('fast-2'), '2-0');
+
+		const store = new FakeStore();
+		let reads = 0;
+		store.readRawMessages = async () => {
+			reads++;
+			if (reads === 1) return [slowEntry];
+			if (reads === 2) return [fastEntry];
+			await new Promise((r) => setTimeout(r, 5));
+			return [];
+		};
+
+		let fastClaimedAt: number | null = null;
+		let slowClaimedAt: number | null = null;
+		const originalClaim = store.claimDownload.bind(store);
+		store.claimDownload = async (downloaderId: string) => {
+			if (downloaderId.includes('fast-2')) fastClaimedAt = Date.now();
+			if (downloaderId.includes('slow-1')) slowClaimedAt = Date.now();
+			return originalClaim(downloaderId);
+		};
+
+		const startedAt = Date.now();
+		const deps = baseDeps(store, {
+			// origin's weight (100000) is vastly larger than the cache
+			// source's (1), so origin's nominal delay is ~microseconds and
+			// the cache source's is ~2s -- the sleep override then scales
+			// the cache source's delay down 20x (to ~100ms) so the test
+			// stays fast while still being clearly "still in flight" when
+			// the second batch is read.
+			weightSources: new Map([
+				['origin', 100000],
+				['slow-global-cache', 1],
+			]),
+			weightDelaySeconds: 2,
+			random: () => Math.exp(-1), // -ln(e^-1) = 1, so delaySeconds = weightDelaySeconds / weight
+			sleep: (ms: number) => new Promise((r) => setTimeout(r, ms / 20)),
+		});
+
+		const ac = new AbortController();
+		const loopPromise = runConsumerLoop(deps, ac.signal, '0-0', 10, 10);
+		await new Promise((r) => setTimeout(r, 150));
+		ac.abort();
+		await loopPromise;
+
+		expect(fastClaimedAt).not.toBeNull();
+		expect(slowClaimedAt).not.toBeNull();
+		// The fast entry (second batch) claims almost immediately -- well
+		// before the slow entry (first batch, still mid-delay) does --
+		// proving the loop read and processed batch 2 without waiting for
+		// batch 1 to finish.
+		expect(fastClaimedAt!).toBeLessThan(slowClaimedAt!);
+		expect(fastClaimedAt! - startedAt).toBeLessThan(40);
+	});
+
+	// maxInFlight is a safety net against the OPPOSITE failure mode: with
+	// reading now fully decoupled from processing, a sustained firehose
+	// feeding a long-mean-delay source could otherwise queue an unbounded
+	// number of concurrently-sleeping entries (and, once each wakes, an
+	// unbounded number of concurrent Redis calls). It throttles READING
+	// only -- already-dispatched entries are never paused or cancelled.
+	test('maxInFlight backpressure: holds off reading further batches once the cap is hit, resumes once entries finish', async () => {
+		const store = new FakeStore();
+		const held = entry('origin/a/wis2/fr-meteofrance/data/a', wnm('bp-1'), '1-0');
+		let reads = 0;
+		store.readRawMessages = async () => {
+			reads++;
+			if (reads === 1) return [held];
+			await new Promise((r) => setTimeout(r, 5));
+			return [];
+		};
+
+		// Holds the one in-flight entry's claim (and thus processEntry
+		// itself) open until the test explicitly releases it -- decoupled
+		// from deps.sleep, which the loop's own backpressure poll also
+		// uses, so the two concerns don't interfere with each other.
+		let releaseClaim: (() => void) | undefined;
+		const claimGate = new Promise<void>((resolve) => {
+			releaseClaim = resolve;
+		});
+		const originalClaim = store.claimDownload.bind(store);
+		store.claimDownload = async (downloaderId: string) => {
+			await claimGate;
+			return originalClaim(downloaderId);
+		};
+
+		// The backpressure branch below relies on deps.sleep actually
+		// yielding real wall-clock time -- baseDeps' default no-op sleep
+		// would make it spin as a tight, never-yielding microtask loop
+		// (await-ing an already-resolved promise forever), which starves
+		// the event loop's macrotask queue and can hang the whole test
+		// runner rather than just this test. A real (small) delay avoids
+		// that, matching how production's defaultSleep (a real setTimeout)
+		// behaves.
+		const deps = baseDeps(store, { sleep: (ms: number) => new Promise((r) => setTimeout(r, ms)) });
+		const ac = new AbortController();
+		const loopPromise = runConsumerLoop(deps, ac.signal, '0-0', 10, 10, 1); // maxInFlight=1
+
+		await new Promise((r) => setTimeout(r, 30));
+		expect(reads).toBe(1); // held at 1: the single in-flight entry hasn't finished, and the cap is 1
+
+		releaseClaim!();
+		await new Promise((r) => setTimeout(r, 30));
+		expect(reads).toBeGreaterThan(1); // cap released once the entry finished -- reading resumes
+
+		ac.abort();
+		await loopPromise;
 	});
 });

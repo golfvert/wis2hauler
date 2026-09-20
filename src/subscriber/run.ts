@@ -158,6 +158,13 @@ export async function runSubscriber(
 		// config -- 8s matches the example the maintainer approved when
 		// this mechanism was designed (2026-09-20).
 		weightDelaySeconds: sub['weight-delay-seconds'] ?? 8,
+		// DEFAULT_WEIGHT_DELAY_MAX_SECONDS: added 2026-09-20 after a
+		// production incident (see order-links.ts's computeDelaySeconds()
+		// doc comment) -- 120s is a safe default even for well-behaved
+		// configs (weight roughly 1, weight-delay-seconds around 8: the
+		// cap essentially never triggers there), while bounding the worst
+		// case for a misconfigured or deliberately low weight.
+		weightDelayMaxSeconds: sub['weight-delay-max-seconds'] ?? 120,
 		random: Math.random,
 		globalCacheMode,
 		centreId,

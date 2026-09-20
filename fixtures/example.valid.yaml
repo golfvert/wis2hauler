@@ -37,6 +37,7 @@ subscriber:
     origin: 1
     "gb1.example.org-global-cache": 1
   weight-delay-seconds: 8
+  weight-delay-max-seconds: 120
   mqtt:
     whitelist:
       - "origin/a/wis2/fr-meteofrance/data/#"

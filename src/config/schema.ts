@@ -205,6 +205,15 @@ export const SubscriberSection = Type.Object(
 		// Delay-scale parameter (seconds) for the exponential race --
 		// see order-links.ts's computeDelaySeconds().
 		'weight-delay-seconds': Type.Optional(Type.Number({ minimum: 0 })),
+		// Hard cap (seconds) on any single computed delay, added 2026-09-20
+		// after a production incident where an exponential draw's unbounded
+		// tail (compounded by a since-fixed batch-blocking bug in
+		// consumer.ts's runConsumerLoop) stalled downloads for every
+		// source, not just the low-weight one -- see order-links.ts's
+		// computeDelaySeconds() for the full incident writeup and the
+		// percentile math for choosing this alongside weight-delay-seconds.
+		// Defaults to 120 (run.ts) when unset.
+		'weight-delay-max-seconds': Type.Optional(Type.Number({ minimum: 0 })),
 		mqtt: SubscriberMqtt,
 	},
 	{ additionalProperties: true },
@@ -350,7 +359,7 @@ export const KNOWN_GLOBAL = [
 ] as const;
 export const KNOWN_REDIS = ['mode', 'nodes', 'password'] as const;
 export const KNOWN_LOG = ['level', 'to', 'size', 'number', 'dir'] as const;
-export const KNOWN_SUBSCRIBER = ['global-broker', 'weight-sources', 'weight-delay-seconds', 'mqtt'] as const;
+export const KNOWN_SUBSCRIBER = ['global-broker', 'weight-sources', 'weight-delay-seconds', 'weight-delay-max-seconds', 'mqtt'] as const;
 export const KNOWN_SUBSCRIBER_MQTT = ['whitelist', 'blacklist', 'overridelist', 'global-replay', 'qos'] as const;
 export const KNOWN_DOWNLOADER = [
 	'aria-secret', 'aria-url', 'aria-inqueue', 'aria-download', 'aria-check-tls', 'download-url', 'rename-to', 's3access', 'credentials',

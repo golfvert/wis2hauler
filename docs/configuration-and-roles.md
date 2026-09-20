@@ -107,7 +107,7 @@ Required iff `SUBSCRIBER` is in `global.roles`.
 
 Up to two WIS2 Global Brokers, wired to `GB1`/`GB2`. Messages from GB1 are processed immediately; GB2 messages are deliberately delayed 2 seconds before deduplication, so that when the same notification arrives on both, the GB1 copy wins and the GB2 copy is dropped as a duplicate. If GB1 is unreachable, GB2 still works on its own. Same broker object shape as `global.local-broker`.
 
-### `subscriber.weight-sources` / `subscriber.weight-delay-seconds` — optional (2026-09-20, replaces `priority-global-cache`)
+### `subscriber.weight-sources` / `subscriber.weight-delay-seconds` / `subscriber.weight-delay-max-seconds` — optional (2026-09-20, replaces `priority-global-cache`)
 
 Controls which sources (the true origin, and/or specific Global Cache repeaters) this Subscriber is willing to claim content from, and how the claim race between them is decided when the same content arrives via more than one source.
 
@@ -119,22 +119,43 @@ Controls which sources (the true origin, and/or specific Global Cache repeaters)
 Two default rules govern weight resolution:
 
 1. **`weight-sources` entirely unset** — every source (origin and any recognized cache repeater) gets weight 1. This is the zero-config behavior: everything races on equal footing, matching the old unset-`priority-global-cache` behavior.
-2. **`weight-sources` is set (even with just one entry)** — any source not explicitly listed as a key gets weight 0, meaning it is never used at all (treated the same as an unrecognized `global-cache` label always was). **This includes `origin` if it's omitted** — configuring `weight-sources` without an explicit `origin:` entry silently disables all direct-from-origin downloads for every centre. Always list `origin` explicitly once `weight-sources` is used for anything.
+2. **`weight-sources` is set (even with just one entry)** — any source not explicitly listed as a key gets weight 0, meaning it is never used at all (treated the same as an unrecognized `global-cache` label always was). **This includes `origin` if it's omitted** — configuring `weight-sources` without an explicit `origin:` entry silently disables all direct-from-origin downloads for every centre. Always list `origin` explicitly once `weight-sources` is used for anything, unless you deliberately mean to exclude it (e.g. a Subscriber whose `mqtt.whitelist` only subscribes to `cache/...` topics for one centre in the first place — see the worked example below).
 
 A source with weight 0 (whether by rule 2's default or an explicit `0`) is discarded outright, before any claim attempt or download — the same as the old priority list's "not in the allowlist" behavior.
 
-For any source with weight > 0, the delay before it enters the claim race is drawn randomly: `-ln(random()) * (weight-delay-seconds / weight)`. This has a useful property: when several sources are racing for the same content, each independently drawing a delay this way, the probability that a given source's delay elapses *first* (i.e. it wins the claim) is exactly its share of the total weight across all racing sources — with no coordination between sources needed. A weight of 2 wins roughly twice as often as a weight of 1; a weight of 0.2 loses to a weight of 1 about 5 times out of 6. This is an approximation, not an exact guarantee, since real messages from different sources don't all start their delay clock at the same instant — origin structurally arrives first, since a Global Cache can only republish after receiving from origin — so `weight-delay-seconds` should be set comfortably larger than the typical real arrival-time gap between origin and its mirrors for the approximation to hold well.
+**The delay formula.** For any source with weight > 0, the delay before it enters the claim race is drawn randomly:
 
-`weight-delay-seconds` is a single number (seconds) controlling the overall scale of that random delay; omitting it defaults to 8.
+```
+delaySeconds = min( -ln(random()) * (weight-delay-seconds / weight),  weight-delay-max-seconds )
+```
 
-Example:
+The `-ln(random()) * (weight-delay-seconds / weight)` part draws from an **exponential distribution** with mean `mu = weight-delay-seconds / weight`. This has a useful property: when several sources are racing for the same content, each independently drawing a delay this way, the probability that a given source's delay elapses *first* (i.e. it wins the claim) is exactly its share of the total weight across all racing sources — with no coordination between sources needed. A weight of 2 wins roughly twice as often as a weight of 1; a weight of 0.2 loses to a weight of 1 about 5 times out of 6. This is an approximation, not an exact guarantee, since real messages from different sources don't all start their delay clock at the same instant — origin structurally arrives first, since a Global Cache can only republish after receiving from origin — so `weight-delay-seconds` should be set comfortably larger than the typical real arrival-time gap between origin and its mirrors for the approximation to hold well.
+
+An exponential distribution has **no natural upper bound** — the `min(..., weight-delay-max-seconds)` is a hard cap added after a 2026-09-20 production incident (see the "production incident" note below), truncating the rare long draw rather than letting it run arbitrarily high. It's a plain clip, not a re-normalization: for the (by design, rare) fraction of draws that actually hit the cap, the weight-proportional win-share property above stops applying to that fraction specifically (every candidate clipped to the same cap value effectively ties). `weight-delay-max-seconds` defaults to 120 if unset.
+
+**Choosing values — the recipe.** Rather than guessing, work from an operational requirement. Useful facts about an exponential distribution with mean `mu`:
+
+- `P(delay > x) = e^(-x / mu)` — the probability a draw exceeds `x`
+- median `= mu * ln(2) ≈ 0.693 * mu`
+- the p-th percentile `= -mu * ln(1 - p)` (so the 90th percentile is `mu * ln(10) ≈ 2.3026 * mu`, the 99th is `mu * ln(100) ≈ 4.605 * mu`)
+
+Say your requirement is "a download must complete, including retries and transfer time, within 10 minutes" — which means the initial wait itself needs a tight, known bound. Decide a target percentile and value for your **worst** (lowest-weight) source — e.g. "the 90th percentile of `de-dwd-global-cache`'s wait should be ≤ 60s" — and solve for `mu`:
+
+```
+mu = target / ln(1 / (1 - p))        # p=0.9 -> mu = 60 / ln(10) ≈ 26.06s
+weight-delay-seconds = mu * weight_min      # weight_min = 0.2 -> ≈ 5.21s
+```
+
+Every other, higher-weighted source then automatically gets a *smaller* `mu` (faster), since `mu` is inversely proportional to weight — you only ever need to solve this for the lowest weight in your map. Pick `weight-delay-max-seconds` comfortably above that same target percentile (never below it, or the cap distorts the percentile you just solved for), and sanity-check how often it actually triggers with `e^(-weight-delay-max-seconds / mu)`.
+
+Worked example, matching a real `de-dwd`-focused deployment (a Subscriber whose `mqtt.whitelist` only carries `cache/a/wis2/de-dwd-gts-to-wis2/#` — origin is excluded by the whitelist itself, so it's deliberately left out of `weight-sources` rather than given an `origin: 1` entry):
 
 ```yaml
 subscriber:
-  weight-delay-seconds: 8
+  weight-delay-seconds: 5.2       # solved above: mu(0.2) = 5.2/0.2 = 26s -> P90 ≈ 60s for the worst source
+  weight-delay-max-seconds: 120   # hard cap; e^(-120/26) ≈ 1% of de-dwd-global-cache's draws ever reach it
   weight-sources:
-    origin: 1
-    de-dwd-global-cache: 0.2
+    de-dwd-global-cache: 0.2      # DWD's own relay -- likely the same infrastructure as wis2.dwd.de, downweighted
     cn-cma-global-cache: 1
     data-metoffice-noaa-global-cache: 1.5
     jp-jma-global-cache: 1
@@ -142,7 +163,9 @@ subscriber:
     sa-ncm-global-cache: 1
 ```
 
-Here, `de-dwd-global-cache` is heavily downweighted (0.2x, five times less likely to win a race than `origin`) — e.g. because DWD's origin server was taking a disproportionate share of downloads and connections should be spread toward other sources instead — while `data-metoffice-noaa-global-cache` is upweighted (1.5x, somewhat preferred). Any `cache/...` notification whose `global-cache` label isn't one of the seven keys above (or is missing the property altogether) is dropped, and so is any `origin/...` notification if `origin` were ever removed from this list.
+With these numbers: `de-dwd-global-cache` (weight 0.2, `mu ≈ 26s`) has a median wait around 18s, a 90th percentile around 60s, and virtually never (≈1%) hits the 120s cap. Every other listed source (weight ≥ 1, `mu ≤ 5.2s`) is far faster still (median under 4s, 90th percentile under 12s) and effectively never approaches the cap at all. Any `cache/...` notification whose `global-cache` label isn't one of the six keys above (or is missing the property altogether) is dropped — and since `origin` isn't listed here, so is any `origin/...` notification, which is intentional given this Subscriber's whitelist never subscribes to `origin/...` topics for this centre in the first place.
+
+**Production incident, 2026-09-20**: an earlier rollout of this mechanism (before `weight-delay-max-seconds` existed) used `weight-delay-seconds: 10` with `de-dwd-global-cache: 0.2` (mean delay 50s, unbounded tail) on a Subscriber whose traffic was *entirely* that one centre's content. Combined with a since-fixed bug in `consumer.ts`'s `runConsumerLoop` (it used to block reading the next batch of raw-stream entries on the current batch's delays finishing), the long tail of a handful of unlucky draws stalled the whole consumer loop for minutes at a time — collapsing download throughput for every source on that centre, not just the low-weight one, even though notifications kept arriving on the wire the whole time. Both issues are fixed: the loop no longer blocks reads on delays completing (with a `maxInFlight` backpressure cap as a safety net against unbounded concurrent in-flight entries instead), and `weight-delay-max-seconds` now bounds every delay outright. The recipe above is how to pick values that stay well clear of this failure mode by construction.
 
 ### `subscriber.mqtt.whitelist` — required, runtime-settable
 

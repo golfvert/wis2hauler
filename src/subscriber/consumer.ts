@@ -37,6 +37,8 @@ export interface ConsumerDeps {
 	weightSources: ReadonlyMap<string, number> | undefined;
 	/** subscriber['weight-delay-seconds'] -- the delay-scale parameter for order-links.ts's computeDelaySeconds(). */
 	weightDelaySeconds: number;
+	/** subscriber['weight-delay-max-seconds'] -- the hard cap on computeDelaySeconds()'s output, added 2026-09-20; see that function's own doc comment for the incident and the math behind choosing a value. */
+	weightDelayMaxSeconds: number;
 	/** Injectable Math.random() -- see order-links.ts's computeDelaySeconds() doc comment. */
 	random: () => number;
 	globalCacheMode: boolean;
@@ -320,7 +322,7 @@ export async function processEntry(entry: RawStreamEntry, deps: ConsumerDeps): P
 		}
 	}
 
-	const delaySeconds = computeDelaySeconds(classification, deps.weightDelaySeconds, deps.random);
+	const delaySeconds = computeDelaySeconds(classification, deps.weightDelaySeconds, deps.weightDelayMaxSeconds, deps.random);
 	if (delaySeconds > 0) await deps.sleep(delaySeconds * 1000);
 
 	const overrideResult = evaluateOverride(wnm, entry.topic, deps.overridelist);
@@ -499,19 +501,75 @@ export async function processEntry(entry: RawStreamEntry, deps: ConsumerDeps): P
  * itself was never being filled fast enough for any amount of
  * downloader/aria2 concurrency downstream to matter.
  *
- * This one is worse than the downloader case in a second way:
- * processEntry() can itself `await deps.sleep(delaySeconds * 1000)`
- * for a randomized, unbounded-above duration (order-links.ts's
- * computeDelaySeconds -- an exponential draw scaled by
- * `weight-delay-seconds` / this candidate's weight, applied to any
- * classified origin or cache entry, not just a distinguished
- * "priority" one) -- under the old sequential loop, ANY delayed message
- * anywhere in a batch of up to 500 would block every other entry after
- * it for that whole delay, every single poll tick.
+ * PRODUCTION INCIDENT, 2026-09-20 -- this loop used to `await
+ * Promise.allSettled(...)` over the WHOLE current batch (up to `count`
+ * raw-stream entries) before ever calling readRawMessages() again for
+ * the next one. That was survivable under the old CACHE_STAGGER_SECONDS
+ * mechanism: its worst-case delay was small and deterministic (a few
+ * seconds, unbounded only past the 8th priority position, which was
+ * rare in practice). It stopped being survivable the moment
+ * order-links.ts's computeDelaySeconds() replaced it with an
+ * exponential draw: for a low-weight source (e.g. `de-dwd-global-cache`
+ * at weight 0.2 against `weight-delay-seconds: 8`, mean delay
+ * 8/0.2 = 40s, with a genuinely unbounded right tail -- P(>80s) ~ 13.5%,
+ * P(>200s) ~ 0.7%), the EXPECTED MAXIMUM of up to 500 i.i.d. draws in
+ * one batch is roughly `scale * ln(500) ≈ scale * 6.2` -- over four
+ * minutes on average for that example, not a rare worst case. DWD
+ * being this deployment's single busiest source meant most batches
+ * were mostly DWD entries, so this wasn't an edge case: every batch hit
+ * something close to that multi-minute tail, and since the OLD loop
+ * couldn't read a new batch until the current one fully settled, the
+ * raw stream (which ingest.ts keeps filling at its own unrelated pace,
+ * regardless of how backed up this loop is) piled up behind a consumer
+ * that had effectively stopped advancing. Confirmed against the
+ * maintainer's own production graphs: EVERY source's download rate --
+ * not just DWD's -- collapsed to near zero within minutes of deploying
+ * the weighted-delay config, while notifications kept arriving on the
+ * wire the whole time.
+ *
+ * The fix: dispatching a batch is no longer awaited by the read loop at
+ * all -- see the `void Promise.allSettled(...)` below. The loop reads
+ * and advances `lastId` continuously, regardless of how long any
+ * already-dispatched entry's delay/claim is still running; those
+ * entries keep progressing concurrently in the background exactly as
+ * before, just no longer gating anyone else's turn. `maxInFlight` is a
+ * safety net, not a fix in itself: without SOME cap, a sustained firehose
+ * feeding a low-weight (long-mean-delay) source could still queue an
+ * unbounded number of concurrently-sleeping entries (and, once each
+ * wakes, an unbounded number of concurrent Redis claim/hash calls) --
+ * the loop pauses reading (not dispatching -- already-dispatched entries
+ * are never paused or cancelled) once that many are outstanding.
+ *
+ * A second, independent finding from the same incident, config-only and
+ * not something this function can fix: `de-dwd-global-cache` was
+ * ALREADY the sole candidate for that centre's content at the time
+ * (`origin` blacklisted upstream in `subscriber.mqtt.blacklist`), so its
+ * low weight (0.2) was never actually racing anything -- it was pure
+ * added latency (5x weight-delay-seconds, on average) for zero fairness
+ * benefit. A source with a blacklisted/absent competitor should be
+ * weighted the same as everyone else (or left out of weight-sources
+ * entirely, if nothing else needs down-weighting for that centre).
  */
-export async function runConsumerLoop(deps: ConsumerDeps, signal: AbortSignal, startId = '0-0', pollIntervalMs = 1000, count = 500): Promise<void> {
+export async function runConsumerLoop(
+	deps: ConsumerDeps,
+	signal: AbortSignal,
+	startId = '0-0',
+	pollIntervalMs = 1000,
+	count = 500,
+	maxInFlight = 5000,
+): Promise<void> {
 	let lastId = startId;
+	let inFlight = 0;
 	while (!signal.aborted) {
+		if (inFlight >= maxInFlight) {
+			// Backpressure only -- see this function's own doc comment.
+			// Entries already dispatched keep running; this just holds off
+			// pulling MORE off the raw stream (and thus growing `inFlight`
+			// further) until some of them finish.
+			await deps.sleep(pollIntervalMs);
+			continue;
+		}
+
 		let entries: RawStreamEntry[];
 		try {
 			entries = await deps.store.readRawMessages(deps.queue, lastId, count);
@@ -527,7 +585,14 @@ export async function runConsumerLoop(deps: ConsumerDeps, signal: AbortSignal, s
 		// last one), just computed without needing the loop itself.
 		if (entries.length > 0) lastId = entries[entries.length - 1]!.id;
 
-		await Promise.allSettled(
+		inFlight += entries.length;
+		// NOT awaited, 2026-09-20 (see this function's own doc comment):
+		// dispatch this batch and immediately loop back to read the next
+		// one -- reading must never be gated on any entry's delay/claim
+		// finishing. Each entry's own errors are still caught inside the
+		// map callback exactly as before; only the outer await moved to a
+		// `.finally()` that just decrements the in-flight counter.
+		void Promise.allSettled(
 			entries.map(async (entry) => {
 				if (!entry.topic || !entry.payload) return; // matches the original's "Process" function skipping fieldless entries
 				try {
@@ -536,7 +601,10 @@ export async function runConsumerLoop(deps: ConsumerDeps, signal: AbortSignal, s
 					deps.log.error(`consumer: failed processing ${entry.id} (${entry.topic}): ${err instanceof Error ? err.message : String(err)}`);
 				}
 			}),
-		);
+		).finally(() => {
+			inFlight -= entries.length;
+		});
+
 		if (entries.length === 0 && !signal.aborted) await deps.sleep(pollIntervalMs);
 	}
 }
