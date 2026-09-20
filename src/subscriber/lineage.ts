@@ -62,9 +62,8 @@
 //      (it subscribes literally "origin/*"). This catches an ORIGIN
 //      reusing a data_id without rel=update.
 //
-//   2. cache/a/wis2/... traffic (`{kind: 'cache'}` or
-//      `{kind: 'cache-unprioritized'}`), keyed by (the message's own
-//      `global-cache` label, data_id) -- added 2026-09-17 at the
+//   2. cache/a/wis2/... traffic (`{kind: 'cache'}`), keyed by (the
+//      message's own `global-cache` label, data_id) -- added 2026-09-17 at the
 //      maintainer's explicit follow-up request ("if a GC is pushing
 //      multiple times the same data_id, same pubtime and no rel=update
 //      this it is a duplicate" / "Because if a Global Cache goes crazy,

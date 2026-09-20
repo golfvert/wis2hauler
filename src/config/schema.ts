@@ -195,7 +195,16 @@ export type SubscriberMqtt = Static<typeof SubscriberMqtt>;
 export const SubscriberSection = Type.Object(
 	{
 		'global-broker': Type.Array(BrokerConfig, { minItems: 1 }),
-		'priority-global-cache': Type.Optional(Type.Array(Type.String())),
+		// Replaces the old 'priority-global-cache' ordered list (2026-09-20):
+		// keyed by the FULL raw wnm.properties['global-cache'] string (e.g.
+		// "de-dwd-global-cache"), plus the literal key "origin" for the
+		// origin case -- see order-links.ts's resolveWeight() for the two
+		// default rules governing an unset map vs. a key missing from a
+		// present map.
+		'weight-sources': Type.Optional(Type.Record(Type.String(), Type.Number({ minimum: 0 }))),
+		// Delay-scale parameter (seconds) for the exponential race --
+		// see order-links.ts's computeDelaySeconds().
+		'weight-delay-seconds': Type.Optional(Type.Number({ minimum: 0 })),
 		mqtt: SubscriberMqtt,
 	},
 	{ additionalProperties: true },
@@ -341,7 +350,7 @@ export const KNOWN_GLOBAL = [
 ] as const;
 export const KNOWN_REDIS = ['mode', 'nodes', 'password'] as const;
 export const KNOWN_LOG = ['level', 'to', 'size', 'number', 'dir'] as const;
-export const KNOWN_SUBSCRIBER = ['global-broker', 'priority-global-cache', 'mqtt'] as const;
+export const KNOWN_SUBSCRIBER = ['global-broker', 'weight-sources', 'weight-delay-seconds', 'mqtt'] as const;
 export const KNOWN_SUBSCRIBER_MQTT = ['whitelist', 'blacklist', 'overridelist', 'global-replay', 'qos'] as const;
 export const KNOWN_DOWNLOADER = [
 	'aria-secret', 'aria-url', 'aria-inqueue', 'aria-download', 'aria-check-tls', 'download-url', 'rename-to', 's3access', 'credentials',

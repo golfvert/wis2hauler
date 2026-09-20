@@ -107,25 +107,42 @@ Required iff `SUBSCRIBER` is in `global.roles`.
 
 Up to two WIS2 Global Brokers, wired to `GB1`/`GB2`. Messages from GB1 are processed immediately; GB2 messages are deliberately delayed 2 seconds before deduplication, so that when the same notification arrives on both, the GB1 copy wins and the GB2 copy is dropped as a duplicate. If GB1 is unreachable, GB2 still works on its own. Same broker object shape as `global.local-broker`.
 
-### `subscriber.priority-global-cache` — optional, unlimited length
+### `subscriber.weight-sources` / `subscriber.weight-delay-seconds` — optional (2026-09-20, replaces `priority-global-cache`)
 
-An ordered list of `global-cache` identifiers. Once this is set (non-empty), it works as an **allowlist** for `cache/a/wis2/...` traffic, not just a tie-breaker: a `cache` topic notification whose `properties['global-cache']` value isn't in the list — or is missing the property altogether — is discarded outright, before any claim attempt or download. `origin/a/wis2/...` traffic (the true origin's own message, never a repeated copy) is never filtered by this list; there is no `global-cache` value to check on it.
+Controls which sources (the true origin, and/or specific Global Cache repeaters) this Subscriber is willing to claim content from, and how the claim race between them is decided when the same content arrives via more than one source.
 
-For a centre that *is* listed, its position controls how long this Global Cache waits before entering the claim race for that content, relative to other listed centres — earlier in the list means it tries to claim sooner, so a preferred source's copy is more likely to win when the same content arrives via more than one cache. Position 0 and 1 both wait 1 second; from position 2 onward the wait grows by 1 second per position (3s, 4s, 5s, 6s, 7s, 8s, 9s, 10s, ...) with no upper bound — the list itself is not length-limited (an earlier Node-RED version of this flow was capped at 8 entries by a Switch node's fixed number of outputs; that was a wiring limitation, not a rule, and isn't reproduced here).
+`weight-sources` is a map from a source key to a non-negative weight:
 
-Leaving `priority-global-cache` unset (or empty) turns this off entirely: every `cache/a/wis2/...` notification is then treated the same as an origin message — processed immediately, no allowlist filtering, no stagger delay.
+- The key `origin` refers to `origin/a/wis2/...` traffic (the true origin's own message).
+- Any other key is the FULL raw `properties['global-cache']` value a `cache/a/wis2/...` notification carries (e.g. `de-dwd-global-cache`, not a shortened `de-dwd`) — this is a Global Cache repeater relaying that content.
+
+Two default rules govern weight resolution:
+
+1. **`weight-sources` entirely unset** — every source (origin and any recognized cache repeater) gets weight 1. This is the zero-config behavior: everything races on equal footing, matching the old unset-`priority-global-cache` behavior.
+2. **`weight-sources` is set (even with just one entry)** — any source not explicitly listed as a key gets weight 0, meaning it is never used at all (treated the same as an unrecognized `global-cache` label always was). **This includes `origin` if it's omitted** — configuring `weight-sources` without an explicit `origin:` entry silently disables all direct-from-origin downloads for every centre. Always list `origin` explicitly once `weight-sources` is used for anything.
+
+A source with weight 0 (whether by rule 2's default or an explicit `0`) is discarded outright, before any claim attempt or download — the same as the old priority list's "not in the allowlist" behavior.
+
+For any source with weight > 0, the delay before it enters the claim race is drawn randomly: `-ln(random()) * (weight-delay-seconds / weight)`. This has a useful property: when several sources are racing for the same content, each independently drawing a delay this way, the probability that a given source's delay elapses *first* (i.e. it wins the claim) is exactly its share of the total weight across all racing sources — with no coordination between sources needed. A weight of 2 wins roughly twice as often as a weight of 1; a weight of 0.2 loses to a weight of 1 about 5 times out of 6. This is an approximation, not an exact guarantee, since real messages from different sources don't all start their delay clock at the same instant — origin structurally arrives first, since a Global Cache can only republish after receiving from origin — so `weight-delay-seconds` should be set comfortably larger than the typical real arrival-time gap between origin and its mirrors for the approximation to hold well.
+
+`weight-delay-seconds` is a single number (seconds) controlling the overall scale of that random delay; omitting it defaults to 8.
 
 Example:
 
 ```yaml
 subscriber:
-  priority-global-cache:
-    - gb1-global-cache
-    - gb2-global-cache
-    - gb3-global-cache
+  weight-delay-seconds: 8
+  weight-sources:
+    origin: 1
+    de-dwd-global-cache: 0.2
+    cn-cma-global-cache: 1
+    data-metoffice-noaa-global-cache: 1.5
+    jp-jma-global-cache: 1
+    kr-kma-global-cache: 1
+    sa-ncm-global-cache: 1
 ```
 
-A notification with `global-cache: gb1-global-cache` waits 1s before claiming; `gb2-global-cache` also waits 1s; `gb3-global-cache` waits 3s; any `cache/...` notification whose `global-cache` isn't one of these three (or doesn't have one at all) is dropped.
+Here, `de-dwd-global-cache` is heavily downweighted (0.2x, five times less likely to win a race than `origin`) — e.g. because DWD's origin server was taking a disproportionate share of downloads and connections should be spread toward other sources instead — while `data-metoffice-noaa-global-cache` is upweighted (1.5x, somewhat preferred). Any `cache/...` notification whose `global-cache` label isn't one of the seven keys above (or is missing the property altogether) is dropped, and so is any `origin/...` notification if `origin` were ever removed from this list.
 
 ### `subscriber.mqtt.whitelist` — required, runtime-settable
 

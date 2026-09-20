@@ -12,7 +12,7 @@
 // "1st + GC + No Cache" (publish-only), "Not 1st + Cache" (wait), and
 // the unlabelled fourth combination that matches no switch rule at all
 // (drop)).
-import { reorderLinks, classifyTopic, staggerDelaySeconds } from './order-links.ts';
+import { reorderLinks, classifyTopic, computeDelaySeconds } from './order-links.ts';
 import { evaluateOverride } from './override.ts';
 import { prepareMessage } from './prepare.ts';
 import { computeDownloaderId } from './content-id.ts';
@@ -33,7 +33,12 @@ export interface ConsumerDeps {
 	store: SubscriberStore;
 	queue: string;
 	overridelist: readonly OverrideRule[] | undefined;
-	priorityGlobalCache: readonly string[] | undefined;
+	/** subscriber['weight-sources'], as a Map -- see order-links.ts's resolveWeight() for the two default rules. */
+	weightSources: ReadonlyMap<string, number> | undefined;
+	/** subscriber['weight-delay-seconds'] -- the delay-scale parameter for order-links.ts's computeDelaySeconds(). */
+	weightDelaySeconds: number;
+	/** Injectable Math.random() -- see order-links.ts's computeDelaySeconds() doc comment. */
+	random: () => number;
 	globalCacheMode: boolean;
 	/** global["centre-id"] -- stamped onto the cache-republish's properties["global-cache"] and the monitoring event's "source". */
 	centreId: string;
@@ -44,15 +49,16 @@ export interface ConsumerDeps {
 	/** Injectable so tests don't have to wait out real stagger delays. */
 	sleep: (ms: number) => Promise<void>;
 	now: () => Date;
+	// orderLinksLog -- REMOVED, 2026-09-20: used to port the original's
 	// "Order links" (Subscriber tab, previous-nodes dd90923f6ece3c99 /
-	// e5adfbc3c92d7b88, Warn) -- see processEntry() below. Optional so
-	// every existing hand-built ConsumerDeps in this file's own tests
-	// keeps compiling without it. NOT wired: "Q & S ?" (previous-node
-	// 04d1fbc09060ffc3, Debug) -- it hangs off the process-mode
-	// live-pause gate, which (per this port's own "Ready ?"-gate
-	// precedent, see run.ts's header) has never been built; there's no
-	// pause decision anywhere in this file to attach a log call to.
-	orderLinksLog?: SourceLogger;
+	// e5adfbc3c92d7b88, Warn) function node, keyed on the static
+	// "priority position" concept the weighted-source redesign
+	// eliminated (see processEntry's matching removal comment). NOT
+	// wired: "Q & S ?" (previous-node 04d1fbc09060ffc3, Debug) -- it
+	// hangs off the process-mode live-pause gate, which (per this port's
+	// own "Ready ?"-gate precedent, see run.ts's header) has never been
+	// built; there's no pause decision anywhere in this file to attach a
+	// log call to.
 	// NOT a port of anything in flows.json -- added 2026-09-13 at the
 	// maintainer's own prompting ("it still doesn't explain why not using the
 	// logs. That's why debug logs are made"): every OTHER per-stage
@@ -244,20 +250,18 @@ export async function processEntry(entry: RawStreamEntry, deps: ConsumerDeps): P
 		return;
 	}
 
-	const classification = classifyTopic(entry.topic, wnm, deps.priorityGlobalCache);
-	// "Order links" (Warn): the original's own function node fans this
-	// same message onward to a Warn-level logIO call whenever it lands on
-	// output 1 (origin topics AND cache topics with no priority-global-
-	// cache configured at all -- both share one output, see the session's
-	// flows.json trace) or output 2 (a cache topic at priority position
-	// 0, the highest-priority Global Cache repeater) -- ported as-is, not
-	// judged: every one of these outcomes is Warn severity in the
-	// original regardless of being ordinary traffic.
-	if (classification.kind === 'origin' || classification.kind === 'cache-unprioritized') {
-		deps.orderLinksLog?.warn({ topic: entry.topic, classification: classification.kind });
-	} else if (classification.kind === 'cache' && classification.position === 0) {
-		deps.orderLinksLog?.warn({ topic: entry.topic, classification: classification.kind, position: classification.position });
-	}
+	const classification = classifyTopic(entry.topic, wnm, deps.weightSources);
+	// "Order links" (Warn) -- REMOVED, 2026-09-20: the original's own
+	// function node fanned this message onward to a Warn-level logIO call
+	// whenever it landed on output 1 (origin topics and unprioritized
+	// cache topics) or output 2 (a cache topic at priority position 0),
+	// ported as-is for a while after this port lost its own Node-RED
+	// wiring outputs. The weighted-source redesign eliminated the static
+	// "position" concept this was keyed on (there is no longer a single
+	// distinguished "position 0" candidate, and "unprioritized" is now
+	// just the ordinary default-weight case) -- no replacement condition
+	// is invented here; deps.decisionLog below already records every
+	// classified entry's outcome.
 	if (classification.kind === 'ignore') {
 		if (deps.isDebugEnabled()) deps.log.log(`consumer: ignoring ${entry.topic} (neither origin nor a recognized cache source)`);
 		return;
@@ -287,7 +291,7 @@ export async function processEntry(entry: RawStreamEntry, deps: ConsumerDeps): P
 			{ originCentreId },
 		);
 		if (isDuplicate) return;
-	} else if (classification.kind === 'cache' || classification.kind === 'cache-unprioritized') {
+	} else if (classification.kind === 'cache') {
 		// 2. A single Global Cache repeating ITS OWN publication of a
 		// data_id without rel=update -- added 2026-09-17 at the
 		// maintainer's explicit follow-up ("if a GC is pushing multiple
@@ -316,8 +320,8 @@ export async function processEntry(entry: RawStreamEntry, deps: ConsumerDeps): P
 		}
 	}
 
-	const staggerSeconds = staggerDelaySeconds(classification);
-	if (staggerSeconds > 0) await deps.sleep(staggerSeconds * 1000);
+	const delaySeconds = computeDelaySeconds(classification, deps.weightDelaySeconds, deps.random);
+	if (delaySeconds > 0) await deps.sleep(delaySeconds * 1000);
 
 	const overrideResult = evaluateOverride(wnm, entry.topic, deps.overridelist);
 	const prepared = prepareMessage(wnm, entry.topic, overrideResult.override);
@@ -496,14 +500,14 @@ export async function processEntry(entry: RawStreamEntry, deps: ConsumerDeps): P
  * downloader/aria2 concurrency downstream to matter.
  *
  * This one is worse than the downloader case in a second way:
- * processEntry() can itself `await deps.sleep(staggerSeconds * 1000)`
- * for 1s or more (order-links.ts's staggerDelaySeconds, only when
- * `priority-global-cache` is configured -- unbounded above 8s since
- * priority-global-cache's length is no longer capped, 2026-09-15)
- * -- under the old sequential
- * loop, ANY cache-priority message anywhere in a batch of up to 500
- * would block every other entry after it for that whole delay, every
- * single poll tick.
+ * processEntry() can itself `await deps.sleep(delaySeconds * 1000)`
+ * for a randomized, unbounded-above duration (order-links.ts's
+ * computeDelaySeconds -- an exponential draw scaled by
+ * `weight-delay-seconds` / this candidate's weight, applied to any
+ * classified origin or cache entry, not just a distinguished
+ * "priority" one) -- under the old sequential loop, ANY delayed message
+ * anywhere in a batch of up to 500 would block every other entry after
+ * it for that whole delay, every single poll tick.
  */
 export async function runConsumerLoop(deps: ConsumerDeps, signal: AbortSignal, startId = '0-0', pollIntervalMs = 1000, count = 500): Promise<void> {
 	let lastId = startId;

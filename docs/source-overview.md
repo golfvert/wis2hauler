@@ -171,7 +171,7 @@ Every Redis key-name builder shared across roles (`downloaderHashKey`, `download
 Ingests WIS2 notifications from GB1/GB2, dedups and filters them, and queues matching ones for download.
 
 - **`ingest.ts`** — the raw MQTT-message-to-stream-entry stage: blacklist filtering, a per-connection SETNX-based dedup (`wnmid`), then XADD onto the shared raw stream. GB1 and GB2 are deliberately asymmetric here (GB2 delays every message 2s; GB1's blacklist gets an extra recommended-topic rule appended in global-cache mode, GB2's doesn't) — both asymmetries are preserved, not "fixed."
-- **`order-links.ts`** — reorders a WNM's links (canonical/update first) and computes the per-message stagger delay used before the content-dedup claim race, so that when the same content arrives via multiple paths, the highest-priority copy tends to win the claim.
+- **`order-links.ts`** — reorders a WNM's links (canonical/update first) and computes the per-message randomized delay used before the content-dedup claim race, so that when the same content arrives via multiple paths, each source's share of claimed downloads tracks its configured weight (`subscriber.weight-sources`) rather than a fixed priority order.
 - **`content-id.ts`** — derives the content-based `downloader_id` (keyed on integrity hash if present, else publication time) used to dedup a granule across every path it might arrive by.
 - **`override.ts`** — the overridelist rules: force publish-only (no download) by topic match and/or size.
 - **`prepare.ts`** — derives the "source" label and the combined `nocache` flag (`properties.cache === false` OR an overridelist match) that `claim.ts` and the job-hash record both need.

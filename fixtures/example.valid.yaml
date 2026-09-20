@@ -33,8 +33,10 @@ subscriber:
     - broker: "mqtts://gb2.example.org:8883"
       username: "subscriber"
       password: "changeme"
-  priority-global-cache:
-    - "gb1.example.org"
+  weight-sources:
+    origin: 1
+    "gb1.example.org-global-cache": 1
+  weight-delay-seconds: 8
   mqtt:
     whitelist:
       - "origin/a/wis2/fr-meteofrance/data/#"

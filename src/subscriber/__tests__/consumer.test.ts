@@ -6,11 +6,6 @@ import type { RawStreamEntry } from '../store.ts';
 import { computeDownloaderId } from '../content-id.ts';
 import type { SourceLogger } from '../../logging/logger.ts';
 
-function fakeSourceLogger(): { logger: SourceLogger; warnCalls: Record<string, unknown>[] } {
-	const warnCalls: Record<string, unknown>[] = [];
-	return { logger: { info: () => {}, warn: (d) => warnCalls.push(d), debug: () => {} }, warnCalls };
-}
-
 function fakeInfoLogger(): { logger: SourceLogger; infoCalls: Record<string, unknown>[] } {
 	const infoCalls: Record<string, unknown>[] = [];
 	return { logger: { info: (d) => infoCalls.push(d), warn: () => {}, debug: () => {} }, infoCalls };
@@ -32,7 +27,12 @@ function baseDeps(store: FakeStore, overrides: Partial<ConsumerDeps> = {}): Cons
 		store,
 		queue: 'q1',
 		overridelist: undefined,
-		priorityGlobalCache: undefined,
+		weightSources: undefined,
+		// 0 by default -- computeDelaySeconds always returns 0 regardless of
+		// weight/random when the scale parameter itself is 0, so tests that
+		// don't care about the delay mechanism never have to wait for one.
+		weightDelaySeconds: 0,
+		random: () => 0.5,
 		globalCacheMode: false,
 		centreId: 'fr-meteofrance',
 		publishClients: [],
@@ -69,50 +69,6 @@ describe('processEntry', () => {
 		await expect(processEntry({ id: '1-0', topic: 'origin/a/wis2/fr-meteofrance/data/foo', payload: '{bad' }, deps)).resolves.toBeUndefined();
 	});
 
-	test('"Order links" (Warn): an origin topic logs once', async () => {
-		const store = new FakeStore();
-		const { logger, warnCalls } = fakeSourceLogger();
-		const deps = baseDeps(store, { orderLinksLog: logger });
-		const w = wnm('m-warn-1');
-
-		await processEntry(entry('origin/a/wis2/fr-meteofrance/data/foo', w), deps);
-
-		expect(warnCalls).toEqual([{ topic: 'origin/a/wis2/fr-meteofrance/data/foo', classification: 'origin' }]);
-	});
-
-	test('"Order links" (Warn): a cache topic with no priority-global-cache configured (cache-unprioritized) also logs', async () => {
-		const store = new FakeStore();
-		const { logger, warnCalls } = fakeSourceLogger();
-		const deps = baseDeps(store, { orderLinksLog: logger, priorityGlobalCache: undefined });
-		const w = wnm('m-warn-2');
-
-		await processEntry(entry('cache/a/wis2/fr-meteofrance/data/foo', w, '1-1'), deps);
-
-		expect(warnCalls).toEqual([{ topic: 'cache/a/wis2/fr-meteofrance/data/foo', classification: 'cache-unprioritized' }]);
-	});
-
-	test('"Order links" (Warn): a cache topic at priority position 0 also logs, with its position', async () => {
-		const store = new FakeStore();
-		const { logger, warnCalls } = fakeSourceLogger();
-		const deps = baseDeps(store, { orderLinksLog: logger, priorityGlobalCache: ['fr-meteofrance', 'de-dwd'], sleep: async () => {} });
-		const w = wnm('m-warn-3', { 'global-cache': 'fr-meteofrance' });
-
-		await processEntry(entry('cache/a/wis2/fr-meteofrance/data/foo', w, '1-2'), deps);
-
-		expect(warnCalls).toEqual([{ topic: 'cache/a/wis2/fr-meteofrance/data/foo', classification: 'cache', position: 0 }]);
-	});
-
-	test('"Order links" (Warn): a cache topic at a lower priority position does NOT log (only position 0 is wired to Warn)', async () => {
-		const store = new FakeStore();
-		const { logger, warnCalls } = fakeSourceLogger();
-		const deps = baseDeps(store, { orderLinksLog: logger, priorityGlobalCache: ['fr-meteofrance', 'de-dwd'], sleep: async () => {} });
-		const w = wnm('m-warn-4', { 'global-cache': 'de-dwd' });
-
-		await processEntry(entry('cache/a/wis2/fr-meteofrance/data/foo', w, '1-3'), deps);
-
-		expect(warnCalls).toHaveLength(0);
-	});
-
 	test('an unclaimed, not-already-complete origin message becomes a download job (HSET href="queue" + EXPIRE + XADD work queue)', async () => {
 		const store = new FakeStore();
 		const deps = baseDeps(store);
@@ -133,6 +89,34 @@ describe('processEntry', () => {
 
 		expect(store.workQueue).toHaveLength(1);
 		expect(store.workQueue[0]).toEqual({ queue: 'q1', downloaderId, href: 'https://origin.example.org/file.grib2', topic: 'origin/a/wis2/fr-meteofrance/data/foo', content: false });
+	});
+
+	// weight-sources present but origin omitted -> origin resolves to weight
+	// 0 (resolveWeight's second default rule) -> classifyTopic returns
+	// 'ignore' -> processEntry drops it before ever touching the store.
+	test('weight-sources configured without an explicit origin entry excludes origin entirely (weight 0)', async () => {
+		const store = new FakeStore();
+		const deps = baseDeps(store, { weightSources: new Map([['de-dwd-global-cache', 1]]) });
+		const w = wnm('m2z');
+
+		await processEntry(entry('origin/a/wis2/fr-meteofrance/data/foo', w), deps);
+
+		expect(store.claimedIds.size).toBe(0);
+		expect(store.hashes.size).toBe(0);
+	});
+
+	// A cache source not listed as a key in a present weight-sources map
+	// also resolves to weight 0 -> ignored, same as an unrecognized
+	// global-cache label under the old priority-global-cache mechanism.
+	test('a cache source not listed in a configured weight-sources map is ignored (weight 0)', async () => {
+		const store = new FakeStore();
+		const deps = baseDeps(store, { weightSources: new Map([['origin', 1], ['de-dwd-global-cache', 1]]) });
+		const w = wnm('m2y', { 'global-cache': 'unknown-global-cache' });
+
+		await processEntry(entry('cache/a/wis2/fr-meteofrance/data/foo', w), deps);
+
+		expect(store.claimedIds.size).toBe(0);
+		expect(store.hashes.size).toBe(0);
 	});
 
 	test('nocache=true (cache:false) still downloads when global-cache mode is OFF -- nocache only gates the publish-only branch', async () => {
@@ -436,16 +420,45 @@ describe('processEntry', () => {
 		expect(monitorMsg.data.content.description).toMatch(/topic matches/);
 	});
 
-	test('a cache-priority classification is staggered before the claim race', async () => {
+	// Replaces the old static-priority stagger test: a cache classification
+	// now draws a delay from order-links.ts's computeDelaySeconds (an
+	// exponential draw scaled by weight-delay-seconds / this candidate's
+	// weight), with `random` injected here for a deterministic result.
+	test('a cache classification is delayed by the weighted formula before the claim race', async () => {
 		const store = new FakeStore();
 		const sleeps: number[] = [];
-		const w: Wnm = { ...wnm('m7'), properties: { ...wnm('m7').properties, 'global-cache': 'gb2' } };
-		const deps = baseDeps(store, { priorityGlobalCache: ['gb1', 'gb2'], sleep: async (ms) => void sleeps.push(ms) });
+		const w: Wnm = { ...wnm('m7'), properties: { ...wnm('m7').properties, 'global-cache': 'gb2-global-cache' } };
+		const deps = baseDeps(store, {
+			weightSources: new Map([['gb2-global-cache', 2]]),
+			weightDelaySeconds: 2,
+			random: () => Math.exp(-1), // -ln(e^-1) = 1
+			sleep: async (ms) => void sleeps.push(ms),
+		});
 
 		await processEntry(entry('cache/a/wis2/fr-meteofrance/data/foo', w), deps);
 
-		expect(sleeps).toEqual([1000]); // position 1 -> CACHE_STAGGER_SECONDS[1] = 1s
+		expect(sleeps).toEqual([1000]); // -ln(random) * (weightDelaySeconds / weight) = 1 * (2/2) = 1s
 		expect(store.workQueue).toHaveLength(1); // still proceeds to a normal claim afterwards
+	});
+
+	// weight 0 (e.g. a source explicitly zeroed out, or omitted from a
+	// configured weight-sources map) never reaches computeDelaySeconds at
+	// all -- classifyTopic itself resolves it straight to 'ignore'.
+	test('a weight-0 cache source is ignored outright, never delayed or claimed', async () => {
+		const store = new FakeStore();
+		const sleeps: number[] = [];
+		const w: Wnm = { ...wnm('m7z'), properties: { ...wnm('m7z').properties, 'global-cache': 'zeroed-global-cache' } };
+		const deps = baseDeps(store, {
+			weightSources: new Map([['zeroed-global-cache', 0]]),
+			weightDelaySeconds: 5,
+			sleep: async (ms) => void sleeps.push(ms),
+		});
+
+		await processEntry(entry('cache/a/wis2/fr-meteofrance/data/foo', w), deps);
+
+		expect(sleeps).toHaveLength(0);
+		expect(store.workQueue).toHaveLength(0);
+		expect(store.claimedIds.size).toBe(0);
 	});
 
 	// "Decision" (Debug): added 2026-09-13 so global.log.level/.to actually
@@ -604,9 +617,9 @@ describe('lineage (origin-topic data_id duplicate detection)', () => {
 	test('cache-topic traffic with identical data_id+pubtime from DIFFERENT relays is never flagged against each other', async () => {
 		const store = new FakeStore();
 		const { logger, infoCalls } = fakeInfoLogger();
-		const deps = baseDeps(store, { duplicateLog: logger, priorityGlobalCache: ['gc-a', 'gc-b'], sleep: async () => {} });
-		const fromA = { ...wnmWithLinks('c1a', 'data-c1', '2026-01-01T00:00:00Z', 'canonical'), properties: { pubtime: '2026-01-01T00:00:00Z', data_id: 'data-c1', 'global-cache': 'gc-a' } };
-		const fromB = { ...wnmWithLinks('c1b', 'data-c1', '2026-01-01T00:00:00Z', 'canonical'), properties: { pubtime: '2026-01-01T00:00:00Z', data_id: 'data-c1', 'global-cache': 'gc-b' } };
+		const deps = baseDeps(store, { duplicateLog: logger });
+		const fromA = { ...wnmWithLinks('c1a', 'data-c1', '2026-01-01T00:00:00Z', 'canonical'), properties: { pubtime: '2026-01-01T00:00:00Z', data_id: 'data-c1', 'global-cache': 'gc-a-global-cache' } };
+		const fromB = { ...wnmWithLinks('c1b', 'data-c1', '2026-01-01T00:00:00Z', 'canonical'), properties: { pubtime: '2026-01-01T00:00:00Z', data_id: 'data-c1', 'global-cache': 'gc-b-global-cache' } };
 
 		await processEntry(entry('cache/a/wis2/fr-meteofrance/data/foo', fromA, '1-0'), deps);
 		await processEntry(entry('cache/a/wis2/fr-meteofrance/data/foo', fromB, '1-1'), deps);
@@ -629,9 +642,9 @@ describe('lineage (origin-topic data_id duplicate detection)', () => {
 		test('same data_id, same pubtime, rel=canonical both times, from the SAME GC -> dropped, logged with the globalCache label', async () => {
 			const store = new FakeStore();
 			const { logger, infoCalls } = fakeInfoLogger();
-			const deps = baseDeps(store, { duplicateLog: logger, priorityGlobalCache: ['gc-a'], sleep: async () => {} });
-			const first = cacheWnm('g1a', 'data-g1', '2026-01-01T00:00:00Z', 'gc-a', 'canonical');
-			const second = cacheWnm('g1b', 'data-g1', '2026-01-01T00:00:00Z', 'gc-a', 'canonical');
+			const deps = baseDeps(store, { duplicateLog: logger });
+			const first = cacheWnm('g1a', 'data-g1', '2026-01-01T00:00:00Z', 'gc-a-global-cache', 'canonical');
+			const second = cacheWnm('g1b', 'data-g1', '2026-01-01T00:00:00Z', 'gc-a-global-cache', 'canonical');
 
 			await processEntry(entry('cache/a/wis2/fr-meteofrance/data/foo', first, '1-0'), deps);
 			await processEntry(entry('cache/a/wis2/fr-meteofrance/data/foo', second, '1-1'), deps);
@@ -642,16 +655,16 @@ describe('lineage (origin-topic data_id duplicate detection)', () => {
 				dataId: 'data-g1',
 				pubtime: '2026-01-01T00:00:00Z',
 				reason: 'pubtime is not newer than a previously seen publish for this data_id',
-				globalCache: 'gc-a',
+				globalCache: 'gc-a-global-cache',
 			});
 		});
 
 		test('a newer pubtime but still rel=canonical, from the SAME GC -> still a duplicate', async () => {
 			const store = new FakeStore();
 			const { logger, infoCalls } = fakeInfoLogger();
-			const deps = baseDeps(store, { duplicateLog: logger, priorityGlobalCache: ['gc-a'], sleep: async () => {} });
-			const first = cacheWnm('g2a', 'data-g2', '2026-01-01T00:00:00Z', 'gc-a', 'canonical');
-			const second = cacheWnm('g2b', 'data-g2', '2026-01-02T00:00:00Z', 'gc-a', 'canonical');
+			const deps = baseDeps(store, { duplicateLog: logger });
+			const first = cacheWnm('g2a', 'data-g2', '2026-01-01T00:00:00Z', 'gc-a-global-cache', 'canonical');
+			const second = cacheWnm('g2b', 'data-g2', '2026-01-02T00:00:00Z', 'gc-a-global-cache', 'canonical');
 
 			await processEntry(entry('cache/a/wis2/fr-meteofrance/data/foo', first, '1-0'), deps);
 			await processEntry(entry('cache/a/wis2/fr-meteofrance/data/foo', second, '1-1'), deps);
@@ -663,9 +676,9 @@ describe('lineage (origin-topic data_id duplicate detection)', () => {
 		test('a newer pubtime WITH rel=update, from the SAME GC -> accepted, not dropped', async () => {
 			const store = new FakeStore();
 			const { logger, infoCalls } = fakeInfoLogger();
-			const deps = baseDeps(store, { duplicateLog: logger, priorityGlobalCache: ['gc-a'], sleep: async () => {} });
-			const first = cacheWnm('g3a', 'data-g3', '2026-01-01T00:00:00Z', 'gc-a', 'canonical');
-			const second = cacheWnm('g3b', 'data-g3', '2026-01-02T00:00:00Z', 'gc-a', 'update');
+			const deps = baseDeps(store, { duplicateLog: logger });
+			const first = cacheWnm('g3a', 'data-g3', '2026-01-01T00:00:00Z', 'gc-a-global-cache', 'canonical');
+			const second = cacheWnm('g3b', 'data-g3', '2026-01-02T00:00:00Z', 'gc-a-global-cache', 'update');
 
 			await processEntry(entry('cache/a/wis2/fr-meteofrance/data/foo', first, '1-0'), deps);
 			await processEntry(entry('cache/a/wis2/fr-meteofrance/data/foo', second, '1-1'), deps);
@@ -673,12 +686,12 @@ describe('lineage (origin-topic data_id duplicate detection)', () => {
 			expect(infoCalls).toHaveLength(0);
 		});
 
-		test('applies even with no priority-global-cache configured (cache-unprioritized classification)', async () => {
+		test('applies regardless of weight-sources -- default weight (unconfigured) races the same as an explicit weight', async () => {
 			const store = new FakeStore();
 			const { logger, infoCalls } = fakeInfoLogger();
-			const deps = baseDeps(store, { duplicateLog: logger }); // priorityGlobalCache: undefined (default)
-			const first = cacheWnm('g4a', 'data-g4', '2026-01-01T00:00:00Z', 'gc-a', 'canonical');
-			const second = cacheWnm('g4b', 'data-g4', '2026-01-01T00:00:00Z', 'gc-a', 'canonical');
+			const deps = baseDeps(store, { duplicateLog: logger }); // weightSources: undefined (default weight 1 for every source)
+			const first = cacheWnm('g4a', 'data-g4', '2026-01-01T00:00:00Z', 'gc-a-global-cache', 'canonical');
+			const second = cacheWnm('g4b', 'data-g4', '2026-01-01T00:00:00Z', 'gc-a-global-cache', 'canonical');
 
 			await processEntry(entry('cache/a/wis2/fr-meteofrance/data/foo', first, '1-0'), deps);
 			await processEntry(entry('cache/a/wis2/fr-meteofrance/data/foo', second, '1-1'), deps);
@@ -751,16 +764,16 @@ describe('runConsumerLoop', () => {
 		expect(store.hashes.size).toBe(0);
 	});
 
-	test('a batch is processed CONCURRENTLY -- a staggered (cache-priority) entry must not delay unrelated entries behind it', async () => {
+	test('a batch is processed CONCURRENTLY -- a delayed (weighted) entry must not delay unrelated entries behind it', async () => {
 		// Regression test for the 2026-09-11 bug (see runConsumerLoop's
 		// own doc comment): a literal `for (const entry of entries) {
 		// await processEntry(...); }` port would have awaited a
-		// cache-priority entry's full 1-8s stagger sleep (order-links.ts's
-		// CACHE_STAGGER_SECONDS) to completion before even STARTING any
-		// other entry later in the same batch of up to 500 -- the real
-		// original (mqtt-in dispatching each message independently) never
-		// serializes unrelated messages behind one another like that.
-		const staggeredWnm = wnm('stag-1', { 'global-cache': 'other-centre' });
+		// heavily-delayed entry's full computeDelaySeconds() sleep to
+		// completion before even STARTING any other entry later in the
+		// same batch of up to 500 -- the real original (mqtt-in dispatching
+		// each message independently) never serializes unrelated messages
+		// behind one another like that.
+		const staggeredWnm = wnm('stag-1', { 'global-cache': 'other-centre-global-cache' });
 		const staggeredEntry = entry('cache/a/wis2/other-centre/data/foo', staggeredWnm, '1-0');
 		const fastEntry = entry('origin/a/wis2/fr-meteofrance/data/bar', wnm('fast-1'), '2-0');
 
@@ -781,10 +794,18 @@ describe('runConsumerLoop', () => {
 		};
 
 		const startedAt = Date.now();
-		// Scale the stagger's real wait down (20x) so the test stays fast
-		// while still proving genuine concurrency, not just a short delay.
+		// origin's weight (1000) is far larger than the cache source's (1),
+		// so origin's nominal delay is ~1ms and the cache source's is ~1s;
+		// the sleep override then scales BOTH down 20x so the test stays
+		// fast while still proving genuine concurrency, not just a short
+		// delay for everyone.
 		const deps = baseDeps(store, {
-			priorityGlobalCache: ['other-centre'], // position 0 -> CACHE_STAGGER_SECONDS[0] = 1s
+			weightSources: new Map([
+				['origin', 1000],
+				['other-centre-global-cache', 1],
+			]),
+			weightDelaySeconds: 1,
+			random: () => Math.exp(-1), // -ln(e^-1) = 1, so delaySeconds = weightDelaySeconds / weight
 			sleep: (ms: number) => new Promise((r) => setTimeout(r, ms / 20)),
 		});
 
@@ -795,8 +816,8 @@ describe('runConsumerLoop', () => {
 		await loopPromise;
 
 		expect(fastClaimedAt).not.toBeNull();
-		expect(fastClaimedAt! - startedAt).toBeLessThan(40); // the fast entry claimed almost immediately, NOT after the staggered entry's ~50ms (1000ms/20) sleep
+		expect(fastClaimedAt! - startedAt).toBeLessThan(40); // the fast (origin) entry claimed almost immediately, NOT after the delayed entry's ~50ms (1000ms/20) sleep
 		expect(store.workQueue.some((j) => j.downloaderId.includes('fast-1'))).toBe(true);
-		expect(store.workQueue.some((j) => j.downloaderId.includes('stag-1'))).toBe(true); // the staggered entry still completes, just later
+		expect(store.workQueue.some((j) => j.downloaderId.includes('stag-1'))).toBe(true); // the delayed entry still completes, just later
 	});
 });

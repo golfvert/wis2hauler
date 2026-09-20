@@ -152,7 +152,13 @@ export async function runSubscriber(
 		store,
 		queue,
 		overridelist: sub.mqtt.overridelist,
-		priorityGlobalCache: sub['priority-global-cache'],
+		weightSources: sub['weight-sources'] ? new Map(Object.entries(sub['weight-sources'])) : undefined,
+		// DEFAULT_WEIGHT_DELAY_SECONDS: no maintainer-specified default was
+		// ever set for this scale parameter being entirely absent from
+		// config -- 8s matches the example the maintainer approved when
+		// this mechanism was designed (2026-09-20).
+		weightDelaySeconds: sub['weight-delay-seconds'] ?? 8,
+		random: Math.random,
 		globalCacheMode,
 		centreId,
 		publishClients,
@@ -160,7 +166,6 @@ export async function runSubscriber(
 		isDebugEnabled,
 		sleep: defaultSleep,
 		now: () => new Date(),
-		orderLinksLog: logSink && gate ? createSourceLogger('Order links', logSink, gate, 'SUBSCRIBER') : undefined,
 		decisionLog: logSink && gate ? createSourceLogger('Decision', logSink, gate, 'SUBSCRIBER') : undefined,
 		publishLog: logSink && gate ? createSourceLogger('Publish', logSink, gate, 'SUBSCRIBER') : undefined,
 		duplicateLog: logSink && gate ? createSourceLogger('Duplicate', logSink, gate, 'SUBSCRIBER') : undefined,
