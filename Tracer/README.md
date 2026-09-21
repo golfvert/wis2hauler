@@ -67,6 +67,8 @@ One known gap this tool inherits from Hauler itself (documented there too): a do
 
 Hauler's own `../src/logging/sink.ts` names every file `wis2gc-<slug>-<date-hour>.<level>.log`, gzip-archived on rotation as `...log.gz`. `<slug>` is `slugifySource(name)` from `../src/logging/slug.ts` — lowercase, everything but `a-z` stripped — e.g. `Correct ?` → `correct`, `Re-queue` → `requeue`, `Output - Error` → `outputerror`. `src/sources.ts` in this tool maps each slug back to a readable name/role/stage for the narrative; it's a hand-maintained mirror of `../src/*/run.ts`'s and `../src/main.ts`'s `createSourceLogger(...)` call sites, kept as a by-hand mirror rather than an import even though this now lives inside the same repo — see `src/sources.ts`'s own header comment for why. An unrecognized slug still traces and prints correctly, just with a generic label — update `src/sources.ts` if Hauler adds a new logger.
 
+A high-volume logger (`Filter` above all — it carries the full WNM on every message, easily 20MB+/hour on a busy feed) can exceed winston-daily-rotate-file's own `maxSize` more than once inside the *same* hour bucket, producing `wis2gc-filter-<date-hour>.debug.log.gz` (the hour's first chunk) alongside `...log.1.gz`, `...log.2.gz`, etc. (found live in production 2026-09-21 — routinely 2-3 chunks/hour for `Filter` on one deployment). `src/logs.ts`'s filename parser recognizes this suffix explicitly and scans every chunk; a version of this tool that doesn't would silently miss most of a busy logger's history with no warning at all, which is exactly what happened before this was fixed.
+
 ## Development
 
 ```sh

@@ -11,6 +11,7 @@ describe('parseLogFilename', () => {
 			slug: 'filter',
 			dateHour: '2026-09-20-16',
 			level: 'debug',
+			rotation: undefined,
 			gzip: false,
 		});
 	});
@@ -20,6 +21,32 @@ describe('parseLogFilename', () => {
 			slug: 'received',
 			dateHour: '2026-09-20-08',
 			level: 'debug',
+			rotation: undefined,
+			gzip: true,
+		});
+	});
+
+	// A busy logger (Filter, carrying the full WNM per message) can blow
+	// past winston-daily-rotate-file's maxSize more than once inside the
+	// SAME hour, producing "...log.1.gz", "...log.2.gz", etc. alongside
+	// the hour's first "...log.gz" chunk -- found live in production
+	// 2026-09-21 (Filter routinely had 2-3 such chunks/hour on a busy
+	// feed) and, before this test existed, silently invisible to every
+	// trace: parseLogFilename returned undefined for them, so
+	// walkLogFiles skipped them with no warning at all.
+	test('parses a same-hour rotation chunk ("...log.N.gz", maxSize-triggered)', () => {
+		expect(parseLogFilename('wis2gc-filter-2026-09-21-03.debug.log.1.gz')).toEqual({
+			slug: 'filter',
+			dateHour: '2026-09-21-03',
+			level: 'debug',
+			rotation: 1,
+			gzip: true,
+		});
+		expect(parseLogFilename('wis2gc-filter-2026-09-21-10.debug.log.2.gz')).toEqual({
+			slug: 'filter',
+			dateHour: '2026-09-21-10',
+			level: 'debug',
+			rotation: 2,
 			gzip: true,
 		});
 	});
@@ -112,6 +139,27 @@ describe('walkLogFiles + matchesInFile (integration, real filesystem)', () => {
 			for await (const m of matchesInFile(files[0] as string, parsed, 'gz-target')) matches.push(m);
 			expect(matches).toHaveLength(1);
 			expect(matches[0]!.data.outcome).toBe('ingested');
+		});
+	});
+
+	test('picks up a same-hour rotation chunk ("...log.1.gz") alongside the hour\'s first chunk', async () => {
+		await withTempDir(async (dir) => {
+			const first = gzipSync(Buffer.from(JSON.stringify({ dataId: 'rotated-id', chunk: 0, timestamp: '2026-09-21T03:10:00.000Z' }) + '\n'));
+			const rotated = gzipSync(Buffer.from(JSON.stringify({ dataId: 'rotated-id', chunk: 1, timestamp: '2026-09-21T03:40:00.000Z' }) + '\n'));
+			await writeFile(join(dir, 'wis2gc-filter-2026-09-21-03.debug.log.gz'), first);
+			await writeFile(join(dir, 'wis2gc-filter-2026-09-21-03.debug.log.1.gz'), rotated);
+
+			const files: string[] = [];
+			for await (const f of walkLogFiles(dir)) files.push(f);
+			expect(files).toHaveLength(2); // both chunks found, not just the first
+
+			const matches = [];
+			for (const file of files) {
+				const parsed = parseLogFilename(file.split('/').pop()!)!;
+				for await (const m of matchesInFile(file, parsed, 'rotated-id')) matches.push(m);
+			}
+			expect(matches).toHaveLength(2);
+			expect(matches.map((m) => m.data.chunk).sort()).toEqual([0, 1]);
 		});
 	});
 

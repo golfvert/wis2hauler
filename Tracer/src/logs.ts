@@ -7,6 +7,20 @@
 // slugifySource(name) -- lowercase, [^a-z] stripped -- see sources.ts's
 // own header for how that maps back to a human-readable logger name.
 //
+// A HIGH-VOLUME logger (Filter, which carries the full WNM on every
+// single message -- easily 20MB+/hour on a busy feed) can blow past
+// winston-daily-rotate-file's own `maxSize` more than once within the
+// SAME hour bucket. When that happens it rotates again immediately,
+// appending a small integer before the .gz:
+// wis2gc-filter-<date-hour>.debug.log.gz (oldest chunk of that hour),
+// .log.1.gz, .log.2.gz, ... (each subsequent chunk), found live in
+// production 2026-09-21 -- a low-volume logger like Decision never
+// generates one, but Filter routinely has 2-3 per hour. FILENAME_RE
+// below accounts for this explicitly (see its own inline comment);
+// forgetting it would silently make every chunk but the newest
+// invisible to every trace, with no error or warning anywhere -- which
+// is exactly what happened before this was added.
+//
 // This module deliberately does NOT hardcode which JSON field a data_id
 // or wnm.id lives under for a given source (dataId, wnmId, wnm.id,
 // wnm.properties.data_id, nested inside a "wnm"/"monitor" object on
@@ -32,16 +46,29 @@ export interface ParsedLogFilename {
 	/** "YYYY-MM-DD-HH", exactly as winston-daily-rotate-file's fileDatePattern wrote it. Not guaranteed to be UTC -- see parseFilenameBucketMs's own doc comment. */
 	dateHour: string;
 	level: LogLevel;
+	/** winston-daily-rotate-file's own within-the-same-hour rotation index ("...log.1.gz", "...log.2.gz", ...), when `maxSize` forced more than one rotation inside one hour bucket -- see this file's header. `undefined` for the first/only chunk of that hour (plain "...log.gz" or the still-open "...log"). Purely informational: matching and chronological ordering never depend on it, since every line is sorted by its OWN `timestamp` field regardless of which chunk it came from. */
+	rotation: number | undefined;
 	gzip: boolean;
 }
 
-const FILENAME_RE = /^wis2gc-([a-z]+)-(\d{4}-\d{2}-\d{2}-\d{2})\.(info|warn|debug)\.log(\.gz)?$/;
+// The `(?:\.(\d+))?` group is what makes a same-hour rotation chunk
+// ("...log.1.gz", "...log.2.gz", produced when a high-volume logger like
+// Filter exceeds maxSize more than once inside one hour -- see this
+// file's header) match at all; without it, every chunk but the first is
+// silently invisible to walkLogFiles below, with no error anywhere.
+const FILENAME_RE = /^wis2gc-([a-z]+)-(\d{4}-\d{2}-\d{2}-\d{2})\.(info|warn|debug)\.log(?:\.(\d+))?(\.gz)?$/;
 
 export function parseLogFilename(filename: string): ParsedLogFilename | undefined {
 	const m = FILENAME_RE.exec(filename);
 	if (!m) return undefined;
-	const [, slug, dateHour, level, gz] = m;
-	return { slug: slug as string, dateHour: dateHour as string, level: level as LogLevel, gzip: gz !== undefined };
+	const [, slug, dateHour, level, rotation, gz] = m;
+	return {
+		slug: slug as string,
+		dateHour: dateHour as string,
+		level: level as LogLevel,
+		rotation: rotation !== undefined ? Number(rotation) : undefined,
+		gzip: gz !== undefined,
+	};
 }
 
 // The file's own hour bucket is a coarse, best-effort ms timestamp for
