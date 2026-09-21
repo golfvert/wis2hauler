@@ -13,7 +13,14 @@ This replaces the manual shell recipe in Hauler's own `docs/configuration-and-ro
 
 ### Prebuilt binary (no bun install needed on the target machine)
 
-Every push to `main` that changes `Tracer/` gets a standalone `wis2hauler-tracer-<platform>` binary built by `.github/workflows/release.yml`'s `build-tracer` job, published as an asset on the same GitHub Release as the main `wis2hauler-<platform>` binaries (`linux-x64`, `linux-arm64`, `darwin-x64`, `darwin-arm64` -- no musl variant, since unlike the main binary this never runs inside the Docker image; see that job's own comment). Download the one matching where you'll actually run it -- most usefully, directly on a deployment's own host, against its live `logs/` directories, with nothing installed:
+Tracer is versioned and released **independently** of the main wis2hauler binaries, on its own `Tracer/VERSION` file and its own tag (`tracer-YYYY.MM.X`) -- a Tracer-only change ships without needing a bump of the repo-root `VERSION`, and vice versa. To cut a Tracer release:
+
+```sh
+bun scripts/bump-version.ts Tracer/VERSION
+git add Tracer/VERSION && git commit -m "release(tracer): <tag>" && git push
+```
+
+`.github/workflows/release.yml`'s `build-tracer` job then compiles a standalone `wis2hauler-tracer-<platform>` binary for `linux-x64`, `linux-arm64`, `darwin-x64`, `darwin-arm64` (no musl variant, since unlike the main binary this never runs inside the Docker image; see that job's own comment), and `release-tracer` publishes them as assets on a GitHub Release tagged `tracer-YYYY.MM.X` -- its own release, separate from the main `wis2hauler YYYY.MM.X` one. Download the binary matching where you'll actually run it -- most usefully, directly on a deployment's own host, against its live `logs/` directories, with nothing installed:
 
 ```sh
 chmod +x wis2hauler-tracer-linux-x64
