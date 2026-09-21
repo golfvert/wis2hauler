@@ -19,6 +19,13 @@ name: Build & release binaries
 #
 # Bun's `--compile` cross-compiles every target from a single Linux
 # runner -- no macOS or ARM hardware needed in CI (see docs/deployment.md).
+#
+# Also builds wis2hauler-tracer, the standalone log-tracing CLI under
+# Tracer/ (see Tracer/README.md) -- glibc/macOS targets only, published
+# as extra assets on the SAME release, under the SAME version tag. It
+# never goes into the Docker image (see the `docker` job's own steps,
+# which reference only the main binary's musl artifacts) -- nothing
+# about it needs a container.
 
 on:
   push:
@@ -126,9 +133,69 @@ jobs:
           path: dist/wis2hauler-${{ matrix.name }}
           if-no-files-found: error
 
+  build-tracer:
+    name: Build Tracer (${{ matrix.name }})
+    needs: test
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # wis2hauler-tracer (Tracer/): a separate, standalone CLI for
+          # chasing one data_id/wnm.id across a deployment's own
+          # wis2gc-*.log files -- see Tracer/README.md. Compiled the
+          # same way as the main binary above, but only for the plain
+          # glibc/macOS targets. Deliberately NOT built for the two musl
+          # targets above: those exist solely to feed the `docker` job's
+          # Alpine image, and Tracer never runs inside it -- nothing
+          # about Tracer needs a container, same reasoning as
+          # docs/deployment.md's "Running without Docker" section for
+          # the main binary. This job's artifacts are consumed only by
+          # the `release` job below (its wis2hauler-* download pattern
+          # already matches wis2hauler-tracer-* too); the `docker` job
+          # never references them.
+          - name: linux-x64
+            target: bun-linux-x64
+          - name: linux-arm64
+            target: bun-linux-arm64
+          - name: darwin-x64
+            target: bun-darwin-x64
+          - name: darwin-arm64
+            target: bun-darwin-arm64
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      # Tracer has zero runtime dependencies (only node:*/bun:test
+      # builtins plus its own local files -- see Tracer/README.md and
+      # Tracer/src/sources.ts's header comment for why it doesn't import
+      # from ../src despite living in this same repo), so `bun build
+      # --compile` below doesn't actually need a node_modules install to
+      # succeed. This step exists anyway for its own devDependency
+      # (@types/bun) and so this job matches what a human running the
+      # same commands locally from Tracer/ would do.
+      - name: Install Tracer's own dependencies
+        working-directory: Tracer
+        run: bun install
+
+      - name: Compile standalone Tracer binary
+        run: |
+          mkdir -p dist
+          bun build --compile --target=${{ matrix.target }} \
+            --outfile dist/wis2hauler-tracer-${{ matrix.name }} Tracer/src/trace.ts
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wis2hauler-tracer-${{ matrix.name }}
+          path: dist/wis2hauler-tracer-${{ matrix.name }}
+          if-no-files-found: error
+
   release:
     name: Publish GitHub release
-    needs: [build, version]
+    needs: [build, build-tracer, version]
     if: needs.version.outputs.already-released != 'true'
     runs-on: ubuntu-latest
     permissions:
