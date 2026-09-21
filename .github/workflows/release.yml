@@ -33,6 +33,7 @@ on:
     paths-ignore:
       - '**.md'
       - 'docs/**'
+  workflow_call:
   workflow_dispatch: {}
 
 concurrency:
