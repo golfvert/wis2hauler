@@ -21,11 +21,24 @@ name: Build & release binaries
 # runner -- no macOS or ARM hardware needed in CI (see docs/deployment.md).
 #
 # Also builds wis2hauler-tracer, the standalone log-tracing CLI under
-# Tracer/ (see Tracer/README.md) -- glibc/macOS targets only, published
-# as extra assets on the SAME release, under the SAME version tag. It
-# never goes into the Docker image (see the `docker` job's own steps,
-# which reference only the main binary's musl artifacts) -- nothing
-# about it needs a container.
+# Tracer/ (see Tracer/README.md). Tracer is versioned and released
+# INDEPENDENTLY of the main wis2hauler binaries above, on its own
+# Tracer/VERSION file and its own tag (tracer-YYYY.MM.X, same format,
+# "tracer-" prefixed so it can't collide with a main release tag) --
+# see tracer-version/build-tracer/release-tracer below. That's
+# deliberate: a Tracer-only change (a new field it should search, a
+# bugfix in its log walker, ...) needs to ship without forcing a bump
+# -- and therefore a full release -- of the main wis2hauler binaries
+# and Docker image, and vice versa. Bump Tracer's own version the same
+# way as the main one, just pointed at its own file:
+#
+#   bun scripts/bump-version.ts Tracer/VERSION
+#   git add Tracer/VERSION && git commit -m "release(tracer): <tag>" && git push
+#
+# Tracer never goes into the Docker image (see the `docker` job's own
+# steps, which reference only the main binary's musl artifacts) --
+# nothing about it needs a container, and it has no musl targets of its
+# own for the same reason.
 
 on:
   push:
@@ -33,8 +46,8 @@ on:
     paths-ignore:
       - '**.md'
       - 'docs/**'
-  workflow_call:
   workflow_dispatch: {}
+  workflow_call: 
 
 concurrency:
   group: release-${{ github.ref }}
@@ -76,6 +89,41 @@ jobs:
             exit 1
           fi
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+      - id: check
+        name: Check whether ${{ steps.read.outputs.tag }} is already released
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view "${{ steps.read.outputs.tag }}" --repo "${{ github.repository }}" >/dev/null 2>&1; then
+            echo "already-released=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "already-released=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  tracer-version:
+    name: Read Tracer release version
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.read.outputs.version }}
+      tag: ${{ steps.read.outputs.tag }}
+      already-released: ${{ steps.check.outputs.already-released }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - id: read
+        name: Read Tracer/VERSION
+        run: |
+          version="$(tr -d '[:space:]' < Tracer/VERSION)"
+          if ! [[ "$version" =~ ^[0-9]{4}\.[0-9]{2}\.[0-9]+$ ]]; then
+            echo "Tracer/VERSION does not contain a YYYY.MM.X tag (got: '$version')." >&2
+            echo "Run 'bun scripts/bump-version.ts Tracer/VERSION' and commit the result." >&2
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          # "tracer-" prefixed so this tag can never collide with a main
+          # wis2hauler release tag in the same repo's tag/release list.
+          echo "tag=tracer-$version" >> "$GITHUB_OUTPUT"
 
       - id: check
         name: Check whether ${{ steps.read.outputs.tag }} is already released
@@ -152,9 +200,10 @@ jobs:
           # about Tracer needs a container, same reasoning as
           # docs/deployment.md's "Running without Docker" section for
           # the main binary. This job's artifacts are consumed only by
-          # the `release` job below (its wis2hauler-* download pattern
-          # already matches wis2hauler-tracer-* too); the `docker` job
-          # never references them.
+          # the `release-tracer` job below, on Tracer's own independent
+          # version/tag -- see this file's header comment and
+          # tracer-version above; the main `release` job and the
+          # `docker` job never reference them.
           - name: linux-x64
             target: bun-linux-x64
           - name: linux-arm64
@@ -188,15 +237,22 @@ jobs:
           bun build --compile --target=${{ matrix.target }} \
             --outfile dist/wis2hauler-tracer-${{ matrix.name }} Tracer/src/trace.ts
 
+      # Named tracer-dist-* rather than wis2hauler-tracer-* so it can
+      # NEVER be swept up by the main `release` job's wis2hauler-*
+      # artifact-download pattern below -- that's what keeps the two
+      # release tracks (and their download-artifact steps) from racing
+      # or double-publishing each other's binaries. The file INSIDE the
+      # artifact keeps the wis2hauler-tracer-<platform> name users see
+      # on the release page.
       - uses: actions/upload-artifact@v4
         with:
-          name: wis2hauler-tracer-${{ matrix.name }}
+          name: tracer-dist-${{ matrix.name }}
           path: dist/wis2hauler-tracer-${{ matrix.name }}
           if-no-files-found: error
 
   release:
     name: Publish GitHub release
-    needs: [build, build-tracer, version]
+    needs: [build, version]
     if: needs.version.outputs.already-released != 'true'
     runs-on: ubuntu-latest
     permissions:
@@ -241,6 +297,38 @@ jobs:
             --repo "${{ github.repository }}" \
             --title "wis2hauler ${{ needs.version.outputs.tag }}" \
             --notes "Automatically built from commit ${{ github.sha }}. See the commit history for what changed." \
+            --target "${{ github.sha }}"
+
+  release-tracer:
+    name: Publish Tracer release
+    needs: [build-tracer, tracer-version]
+    if: needs.tracer-version.outputs.already-released != 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          pattern: tracer-dist-*
+
+      - name: Flatten artifacts into release-assets/
+        run: |
+          mkdir -p release-assets
+          find artifacts -type f -name 'wis2hauler-tracer-*' -exec cp {} release-assets/ \;
+          chmod +x release-assets/*
+          ls -la release-assets
+
+      - name: Create release ${{ needs.tracer-version.outputs.tag }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${{ needs.tracer-version.outputs.tag }}" release-assets/* \
+            --repo "${{ github.repository }}" \
+            --title "wis2hauler-tracer ${{ needs.tracer-version.outputs.version }}" \
+            --notes "Standalone wis2hauler-tracer CLI (see Tracer/README.md), released independently of the main wis2hauler binaries. Automatically built from commit ${{ github.sha }}." \
             --target "${{ github.sha }}"
 
   docker:
