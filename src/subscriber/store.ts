@@ -43,7 +43,11 @@ export interface SubscriberStore {
 	// "Prepare" -> XADD ("wis2gc:mqtt:"+queue): appends a raw ingested
 	// message (topic + the untouched wire payload + a millis timestamp)
 	// for the XREAD consumer to pick up, approximately trimming the
-	// stream to MAXLEN ~ 10000 as it goes. Returns the assigned stream
+	// stream to MAXLEN ~ RAW_STREAM_MAXLEN (ioredis-store.ts -- 100000,
+	// raised 2026-09-21 from the original 10000: see that constant's own
+	// doc comment for the live investigation that found the old cap's
+	// ~2-minute retention window silently swallowing fully-ingested
+	// entries the consumer hadn't read yet). Returns the assigned stream
 	// entry ID.
 	appendRawMessage(queue: string, topic: string, payload: string, timestampMs: number): Promise<string>;
 
@@ -176,6 +180,31 @@ export interface SubscriberStore {
 
 	// NOT a port of anything in flows.json -- see getGlobalCacheLineagePubtimes above.
 	recordGlobalCacheLineagePubtime(globalCache: string, dataIdRaw: string, pubtime: string, nowMillis: number, ttlSeconds: number): Promise<void>;
+
+	// Raw-stream health check, part 1 (NOT a port of anything in
+	// flows.json -- added 2026-09-21 alongside RAW_STREAM_MAXLEN's own
+	// doc comment (ioredis-store.ts), after a live investigation found
+	// appendRawMessage's XADD ... MAXLEN trim silently evicting
+	// fully-ingested entries the consumer hadn't read yet, with zero
+	// trace anywhere -- see runConsumerLoop's own doc comment for the
+	// detection logic this backs). XLEN mqttRawStreamKey(queue) -- the
+	// stream's current entry count, checked against a configured
+	// fraction of RAW_STREAM_MAXLEN so an operator gets a warning while
+	// the buffer is filling up, BEFORE any entry has actually been
+	// trimmed unread.
+	getRawStreamLength(queue: string): Promise<number>;
+
+	// Raw-stream health check, part 2: the ID of the stream's current
+	// OLDEST surviving entry (XRANGE mqttRawStreamKey(queue) - + COUNT
+	// 1 -- cheap, fetches one entry, not the whole stream), or
+	// undefined for an empty stream. runConsumerLoop compares this
+	// against its own read cursor (lastId, stream-id.ts's
+	// compareStreamIds): if the oldest surviving entry is NEWER than
+	// lastId, the region between them existed and was trimmed away by
+	// MAXLEN before the consumer ever read it -- a CONFIRMED loss, not
+	// a guess, unlike getRawStreamLength above which only ever warns of
+	// a risk.
+	getRawStreamOldestId(queue: string): Promise<string | undefined>;
 
 	// Graceful shutdown of the underlying client(s).
 	quit(): Promise<void>;

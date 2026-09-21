@@ -3,7 +3,7 @@
   "version": "1.0.0",
   "private": true,
   "type": "module",
-  "description": "Trace a single data_id or wnm.id across every wis2gc-*.log file a Hauler deployment writes -- SUBSCRIBER, DOWNLOADER, CLEANER, all workers, one chronological narrative.",
+  "description": "Trace a single data_id or wnm.id across every hauler-*.log file a Hauler deployment writes -- SUBSCRIBER, DOWNLOADER, CLEANER, all workers, one chronological narrative.",
   "scripts": {
     "trace": "bun run src/trace.ts",
     "test": "bun test",

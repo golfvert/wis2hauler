@@ -3,7 +3,7 @@
   "configVersion": 1,
   "workspaces": {
     "": {
-      "name": "wis2gc-trace",
+      "name": "wis2hauler-tracer",
       "devDependencies": {
         "@types/bun": "latest",
       },

@@ -230,6 +230,46 @@ export function createIngestStats(): IngestStats {
 
 export const defaultSleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
+// receivedLog's "bytes" -- see its call site below for the full story
+// (2026-09-21, NOT a port). Deliberately generic/recursive rather than
+// Wnm-shaped, same reasoning as the tracer's own valueContains: this
+// project's WNM shape has already changed more than once, don't
+// hardcode it here either.
+function sortKeysDeep(value: unknown): unknown {
+	if (Array.isArray(value)) return value.map(sortKeysDeep);
+	if (value !== null && typeof value === 'object') {
+		const sorted: Record<string, unknown> = {};
+		for (const key of Object.keys(value as Record<string, unknown>).sort()) {
+			sorted[key] = sortKeysDeep((value as Record<string, unknown>)[key]);
+		}
+		return sorted;
+	}
+	return value;
+}
+
+// The UTF-8 byte size of a parsed WNM's CONTENT -- keys sorted (so an
+// upstream relay reordering keys can't cause a mismatch either) and
+// re-serialized with zero incidental whitespace (JSON.stringify's
+// default, no `space` argument) -- as opposed to whatever the raw wire
+// payload for one particular delivery of it happened to look like.
+// This is what receivedLog's "bytes" is computed from below, instead
+// of payload.length, precisely because those two are NOT the same
+// thing: a real 2026-09-21 investigation traced a GB1/GB2 pair
+// delivering the exact same wnm.id -- identical id, identical field
+// values, identical key order even -- that nonetheless logged
+// different "bytes", purely because one upstream relay's JSON
+// serializer had inserted whitespace (a space after ':'/',',
+// indentation) the other hadn't. That whitespace is legal, meaningless
+// JSON and JSON.parse discards it -- it never reaches `wnm`, so it
+// never showed up in ANY diff of the parsed content, yet payload.length
+// counted every one of those extra bytes anyway, making "bytes" differ
+// for what was, by id and by content, the identical notification. The
+// maintainer's call after that investigation: "For the same id I WANT
+// to see the same number of bytes." This function is that fix.
+function canonicalContentBytes(value: unknown): number {
+	return Buffer.byteLength(JSON.stringify(sortKeysDeep(value)), 'utf8');
+}
+
 // Returns the per-message handler to wire to an MqttLike's onMessage
 // for one broker connection. stats is mutated in place so callers
 // (and tests) can observe counts without needing to intercept logs.
@@ -305,7 +345,18 @@ export function createIngestHandler(deps: IngestDeps, stats: IngestStats): (topi
 			const { wnm: receivedWnm } = receivedLogWantsIt ? parseForLogging(raw) : {};
 			const wnmId = typeof receivedWnm?.id === 'string' ? receivedWnm.id : undefined;
 			const dataId = typeof receivedWnm?.properties?.data_id === 'string' ? receivedWnm.properties.data_id : undefined;
-			deps.receivedLog.debug({ source: deps.sourceLabel, topic, bytes: payload.length, wnmId, dataId });
+			// canonicalContentBytes(receivedWnm) when the payload parsed (i.e.
+			// receivedLogWantsIt gated a parse AND it succeeded) -- see that
+			// function's own doc comment for why this, not payload.length, is
+			// what "bytes" means now. Falls back to the raw payload.length when
+			// there's no parsed content to canonicalize: `log.level` isn't
+			// `debug` (no parse was even attempted, preserving this call site's
+			// existing zero-parse-cost guarantee at other levels), or the
+			// payload is malformed JSON -- in both cases the raw wire size is
+			// still the only meaningful number available, same as before this
+			// fix.
+			const bytes = receivedWnm !== undefined ? canonicalContentBytes(receivedWnm) : payload.length;
+			deps.receivedLog.debug({ source: deps.sourceLabel, topic, bytes, wnmId, dataId });
 		}
 		if (deps.preDelayMs > 0) await deps.sleep(deps.preDelayMs);
 

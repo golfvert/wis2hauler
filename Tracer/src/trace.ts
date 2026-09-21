@@ -14,7 +14,7 @@
 // logs/) live, paste in whatever id you're chasing (a `dataId` or a
 // `wnmId` -- this tool doesn't need to know which, it searches for the
 // string wherever it appears), and it prints every matching log line
-// across every wis2gc-*.log[.gz] file under that root, in chronological
+// across every hauler-*.log[.gz] file under that root, in chronological
 // order, one line per hit.
 import { basename } from 'node:path';
 import { parseLogFilename, parseFilenameBucketMs, matchesInFile, walkLogFiles, type TraceMatch } from './logs.ts';

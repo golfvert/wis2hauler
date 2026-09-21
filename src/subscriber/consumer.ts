@@ -23,6 +23,7 @@ import type { OverrideRule } from '../config/schema.ts';
 import type { RawStreamEntry, SubscriberStore } from './store.ts';
 import type { MqttLike } from '../mqtt/types.ts';
 import type { SourceLogger } from '../logging/logger.ts';
+import { compareStreamIds } from './stream-id.ts';
 
 // "Prepare"'s queuetopic / claim SET: EX 900. Same 900s the ingest-side
 // per-message dedup uses (flows.json literal, not a coincidence worth
@@ -75,7 +76,7 @@ export interface ConsumerDeps {
 	// `to: file` never actually captured it into a rotating file the way
 	// it captures every DOWNLOADER-side stage. This is the fix: the SAME
 	// per-entry decision, also emitted through the normal structured/
-	// file-routed path, so `wis2gc-decision-*.debug.log` becomes a
+	// file-routed path, so `hauler-decision-*.debug.log` becomes a
 	// complete, file-based ledger of what SUBSCRIBER decided for every
 	// notification that reached this function. Emitted at DEBUG, not
 	// info -- this is NOT a port of anything in flows.json, so it
@@ -127,7 +128,7 @@ export interface ConsumerDeps {
 	// the same class of event as DOWNLOADER's own "Publish", not a
 	// per-notification investigation trace like "Decision". Named
 	// "Publish" -- NOT "Link" -- specifically so this writes to the
-	// SAME `wis2gc-publish-<hour>.info.log` file as downloader/
+	// SAME `hauler-publish-<hour>.info.log` file as downloader/
 	// finishing.ts's logger of the same name (the maintainer: "I don't
 	// like not being the same name. Go for publish in both."); each
 	// entry's `role` field ('SUBSCRIBER' here, 'DOWNLOADER' there) is
@@ -142,12 +143,33 @@ export interface ConsumerDeps {
 	// "Sensor Global Cache" tool). Emitted at INFO per the maintainer's
 	// explicit answer when asked how a caught duplicate should surface
 	// ("Just logs in a duplicate log file. info level.") -- its own
-	// dedicated `wis2gc-duplicate-<hour>.info.log` file, not folded
+	// dedicated `hauler-duplicate-<hour>.info.log` file, not folded
 	// into decisionLog/publishLog, since this is a distinct, named
 	// class of event the maintainer wants to be able to find on its
 	// own. Optional for the same reason as every other logger field
 	// here.
 	duplicateLog?: SourceLogger;
+	// Raw-stream health check (NOT a port of anything in flows.json --
+	// added 2026-09-21, see runConsumerLoop's own doc comment for the
+	// full incident and store.ts's getRawStreamLength/getRawStreamOldestId
+	// for the two signals this logs). Named "Redis" rather than folded
+	// into decisionLog: this is a pipeline-health signal, not a
+	// per-notification trace -- there's no dataId/wnmId/downloaderId to
+	// key it on, and it fires at most once per episode (start/clear),
+	// never per message. Optional for the same reason as every other
+	// logger field here; runConsumerLoop skips BOTH raw-stream health
+	// checks entirely when this or rawStreamWarnAtLength below is
+	// undefined, so existing hand-built ConsumerDeps in tests keep
+	// compiling and behaving exactly as before this addition.
+	redisLog?: SourceLogger;
+	// The XLEN threshold (see store.ts's getRawStreamLength doc comment)
+	// above which runConsumerLoop logs an early warning through redisLog,
+	// before any entry has actually been trimmed unread -- run.ts sets
+	// this to a fraction of ioredis-store.ts's RAW_STREAM_MAXLEN.
+	// undefined disables both raw-stream health checks (this one
+	// directly, and the confirmed-loss one alongside it) -- there's
+	// nothing meaningful to compare against without a real cap.
+	rawStreamWarnAtLength?: number;
 }
 
 export const defaultSleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
@@ -234,7 +256,7 @@ function buildPublishOnlyMessages(
 // whichever history (origin-scoped or GC-scoped) applies; `logFields`
 // carries the caller's own key parts (originCentreId or globalCache)
 // into the duplicateLog line so the two cases stay distinguishable in
-// the shared `wis2gc-duplicate-*.info.log` file. Returns true when the
+// the shared `hauler-duplicate-*.info.log` file. Returns true when the
 // message was a duplicate (caller must drop it), false when it was
 // new/an update (and has already been recorded).
 async function checkLineageAndRecord(
@@ -475,7 +497,7 @@ export async function processEntry(entry: RawStreamEntry, deps: ConsumerDeps): P
 				// emitMonitorEvent is true -- there's nothing published under
 				// that topic otherwise. `role` disambiguates this from
 				// Downloader's own entries in the same shared
-				// `wis2gc-publish-*` log file.
+				// `hauler-publish-*` log file.
 				deps.publishLog?.info({
 					downloaderId,
 					role: 'SUBSCRIBER',
@@ -591,6 +613,49 @@ export async function processEntry(entry: RawStreamEntry, deps: ConsumerDeps): P
  * benefit. A source with a blacklisted/absent competitor should be
  * weighted the same as everyone else (or left out of weight-sources
  * entirely, if nothing else needs down-weighting for that centre).
+ *
+ * RAW-STREAM LAG DETECTION, 2026-09-21 -- a separate live investigation
+ * (not the incident above) found ingest.ts's appendRawMessage (XADD
+ * ... MAXLEN ~ RAW_STREAM_MAXLEN, ioredis-store.ts) silently evicting
+ * entries this loop hadn't read yet: Filter's log showed "ingested"
+ * (the XADD succeeded) with NO trace of any kind afterward, not even a
+ * Decision "ignore" line, because processEntry was simply never called
+ * for them. XINFO STREAM on the live deployment that surfaced this
+ * showed the whole MAXLEN-sized buffer spanning barely two minutes of
+ * wall-clock time -- the same order of magnitude as this pipeline's
+ * OWN worst-case per-message delay (weight-delay-max-seconds, 120s by
+ * design) plus this loop's own maxInFlight backpressure, which pauses
+ * READING (not writing -- ingest.ts's onMessage handler is never gated
+ * by consumer state) whenever that many entries are simultaneously
+ * mid-delay. A burst, a Redis latency blip, or maxInFlight simply
+ * saturating during a busy hour only needs to pause reading for about
+ * as long as the stream's own retention window for MAXLEN's
+ * approximate trim to start evicting entries out from under this loop
+ * -- no error, no warning, nothing, since trimming is an entirely
+ * ordinary, successful Redis operation from Redis's own point of view.
+ *
+ * Below, once per healthCheckIntervalMs (wall-clock, via deps.now() --
+ * not once per iteration, since a busy loop can spin many times a
+ * second): two independent, complementary checks, both optional
+ * (skipped entirely when deps.redisLog/rawStreamWarnAtLength aren't
+ * configured) and both logged at most once per episode (start/clear),
+ * matching mqtt/client.ts's own logOutageOnce pattern rather than
+ * spamming one line per check while a condition persists.
+ *   1. store.getRawStreamLength(queue) against rawStreamWarnAtLength --
+ *      an EARLY warning while the buffer is filling up, before any
+ *      loss has actually happened.
+ *   2. store.getRawStreamOldestId(queue) against this loop's own
+ *      lastId (stream-id.ts's compareStreamIds, not plain string
+ *      comparison -- see that function's own doc comment for why) --
+ *      a CONFIRMED-loss signal: if the stream's oldest surviving entry
+ *      is newer than lastId, everything between them existed and was
+ *      trimmed away before this loop ever read it. Skipped entirely
+ *      until lastId has advanced past startId at least once, since a
+ *      fresh process starting from "0-0" against an already-populated,
+ *      long-lived stream will ALWAYS see an oldest-surviving-entry
+ *      newer than "0-0" -- that's ordinary history MAXLEN already
+ *      trimmed long before this run even started, not a loss THIS
+ *      run's consumer is responsible for.
  */
 export async function runConsumerLoop(
 	deps: ConsumerDeps,
@@ -599,10 +664,59 @@ export async function runConsumerLoop(
 	pollIntervalMs = 1000,
 	count = 500,
 	maxInFlight = 5000,
+	healthCheckIntervalMs = 5000,
 ): Promise<void> {
 	let lastId = startId;
 	let inFlight = 0;
+	// See this function's own "RAW-STREAM LAG DETECTION" doc comment above.
+	let lastHealthCheckAt = 0;
+	let rawStreamNearCapWarned = false;
+	let rawStreamLossWarned = false;
 	while (!signal.aborted) {
+		// Raw-stream health check -- runs on EVERY iteration (not just when
+		// the poll actually sleeps below), throttled to healthCheckIntervalMs
+		// by wall-clock time via deps.now() instead of iteration count, since
+		// an iteration can spin without sleeping at all while there's a
+		// backlog to read -- exactly when checking often matters most. See
+		// the doc comment above for what each signal means and why signal 2
+		// is gated on lastId having actually advanced past startId.
+		if (deps.redisLog && deps.rawStreamWarnAtLength !== undefined) {
+			const nowMs = deps.now().getTime();
+			if (nowMs - lastHealthCheckAt >= healthCheckIntervalMs) {
+				lastHealthCheckAt = nowMs;
+
+				try {
+					const length = await deps.store.getRawStreamLength(deps.queue);
+					if (length >= deps.rawStreamWarnAtLength && !rawStreamNearCapWarned) {
+						rawStreamNearCapWarned = true;
+						deps.redisLog.warn({ queue: deps.queue, length, warnAtLength: deps.rawStreamWarnAtLength, event: 'raw-stream-near-cap' });
+					} else if (length < deps.rawStreamWarnAtLength && rawStreamNearCapWarned) {
+						rawStreamNearCapWarned = false;
+						deps.redisLog.info({ queue: deps.queue, length, warnAtLength: deps.rawStreamWarnAtLength, event: 'raw-stream-near-cap-cleared' });
+					}
+				} catch (err) {
+					deps.log.error(`consumer: raw-stream length check failed: ${err instanceof Error ? err.message : String(err)}`);
+				}
+
+				if (lastId !== startId) {
+					try {
+						const oldestId = await deps.store.getRawStreamOldestId(deps.queue);
+						const lost = oldestId !== undefined && compareStreamIds(oldestId, lastId) > 0;
+						if (lost && !rawStreamLossWarned) {
+							rawStreamLossWarned = true;
+							deps.redisLog.warn({ queue: deps.queue, lastId, oldestSurvivingId: oldestId, event: 'raw-stream-entries-trimmed-unread' });
+						} else if (!lost && rawStreamLossWarned) {
+							rawStreamLossWarned = false;
+							deps.redisLog.info({ queue: deps.queue, lastId, event: 'raw-stream-entries-trimmed-unread-cleared' });
+						}
+					} catch (err) {
+						deps.log.error(`consumer: raw-stream oldest-id check failed: ${err instanceof Error ? err.message : String(err)}`);
+					}
+				}
+			}
+		}
+
+
 		if (inFlight >= maxInFlight) {
 			// Backpressure only -- see this function's own doc comment.
 			// Entries already dispatched keep running; this just holds off

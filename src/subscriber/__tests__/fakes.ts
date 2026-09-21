@@ -44,6 +44,20 @@ export class FakeStore implements SubscriberStore {
 		return [];
 	}
 
+	// Mirrors the real store's XLEN -- see SubscriberStore.getRawStreamLength.
+	async getRawStreamLength(_queue: string): Promise<number> {
+		return this.rawStream.length;
+	}
+
+	// Mirrors the real store's XRANGE ... COUNT 1 -- see
+	// SubscriberStore.getRawStreamOldestId. `rawStream` is a plain
+	// array here (not actually trimmed by anything in this fake), so
+	// tests exercise the lag-detection logic by pushing/removing entries
+	// on `rawStream` directly rather than by simulating a real MAXLEN trim.
+	async getRawStreamOldestId(_queue: string): Promise<string | undefined> {
+		return this.rawStream[0]?.id;
+	}
+
 	async isAlreadyComplete(downloaderId: string): Promise<boolean> {
 		return this.completeIds.has(downloaderId);
 	}

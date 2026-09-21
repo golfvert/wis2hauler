@@ -2,8 +2,8 @@
 //
 // Every Hauler log line is one JSON object per line, written by
 // src/logging/sink.ts's WinstonLogSink to a file named
-// wis2gc-<slug>-<date-hour>.<level>.log, gzip-archived on rotation
-// (wis2gc-<slug>-<date-hour>.<level>.log.gz). <slug> is
+// hauler-<slug>-<date-hour>.<level>.log, gzip-archived on rotation
+// (hauler-<slug>-<date-hour>.<level>.log.gz). <slug> is
 // slugifySource(name) -- lowercase, [^a-z] stripped -- see sources.ts's
 // own header for how that maps back to a human-readable logger name.
 //
@@ -12,7 +12,7 @@
 // winston-daily-rotate-file's own `maxSize` more than once within the
 // SAME hour bucket. When that happens it rotates again immediately,
 // appending a small integer before the .gz:
-// wis2gc-filter-<date-hour>.debug.log.gz (oldest chunk of that hour),
+// hauler-filter-<date-hour>.debug.log.gz (oldest chunk of that hour),
 // .log.1.gz, .log.2.gz, ... (each subsequent chunk), found live in
 // production 2026-09-21 -- a low-volume logger like Decision never
 // generates one, but Filter routinely has 2-3 per hour. FILENAME_RE
@@ -56,7 +56,7 @@ export interface ParsedLogFilename {
 // Filter exceeds maxSize more than once inside one hour -- see this
 // file's header) match at all; without it, every chunk but the first is
 // silently invisible to walkLogFiles below, with no error anywhere.
-const FILENAME_RE = /^wis2gc-([a-z]+)-(\d{4}-\d{2}-\d{2}-\d{2})\.(info|warn|debug)\.log(?:\.(\d+))?(\.gz)?$/;
+const FILENAME_RE = /^hauler-([a-z]+)-(\d{4}-\d{2}-\d{2}-\d{2})\.(info|warn|debug)\.log(?:\.(\d+))?(\.gz)?$/;
 
 export function parseLogFilename(filename: string): ParsedLogFilename | undefined {
 	const m = FILENAME_RE.exec(filename);
@@ -90,11 +90,11 @@ export function parseFilenameBucketMs(dateHour: string): number {
 	return Date.parse(`${ymd}T${hh}:00:00Z`);
 }
 
-// Recursively yields every wis2gc-*.<level>.log[.gz] file under `root`,
+// Recursively yields every hauler-*.<level>.log[.gz] file under `root`,
 // however deep -- a production deployment's logs live under one `logs/`
-// subdirectory per worker (worker/logs/wis2gc-....log), and `root` is
+// subdirectory per worker (worker/logs/hauler-....log), and `root` is
 // typically the parent of all those worker directories (matching the
-// existing shell runbook's `find */logs -name 'wis2gc-...'`), but this
+// existing shell runbook's `find */logs -name 'hauler-...'`), but this
 // also works if `root` is a single logs/ dir directly. Symlinks are
 // skipped (never followed) to avoid loops; dotfiles/dot-directories are
 // skipped as a matter of hygiene (nothing Hauler writes starts with a

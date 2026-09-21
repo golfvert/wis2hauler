@@ -318,6 +318,39 @@ describe('createIngestHandler', () => {
 			expect(stats.unchanged).toBe(1);
 		});
 
+		// 2026-09-21 (NOT a port): a real live investigation found GB1/GB2
+		// reporting different "bytes" for two deliveries of the exact same
+		// wnm.id -- identical id, identical field values, identical key
+		// order -- purely because one upstream relay's JSON serializer had
+		// inserted whitespace (space after ':'/',' , indentation) the other
+		// hadn't. JSON.parse discards that whitespace, so it never showed up
+		// in the parsed content or any diff of it, yet payload.length counted
+		// it anyway. The maintainer: "For the same id I WANT to see the same
+		// number of bytes." This is that fix, proven directly: two payloads
+		// with the same id/content but different incidental JSON formatting
+		// must report the same "bytes", even though their raw payload.length
+		// (asserted different below, so the test is actually exercising the
+		// gap, not a no-op) does not.
+		test('bytes is the canonical content size, not the raw wire size -- identical content differently whitespaced reports identical bytes', async () => {
+			const store = new FakeStore();
+			const stats = createIngestStats();
+			const { logger, debugCalls } = fakeReceivedLogger();
+			const handler = createIngestHandler(baseDeps(store, { receivedLog: logger }), stats);
+
+			const compact = Buffer.from(JSON.stringify({ id: 'msg-recv-fmt', links: [], properties: { pubtime: '2026-01-01T00:00:00Z', data_id: 'x' } }));
+			const padded = Buffer.from(JSON.stringify({ id: 'msg-recv-fmt', links: [], properties: { data_id: 'x', pubtime: '2026-01-01T00:00:00Z' } }, null, 2));
+			expect(padded.length).not.toBe(compact.length); // the raw wire sizes genuinely differ
+
+			await handler('origin/a/wis2/fr-meteofrance/data/foo', compact);
+			await handler('origin/b/wis2/fr-meteofrance/data/foo', padded);
+
+			expect(debugCalls).toHaveLength(2);
+			expect(debugCalls[0]!.wnmId).toBe('msg-recv-fmt');
+			expect(debugCalls[1]!.wnmId).toBe('msg-recv-fmt');
+			expect(debugCalls[0]!.bytes).toBe(debugCalls[1]!.bytes); // same id, same content -> same bytes
+			expect(debugCalls[0]!.bytes).not.toBe(padded.length); // and it's neither raw length, in general
+		});
+
 		test('fires before the GB2 preDelayMs sleep, not after', async () => {
 			const store = new FakeStore();
 			const stats = createIngestStats();

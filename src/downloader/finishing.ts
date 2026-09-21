@@ -42,7 +42,7 @@ export interface FinishingDeps {
 	// so one SourceLogger instance (its .warn/.info) covers both.
 	// Renamed from "Link" to "Publish" (2026-09-16, maintainer: "I don't
 	// like not being the same name. Go for publish in both."), so this
-	// now writes to the SAME `wis2gc-publish-<hour>.<level>.log` file
+	// now writes to the SAME `hauler-publish-<hour>.<level>.log` file
 	// Subscriber's own publish-only republish (../subscriber/consumer.ts's
 	// publishLog) uses, rather than two differently-named files for what
 	// is conceptually the same "republished onto the local broker" event
@@ -121,7 +121,7 @@ export async function runFinishing(
 			// derived summary of it -- `link`/`topic` are kept alongside for
 			// anything already grepping/filtering on those fields. `role`
 			// disambiguates this from Subscriber's own publish-only republish,
-			// now sharing the same `wis2gc-publish-*` log file (see
+			// now sharing the same `hauler-publish-*` log file (see
 			// FinishingDeps.publishLog's doc comment).
 			deps.publishLog?.info({ downloaderId, role: 'DOWNLOADER', topic: cacheTopic, link: localHref, wnm: cacheWnm });
 			for (const client of deps.publishClients) {

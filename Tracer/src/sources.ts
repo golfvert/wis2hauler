@@ -11,7 +11,7 @@
 // here is the slug createSourceLogger actually writes to disk with
 // (src/logging/slug.ts's slugifySource: lowercase, strip everything but
 // a-z), which is what shows up in each log file's name --
-// wis2gc-<slug>-<date-hour>.<level>.log[.gz] (src/logging/sink.ts).
+// hauler-<slug>-<date-hour>.<level>.log[.gz] (src/logging/sink.ts).
 //
 // This map only drives the human-readable narrative (name/role/stage) --
 // it never gates matching. A slug missing from here still gets
@@ -63,7 +63,7 @@ export const SOURCE_META: Record<string, SourceMeta> = {
 	pollerror: { name: 'Poll Error', role: 'DOWNLOADER', stage: 'poll-loop error before/around aria2 (aria2 unreachable, addUri rejected, etc.)' },
 
 	// Shared between SUBSCRIBER and DOWNLOADER -- disambiguate with the
-	// line's own `role` field (both write to the same wis2gc-publish-*
+	// line's own `role` field (both write to the same hauler-publish-*
 	// file on purpose, see finishing.ts's/consumer.ts's own doc comments).
 	publish: { name: 'Publish', role: '?', stage: 'republished to a cache/monitor topic -- check this line\'s own "role" field for SUBSCRIBER vs DOWNLOADER' },
 

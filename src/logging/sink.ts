@@ -96,10 +96,17 @@ export class WinstonLogSink implements LogSink {
 			this.destination === 'file'
 				? new DailyRotateFile({
 						dirname: this.logDir,
-						// wis2gc-<source>-%DATE%.<level>.log, matching every
-						// _logIO_.fileName the original ever built correctly
-						// (see this file's header re: the WARN bug).
-						filename: `wis2gc-${source}-%DATE%.${level}.log`,
+						// hauler-<source>-%DATE%.<level>.log -- renamed 2026-09-21
+						// from the original port's "wis2gc-" prefix (the maintainer:
+						// "logs are still called wis2gc-xxxx which is coming from the
+						// old name" -- wis2gc was this project's Node-RED-era name,
+						// Hauler is this port's). This is a FILE-naming change only --
+						// the "wis2gc:"-prefixed Redis KEY namespace (redis-keys.ts)
+						// is a separate, deliberately unchanged concern, not touched
+						// here. Tracer/src/logs.ts's FILENAME_RE accepts BOTH prefixes
+						// (see that file's own comment) so already-rotated pre-rename
+						// log files stay traceable after a deployment picks this up.
+						filename: `hauler-${source}-%DATE%.${level}.log`,
 						datePattern: 'YYYY-MM-DD-HH',
 						zippedArchive: true,
 						// winston-daily-rotate-file wants its own "<n>m" string form --

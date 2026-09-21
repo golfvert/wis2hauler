@@ -1025,4 +1025,157 @@ describe('runConsumerLoop', () => {
 		ac.abort();
 		await loopPromise;
 	});
+
+	// 2026-09-21 -- see runConsumerLoop's own "RAW-STREAM LAG DETECTION"
+	// doc comment for the live incident these back. All four tests pass
+	// a small healthCheckIntervalMs (10ms) and a real setTimeout-based
+	// sleep, same reasoning as every other runConsumerLoop test above:
+	// a no-op sleep can starve the event loop and hang the test runner.
+	describe('raw-stream health check', () => {
+		test('warns once XLEN reaches rawStreamWarnAtLength, and clears once it drops back below', async () => {
+			const store = new FakeStore();
+			store.readRawMessages = async () => [];
+			let simulatedLength = 50;
+			store.getRawStreamLength = async () => simulatedLength;
+
+			const warnCalls: Record<string, unknown>[] = [];
+			const infoCalls: Record<string, unknown>[] = [];
+			const redisLog: SourceLogger = { warn: (d) => warnCalls.push(d), info: (d) => infoCalls.push(d), debug: () => {} };
+
+			const deps = baseDeps(store, {
+				sleep: (ms: number) => new Promise((r) => setTimeout(r, ms)),
+				now: () => new Date(),
+				redisLog,
+				rawStreamWarnAtLength: 100,
+			});
+
+			const ac = new AbortController();
+			const loopPromise = runConsumerLoop(deps, ac.signal, '0-0', 10, 10, 5000, 10);
+
+			await new Promise((r) => setTimeout(r, 30));
+			expect(warnCalls).toHaveLength(0); // below threshold so far
+
+			simulatedLength = 150;
+			await new Promise((r) => setTimeout(r, 30));
+			expect(warnCalls).toHaveLength(1);
+			expect(warnCalls[0]).toMatchObject({ queue: 'q1', length: 150, warnAtLength: 100, event: 'raw-stream-near-cap' });
+
+			// Stays above threshold -- must not warn again (once per episode).
+			await new Promise((r) => setTimeout(r, 30));
+			expect(warnCalls).toHaveLength(1);
+
+			simulatedLength = 20;
+			await new Promise((r) => setTimeout(r, 30));
+			expect(infoCalls.some((c) => c.event === 'raw-stream-near-cap-cleared')).toBe(true);
+
+			ac.abort();
+			await loopPromise;
+		});
+
+		// The false positive this guards against: a freshly-started consumer
+		// at lastId="0-0" against an already-populated, long-lived stream
+		// will ALWAYS see an oldest-surviving-entry newer than "0-0" -- that
+		// is ordinary history MAXLEN trimmed long before this run even
+		// started, not a loss this run's consumer caused or is responsible
+		// for. See runConsumerLoop's own doc comment.
+		test('never flags loss while lastId is still startId (cold-start guard)', async () => {
+			const store = new FakeStore();
+			store.readRawMessages = async () => {
+				await new Promise((r) => setTimeout(r, 5));
+				return [];
+			};
+			store.getRawStreamOldestId = async () => '999999999999-0'; // "ahead" of "0-0", always
+
+			const warnCalls: Record<string, unknown>[] = [];
+			const redisLog: SourceLogger = { warn: (d) => warnCalls.push(d), info: () => {}, debug: () => {} };
+
+			const deps = baseDeps(store, {
+				sleep: (ms: number) => new Promise((r) => setTimeout(r, ms)),
+				now: () => new Date(),
+				redisLog,
+				rawStreamWarnAtLength: 1_000_000, // never trips the other signal in this test
+			});
+
+			const ac = new AbortController();
+			const loopPromise = runConsumerLoop(deps, ac.signal, '0-0', 10, 10, 5000, 10);
+			await new Promise((r) => setTimeout(r, 50)); // several health-check windows
+			ac.abort();
+			await loopPromise;
+
+			expect(warnCalls).toHaveLength(0);
+		});
+
+		test('flags confirmed loss once lastId has advanced and the trim horizon overtakes it, clears once lastId catches back up', async () => {
+			const store = new FakeStore();
+			let pending: RawStreamEntry[] = [entry('origin/a/wis2/fr-meteofrance/data/foo', wnm('loop-health-1'), '10-0')];
+			store.readRawMessages = async () => {
+				const batch = pending;
+				pending = [];
+				if (batch.length > 0) return batch;
+				await new Promise((r) => setTimeout(r, 5));
+				return [];
+			};
+			let oldestId = '5-0'; // behind lastId once it becomes "10-0" -- no loss yet
+			store.getRawStreamOldestId = async () => oldestId;
+
+			const warnCalls: Record<string, unknown>[] = [];
+			const infoCalls: Record<string, unknown>[] = [];
+			const redisLog: SourceLogger = { warn: (d) => warnCalls.push(d), info: (d) => infoCalls.push(d), debug: () => {} };
+
+			const deps = baseDeps(store, {
+				sleep: (ms: number) => new Promise((r) => setTimeout(r, ms)),
+				now: () => new Date(),
+				redisLog,
+				rawStreamWarnAtLength: 1_000_000,
+			});
+
+			const ac = new AbortController();
+			const loopPromise = runConsumerLoop(deps, ac.signal, '0-0', 10, 10, 5000, 10);
+
+			await new Promise((r) => setTimeout(r, 40)); // the one entry is read; lastId becomes "10-0"
+			expect(warnCalls).toHaveLength(0); // oldestId (5-0) is still behind lastId (10-0) -- no loss
+
+			oldestId = '20-0'; // now newer than lastId "10-0" -- everything between was trimmed unread
+			await new Promise((r) => setTimeout(r, 30));
+			expect(warnCalls).toHaveLength(1);
+			expect(warnCalls[0]).toMatchObject({ queue: 'q1', lastId: '10-0', oldestSurvivingId: '20-0', event: 'raw-stream-entries-trimmed-unread' });
+
+			oldestId = '1-0'; // recovers
+			await new Promise((r) => setTimeout(r, 30));
+			expect(infoCalls.some((c) => c.event === 'raw-stream-entries-trimmed-unread-cleared')).toBe(true);
+
+			ac.abort();
+			await loopPromise;
+		});
+
+		test('is skipped entirely (no store calls at all) when redisLog/rawStreamWarnAtLength are not configured', async () => {
+			const store = new FakeStore();
+			store.readRawMessages = async () => {
+				await new Promise((r) => setTimeout(r, 5));
+				return [];
+			};
+			let lengthCalls = 0;
+			let oldestCalls = 0;
+			store.getRawStreamLength = async () => {
+				lengthCalls++;
+				return 0;
+			};
+			store.getRawStreamOldestId = async () => {
+				oldestCalls++;
+				return undefined;
+			};
+
+			// baseDeps' own defaults: no redisLog, no rawStreamWarnAtLength.
+			const deps = baseDeps(store, { sleep: (ms: number) => new Promise((r) => setTimeout(r, ms)) });
+
+			const ac = new AbortController();
+			const loopPromise = runConsumerLoop(deps, ac.signal, '0-0', 10, 10, 5000, 5);
+			await new Promise((r) => setTimeout(r, 40));
+			ac.abort();
+			await loopPromise;
+
+			expect(lengthCalls).toBe(0);
+			expect(oldestCalls).toBe(0);
+		});
+	});
 });

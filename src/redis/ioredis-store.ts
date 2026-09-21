@@ -20,6 +20,46 @@ import {
 	workQueueStreamKey,
 } from '../wis2/redis-keys.ts';
 
+// Approximate cap for the raw ingest stream (appendRawMessage's XADD
+// MAXLEN below) -- 2026-09-21, raised from 10000 after a live
+// investigation traced several wnm.id's whose Filter log showed
+// "ingested" (i.e. XADD succeeded) with NO trace of ANY kind
+// afterward, not even a Decision "ignore" line -- meaning
+// consumer.ts's processEntry was simply never called for them.
+// XINFO STREAM on the live deployment that surfaced this
+// (wis2gc:mqtt:queue-two) showed `length` pinned at the OLD cap and a
+// first-entry/last-entry timestamp spread of ~137 seconds for those
+// 10000 entries -- i.e. at that deployment's real ingest rate
+// (~73 msg/s onto ONE stream, itself inflated by weight-sources'
+// redundancy: every distinct global cache re-mints its own wnm.id for
+// the same underlying data_id, so one data_id can produce up to
+// len(weight-sources) separate, independently-delayed raw-stream
+// entries), the ENTIRE buffer held barely over two minutes of
+// history. That's the same order of magnitude as this pipeline's OWN
+// intentional worst-case per-message delay
+// (subscriber['weight-delay-max-seconds'], a 120s hard cap by
+// design -- order-links.ts's computeDelaySeconds) plus
+// runConsumerLoop's maxInFlight=5000 backpressure, which pauses
+// reading (not writing -- ingest.ts's onMessage handler is never
+// gated by consumer state at all) whenever that many entries are
+// simultaneously mid-delay. Put together: a burst, a Redis latency
+// blip, or simply maxInFlight saturating during a busy hour only
+// needs to pause the read loop for about as long as the stream's OWN
+// retention window for MAXLEN's approximate trim (XADD ... MAXLEN ~)
+// to start silently evicting entries the consumer hasn't read yet --
+// no error, no warning, nothing; trimming is a completely ordinary,
+// successful Redis operation from Redis's own point of view. Raised
+// 10x here (to 100000) to buy a wide margin over that 120s worst-case
+// delay even at several times the ingest rate that exposed this --
+// cheap in Redis memory (each entry is ~1-2KB) relative to the class
+// of bug it prevents (silent, permanent loss of a fully-valid,
+// already-parsed notification with no trace anywhere). Deliberately a
+// generous buffer, not a tightly "sized to current volume" number --
+// volume grows, and this cap failing quietly is exactly the failure
+// mode that took a full multi-session trace investigation to find the
+// first time.
+export const RAW_STREAM_MAXLEN = 100_000;
+
 export type RedisConnection = Redis | Cluster;
 
 export function createRedisConnection(config: RedisConfig): RedisConnection {
@@ -55,7 +95,7 @@ export class IoredisStore implements SubscriberStore {
 			mqttRawStreamKey(queue),
 			'MAXLEN',
 			'~',
-			10000,
+			RAW_STREAM_MAXLEN,
 			'*',
 			'topic',
 			topic,
@@ -80,6 +120,20 @@ export class IoredisStore implements SubscriberStore {
 			for (let i = 0; i < fields.length; i += 2) map[fields[i]!] = fields[i + 1]!;
 			return { id, topic: map.topic ?? '', payload: map.payload ?? '' };
 		});
+	}
+
+	// See SubscriberStore.getRawStreamLength's own doc comment.
+	async getRawStreamLength(queue: string): Promise<number> {
+		return this.redis.xlen(mqttRawStreamKey(queue));
+	}
+
+	// See SubscriberStore.getRawStreamOldestId's own doc comment. COUNT
+	// 1 -- this only ever needs the single oldest entry's ID, not its
+	// payload or any sibling entries, to answer "is the consumer's
+	// lastId cursor still ahead of the trim horizon".
+	async getRawStreamOldestId(queue: string): Promise<string | undefined> {
+		const reply = (await this.redis.xrange(mqttRawStreamKey(queue), '-', '+', 'COUNT', 1)) as unknown as [string, string[]][];
+		return reply[0]?.[0];
 	}
 
 	async isAlreadyComplete(downloaderId: string): Promise<boolean> {

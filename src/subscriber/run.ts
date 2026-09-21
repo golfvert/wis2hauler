@@ -46,7 +46,7 @@
 // safeguards now, not just the new one.
 import type { Config } from '../config/schema.ts';
 import type { DebugController } from '../debug.ts';
-import { createRedisConnection, IoredisStore } from '../redis/ioredis-store.ts';
+import { createRedisConnection, IoredisStore, RAW_STREAM_MAXLEN } from '../redis/ioredis-store.ts';
 import type { MqttLike } from '../mqtt/types.ts';
 import {
 	createIngestHandler,
@@ -181,6 +181,17 @@ export async function runSubscriber(
 		decisionLog: logSink && gate ? createSourceLogger('Decision', logSink, gate, 'SUBSCRIBER') : undefined,
 		publishLog: logSink && gate ? createSourceLogger('Publish', logSink, gate, 'SUBSCRIBER') : undefined,
 		duplicateLog: logSink && gate ? createSourceLogger('Duplicate', logSink, gate, 'SUBSCRIBER') : undefined,
+		// See ConsumerDeps.redisLog/rawStreamWarnAtLength's own doc comments
+		// and runConsumerLoop's "RAW-STREAM LAG DETECTION" doc comment
+		// (2026-09-21) -- named "Redis" (-> hauler-redis-*.log) since this is
+		// a pipeline-health signal about the Redis-backed raw stream itself,
+		// not a per-notification trace like Decision/Duplicate above it.
+		// 80% of RAW_STREAM_MAXLEN: comfortably early relative to the
+		// worst-case per-message delay (weightDelayMaxSeconds above) that
+		// motivated raising MAXLEN in the first place, not a tuned/derived
+		// percentage.
+		redisLog: logSink && gate ? createSourceLogger('Redis', logSink, gate, 'SUBSCRIBER') : undefined,
+		rawStreamWarnAtLength: Math.floor(RAW_STREAM_MAXLEN * 0.8),
 	};
 
 	log.log('SUBSCRIBER: consumer loop starting');
