@@ -34,3 +34,22 @@ function parseStreamId(id: string): [number, number] {
 	const [ms, seq] = id.split('-');
 	return [Number(ms) || 0, Number(seq) || 0];
 }
+
+// Computes the Stream ID that is `marginMs` milliseconds BEFORE `id`,
+// clamped at "0-0" rather than going negative -- backs runConsumerLoop's
+// periodic MINID trim (added 2026-09-21, replacing the original
+// count-only MAXLEN approach; see that function's own doc comment).
+// Everything strictly older than this cutoff is safe to discard: by
+// definition of the margin, the consumer (whose own read cursor is
+// `id`, i.e. lastId) is guaranteed to already be at least `marginMs`
+// ahead of it, so trimming there can never remove something still
+// needed. The margin itself (15 minutes, run.ts) was sized against
+// WIS2's own Global Cache SLA -- the maintainer: "A Global Cache must
+// cache within 10 minutes to be OK" -- so 15 minutes stays strictly
+// inside that window's own tolerance rather than being an arbitrary
+// round number.
+export function streamIdMinusMs(id: string, marginMs: number): string {
+	const [ms] = parseStreamId(id);
+	const cutoffMs = Math.max(0, ms - marginMs);
+	return `${cutoffMs}-0`;
+}

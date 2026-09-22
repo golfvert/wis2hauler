@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { compareStreamIds } from '../stream-id.ts';
+import { compareStreamIds, streamIdMinusMs } from '../stream-id.ts';
 
 describe('compareStreamIds', () => {
 	test('orders by the millisecond half first', () => {
@@ -27,5 +27,19 @@ describe('compareStreamIds', () => {
 
 	test('"0-0" (runConsumerLoop\'s own startId default) compares as the oldest possible id', () => {
 		expect(compareStreamIds('0-0', '1700000000000-0')).toBeLessThan(0);
+	});
+});
+
+describe('streamIdMinusMs', () => {
+	test('subtracts the margin from the millisecond half, sequence reset to 0', () => {
+		expect(streamIdMinusMs('1700000000000-7', 60_000)).toBe('1699999940000-0');
+	});
+
+	test('clamps at "0-0" instead of going negative when the margin exceeds the id', () => {
+		expect(streamIdMinusMs('1000-0', 5000)).toBe('0-0');
+	});
+
+	test('a zero margin returns the same millisecond, sequence reset to 0', () => {
+		expect(streamIdMinusMs('1700000000000-3', 0)).toBe('1700000000000-0');
 	});
 });

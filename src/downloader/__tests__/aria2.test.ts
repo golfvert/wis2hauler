@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { Aria2Client, type WebSocketLike } from '../aria2';
+import { Aria2Client, LOWEST_SPEED_LIMIT_BYTES_PER_SEC, type WebSocketLike } from '../aria2';
 
 class FakeSocket implements WebSocketLike {
 	readyState = 0;
@@ -56,7 +56,7 @@ describe('Aria2Client', () => {
 		expect(req.jsonrpc).toBe('2.0');
 		expect(req.method).toBe('aria2.addUri');
 		expect(typeof req.id).toBe('string');
-		expect(req.params).toEqual(['token:s3cr3t', ['https://example.test/file.grib'], { out: 'w1_file.grib', 'disk-cache': 0 }]);
+		expect(req.params).toEqual(['token:s3cr3t', ['https://example.test/file.grib'], { out: 'w1_file.grib', 'disk-cache': 0, 'lowest-speed-limit': 1000 }]);
 
 		socket.receive({ jsonrpc: '2.0', id: req.id, result: 'abc123gid' });
 		await expect(promise).resolves.toBe('abc123gid');
@@ -74,7 +74,27 @@ describe('Aria2Client', () => {
 		socket.open();
 
 		client.addUri('https://example.test/a', { filename: 'a', checkCertificate: false }).catch(() => {});
-		expect(lastRequest(socket).params[2]).toEqual({ out: 'a', 'disk-cache': 0, 'check-certificate': false });
+		expect(lastRequest(socket).params[2]).toEqual({ out: 'a', 'disk-cache': 0, 'lowest-speed-limit': 1000, 'check-certificate': false });
+		client.stop();
+	});
+
+	// 2026-09-22 -- see LOWEST_SPEED_LIMIT_BYTES_PER_SEC's own doc comment
+	// (aria2.ts) for the live investigation this backs. Unconditional
+	// (unlike check-certificate/credentials above): every addUri call
+	// gets a stall floor, not just ones that opt in.
+	test('addUri always sends lowest-speed-limit -- the per-download stall floor', async () => {
+		let socket!: FakeSocket;
+		const client = new Aria2Client({
+			url: 'ws://x',
+			secret: 's',
+			createWebSocket: () => (socket = new FakeSocket()),
+		});
+		client.start();
+		socket.open();
+
+		client.addUri('https://example.test/a', { filename: 'a' }).catch(() => {});
+		expect(lastRequest(socket).params[2]).toMatchObject({ 'lowest-speed-limit': LOWEST_SPEED_LIMIT_BYTES_PER_SEC });
+		expect(LOWEST_SPEED_LIMIT_BYTES_PER_SEC).toBe(1000);
 		client.stop();
 	});
 
@@ -97,6 +117,7 @@ describe('Aria2Client', () => {
 		expect(lastRequest(socket).params[2]).toEqual({
 			out: 'a',
 			'disk-cache': 0,
+			'lowest-speed-limit': 1000,
 			'http-user': 'u',
 			'http-passwd': 'p',
 		});

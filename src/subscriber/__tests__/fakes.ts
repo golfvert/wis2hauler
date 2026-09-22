@@ -11,6 +11,7 @@
 // real `HGETALL wis2gc:downloader:downloader_id:X` would.
 import type { RawStreamEntry, SubscriberStore } from '../store.ts';
 import type { MqttLike } from '../../mqtt/types.ts';
+import { compareStreamIds } from '../stream-id.ts';
 
 export class FakeStore implements SubscriberStore {
 	messageIds = new Set<string>();
@@ -56,6 +57,17 @@ export class FakeStore implements SubscriberStore {
 	// on `rawStream` directly rather than by simulating a real MAXLEN trim.
 	async getRawStreamOldestId(_queue: string): Promise<string | undefined> {
 		return this.rawStream[0]?.id;
+	}
+
+	// Mirrors the real store's XTRIM ... MINID ~ cutoffId -- see
+	// SubscriberStore.trimRawStreamBefore. Filters `rawStream` down to
+	// entries at or after cutoffId (compareStreamIds, not plain string
+	// comparison -- see that function's own doc comment), returning how
+	// many were removed.
+	async trimRawStreamBefore(_queue: string, cutoffId: string): Promise<number> {
+		const before = this.rawStream.length;
+		this.rawStream = this.rawStream.filter((e) => compareStreamIds(e.id, cutoffId) >= 0);
+		return before - this.rawStream.length;
 	}
 
 	async isAlreadyComplete(downloaderId: string): Promise<boolean> {

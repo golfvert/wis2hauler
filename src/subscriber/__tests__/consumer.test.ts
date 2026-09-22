@@ -1032,20 +1032,64 @@ describe('runConsumerLoop', () => {
 	// sleep, same reasoning as every other runConsumerLoop test above:
 	// a no-op sleep can starve the event loop and hang the test runner.
 	describe('raw-stream health check', () => {
-		test('warns once XLEN reaches rawStreamWarnAtLength, and clears once it drops back below', async () => {
+		test('trims the raw stream every tick to lastId minus the margin, and DEBUG-logs the post-trim size unconditionally', async () => {
 			const store = new FakeStore();
-			store.readRawMessages = async () => [];
-			let simulatedLength = 50;
-			store.getRawStreamLength = async () => simulatedLength;
+			let pending: RawStreamEntry[] = [entry('origin/a/wis2/fr-meteofrance/data/foo', wnm('trim-1'), '1000000-0')];
+			store.readRawMessages = async () => {
+				const batch = pending;
+				pending = [];
+				if (batch.length > 0) return batch;
+				await new Promise((r) => setTimeout(r, 5));
+				return [];
+			};
+			const trimCalls: { queue: string; cutoffId: string }[] = [];
+			store.trimRawStreamBefore = async (queue, cutoffId) => {
+				trimCalls.push({ queue, cutoffId });
+				return 0;
+			};
+			store.getRawStreamLength = async () => 42;
 
-			const warnCalls: Record<string, unknown>[] = [];
-			const infoCalls: Record<string, unknown>[] = [];
-			const redisLog: SourceLogger = { warn: (d) => warnCalls.push(d), info: (d) => infoCalls.push(d), debug: () => {} };
+			const debugCalls: Record<string, unknown>[] = [];
+			const redisLog: SourceLogger = { warn: () => {}, info: () => {}, debug: (d) => debugCalls.push(d) };
 
 			const deps = baseDeps(store, {
 				sleep: (ms: number) => new Promise((r) => setTimeout(r, ms)),
 				now: () => new Date(),
 				redisLog,
+				rawStreamTrimMarginMs: 60_000, // 1 minute, for a round cutoff below
+			});
+
+			const ac = new AbortController();
+			const loopPromise = runConsumerLoop(deps, ac.signal, '0-0', 10, 10, 5000, 10);
+
+			await new Promise((r) => setTimeout(r, 30)); // the one entry is read; lastId becomes "1000000-0"
+			expect(trimCalls.length).toBeGreaterThan(0);
+			expect(trimCalls[0]).toMatchObject({ queue: 'q1', cutoffId: '940000-0' }); // 1000000 - 60000
+
+			expect(debugCalls.length).toBeGreaterThan(0);
+			expect(debugCalls[0]).toMatchObject({ queue: 'q1', length: 42, event: 'raw-stream-trimmed' });
+
+			ac.abort();
+			await loopPromise;
+		});
+
+		test('INFO-logs every tick the post-trim size is still at/above rawStreamWarnAtLength, silent below it -- no once-per-episode dedup', async () => {
+			const store = new FakeStore();
+			store.readRawMessages = async () => {
+				await new Promise((r) => setTimeout(r, 5));
+				return [];
+			};
+			let simulatedLength = 50;
+			store.getRawStreamLength = async () => simulatedLength;
+
+			const infoCalls: Record<string, unknown>[] = [];
+			const redisLog: SourceLogger = { warn: () => {}, info: (d) => infoCalls.push(d), debug: () => {} };
+
+			const deps = baseDeps(store, {
+				sleep: (ms: number) => new Promise((r) => setTimeout(r, ms)),
+				now: () => new Date(),
+				redisLog,
+				rawStreamTrimMarginMs: 60_000,
 				rawStreamWarnAtLength: 100,
 			});
 
@@ -1053,20 +1097,17 @@ describe('runConsumerLoop', () => {
 			const loopPromise = runConsumerLoop(deps, ac.signal, '0-0', 10, 10, 5000, 10);
 
 			await new Promise((r) => setTimeout(r, 30));
-			expect(warnCalls).toHaveLength(0); // below threshold so far
+			expect(infoCalls).toHaveLength(0); // below threshold so far
 
 			simulatedLength = 150;
-			await new Promise((r) => setTimeout(r, 30));
-			expect(warnCalls).toHaveLength(1);
-			expect(warnCalls[0]).toMatchObject({ queue: 'q1', length: 150, warnAtLength: 100, event: 'raw-stream-near-cap' });
-
-			// Stays above threshold -- must not warn again (once per episode).
-			await new Promise((r) => setTimeout(r, 30));
-			expect(warnCalls).toHaveLength(1);
+			await new Promise((r) => setTimeout(r, 35)); // several ticks while it stays above threshold
+			expect(infoCalls.length).toBeGreaterThan(1); // logged repeatedly, not just once -- no dedup
+			for (const c of infoCalls) expect(c).toMatchObject({ queue: 'q1', length: 150, warnAtLength: 100, event: 'raw-stream-near-cap' });
 
 			simulatedLength = 20;
+			const countAtDrop = infoCalls.length;
 			await new Promise((r) => setTimeout(r, 30));
-			expect(infoCalls.some((c) => c.event === 'raw-stream-near-cap-cleared')).toBe(true);
+			expect(infoCalls.length).toBe(countAtDrop); // no more once it's back below threshold
 
 			ac.abort();
 			await loopPromise;
@@ -1093,6 +1134,7 @@ describe('runConsumerLoop', () => {
 				sleep: (ms: number) => new Promise((r) => setTimeout(r, ms)),
 				now: () => new Date(),
 				redisLog,
+				rawStreamTrimMarginMs: 60_000,
 				rawStreamWarnAtLength: 1_000_000, // never trips the other signal in this test
 			});
 
@@ -1126,6 +1168,7 @@ describe('runConsumerLoop', () => {
 				sleep: (ms: number) => new Promise((r) => setTimeout(r, ms)),
 				now: () => new Date(),
 				redisLog,
+				rawStreamTrimMarginMs: 60_000,
 				rawStreamWarnAtLength: 1_000_000,
 			});
 
@@ -1148,14 +1191,19 @@ describe('runConsumerLoop', () => {
 			await loopPromise;
 		});
 
-		test('is skipped entirely (no store calls at all) when redisLog/rawStreamWarnAtLength are not configured', async () => {
+		test('is skipped entirely (no store calls at all) when redisLog/rawStreamTrimMarginMs are not configured', async () => {
 			const store = new FakeStore();
 			store.readRawMessages = async () => {
 				await new Promise((r) => setTimeout(r, 5));
 				return [];
 			};
+			let trimCalls = 0;
 			let lengthCalls = 0;
 			let oldestCalls = 0;
+			store.trimRawStreamBefore = async () => {
+				trimCalls++;
+				return 0;
+			};
 			store.getRawStreamLength = async () => {
 				lengthCalls++;
 				return 0;
@@ -1165,7 +1213,7 @@ describe('runConsumerLoop', () => {
 				return undefined;
 			};
 
-			// baseDeps' own defaults: no redisLog, no rawStreamWarnAtLength.
+			// baseDeps' own defaults: no redisLog, no rawStreamTrimMarginMs.
 			const deps = baseDeps(store, { sleep: (ms: number) => new Promise((r) => setTimeout(r, ms)) });
 
 			const ac = new AbortController();
@@ -1174,8 +1222,37 @@ describe('runConsumerLoop', () => {
 			ac.abort();
 			await loopPromise;
 
+			expect(trimCalls).toBe(0);
 			expect(lengthCalls).toBe(0);
 			expect(oldestCalls).toBe(0);
+		});
+
+		test('is also skipped when redisLog is set but rawStreamTrimMarginMs is not (rawStreamWarnAtLength alone is not enough to turn it on)', async () => {
+			const store = new FakeStore();
+			store.readRawMessages = async () => {
+				await new Promise((r) => setTimeout(r, 5));
+				return [];
+			};
+			let trimCalls = 0;
+			store.trimRawStreamBefore = async () => {
+				trimCalls++;
+				return 0;
+			};
+			const redisLog: SourceLogger = { warn: () => {}, info: () => {}, debug: () => {} };
+
+			const deps = baseDeps(store, {
+				sleep: (ms: number) => new Promise((r) => setTimeout(r, ms)),
+				redisLog,
+				rawStreamWarnAtLength: 100, // deliberately no rawStreamTrimMarginMs alongside it
+			});
+
+			const ac = new AbortController();
+			const loopPromise = runConsumerLoop(deps, ac.signal, '0-0', 10, 10, 5000, 5);
+			await new Promise((r) => setTimeout(r, 40));
+			ac.abort();
+			await loopPromise;
+
+			expect(trimCalls).toBe(0);
 		});
 	});
 });

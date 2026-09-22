@@ -181,16 +181,26 @@ export async function runSubscriber(
 		decisionLog: logSink && gate ? createSourceLogger('Decision', logSink, gate, 'SUBSCRIBER') : undefined,
 		publishLog: logSink && gate ? createSourceLogger('Publish', logSink, gate, 'SUBSCRIBER') : undefined,
 		duplicateLog: logSink && gate ? createSourceLogger('Duplicate', logSink, gate, 'SUBSCRIBER') : undefined,
-		// See ConsumerDeps.redisLog/rawStreamWarnAtLength's own doc comments
-		// and runConsumerLoop's "RAW-STREAM LAG DETECTION" doc comment
-		// (2026-09-21) -- named "Redis" (-> hauler-redis-*.log) since this is
-		// a pipeline-health signal about the Redis-backed raw stream itself,
-		// not a per-notification trace like Decision/Duplicate above it.
-		// 80% of RAW_STREAM_MAXLEN: comfortably early relative to the
-		// worst-case per-message delay (weightDelayMaxSeconds above) that
-		// motivated raising MAXLEN in the first place, not a tuned/derived
-		// percentage.
+		// See ConsumerDeps.redisLog/rawStreamTrimMarginMs/rawStreamWarnAtLength's
+		// own doc comments and runConsumerLoop's "RAW-STREAM LAG DETECTION"
+		// doc comment (2026-09-21, revised same day) -- named "Redis" (->
+		// hauler-redis-*.log) since this is a pipeline-health signal about
+		// the Redis-backed raw stream itself, not a per-notification trace
+		// like Decision/Duplicate above it.
 		redisLog: logSink && gate ? createSourceLogger('Redis', logSink, gate, 'SUBSCRIBER') : undefined,
+		// 15 minutes: sized against WIS2's own Global Cache SLA, not an
+		// arbitrary round number -- the maintainer: "A Global Cache must
+		// cache within 10 minutes to be OK", so this stays strictly inside
+		// that window's own tolerance. This is what runConsumerLoop now
+		// trims the raw stream to (XTRIM ... MINID ~ lastId-minus-this)
+		// every healthCheckIntervalMs -- the PRIMARY trim mechanism.
+		rawStreamTrimMarginMs: 15 * 60 * 1000,
+		// 80% of RAW_STREAM_MAXLEN (the backstop, not the primary trim
+		// anymore) -- checked AFTER every periodic trim above, so still
+		// close to it at that point means the consumer is genuinely behind
+		// by more than rawStreamTrimMarginMs allows, not merely "traffic is
+		// high" (which is what this used to mean back when MAXLEN alone did
+		// the trimming and the stream sat pinned near it permanently).
 		rawStreamWarnAtLength: Math.floor(RAW_STREAM_MAXLEN * 0.8),
 	};
 

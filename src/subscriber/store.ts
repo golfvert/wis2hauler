@@ -43,12 +43,12 @@ export interface SubscriberStore {
 	// "Prepare" -> XADD ("wis2gc:mqtt:"+queue): appends a raw ingested
 	// message (topic + the untouched wire payload + a millis timestamp)
 	// for the XREAD consumer to pick up, approximately trimming the
-	// stream to MAXLEN ~ RAW_STREAM_MAXLEN (ioredis-store.ts -- 100000,
-	// raised 2026-09-21 from the original 10000: see that constant's own
-	// doc comment for the live investigation that found the old cap's
-	// ~2-minute retention window silently swallowing fully-ingested
-	// entries the consumer hadn't read yet). Returns the assigned stream
-	// entry ID.
+	// stream to MAXLEN ~ RAW_STREAM_MAXLEN (ioredis-store.ts -- 500000
+	// as of 2026-09-21, but see that constant's own doc comment: this
+	// is now just a rare backstop, not the primary trim -- that's
+	// trimRawStreamBefore below, run periodically off the consumer's
+	// own read progress instead of a blind count). Returns the assigned
+	// stream entry ID.
 	appendRawMessage(queue: string, topic: string, payload: string, timestampMs: number): Promise<string>;
 
 	// "Read" -> XREAD (non-blocking, COUNT 500): reads whatever is
@@ -188,10 +188,14 @@ export interface SubscriberStore {
 	// fully-ingested entries the consumer hadn't read yet, with zero
 	// trace anywhere -- see runConsumerLoop's own doc comment for the
 	// detection logic this backs). XLEN mqttRawStreamKey(queue) -- the
-	// stream's current entry count, checked against a configured
-	// fraction of RAW_STREAM_MAXLEN so an operator gets a warning while
-	// the buffer is filling up, BEFORE any entry has actually been
-	// trimmed unread.
+	// stream's current entry count. Originally checked directly against
+	// a fraction of RAW_STREAM_MAXLEN as an early-warning; now (same
+	// day, once trimRawStreamBefore became the primary trim) checked
+	// AFTER each periodic trim instead, so a length still close to
+	// RAW_STREAM_MAXLEN despite just having trimmed everything the
+	// margin allows means the consumer is genuinely behind by more than
+	// that margin -- not merely "traffic is high", which used to be the
+	// permanent steady state under the old count-only design.
 	getRawStreamLength(queue: string): Promise<number>;
 
 	// Raw-stream health check, part 2: the ID of the stream's current
@@ -205,6 +209,20 @@ export interface SubscriberStore {
 	// a guess, unlike getRawStreamLength above which only ever warns of
 	// a risk.
 	getRawStreamOldestId(queue: string): Promise<string | undefined>;
+
+	// PRIMARY raw-stream trim as of 2026-09-21 (XTRIM ... MINID ~
+	// cutoffId): removes every entry strictly older than `cutoffId`,
+	// run periodically by runConsumerLoop off its own read cursor
+	// (stream-id.ts's streamIdMinusMs(lastId, marginMs)) instead of
+	// XADD's blind MAXLEN -- see RAW_STREAM_MAXLEN's own doc comment
+	// (ioredis-store.ts) for why a count-based cap alone wasn't enough.
+	// Because `cutoffId` is always derived from lastId minus a margin
+	// the consumer is guaranteed to already be ahead of, this can never
+	// remove something not yet read -- unlike MAXLEN (kept as a much
+	// larger backstop for a genuinely dead consumer), this is
+	// structurally safe regardless of how large the margin or how far
+	// behind the consumer gets. Returns the number of entries removed.
+	trimRawStreamBefore(queue: string, cutoffId: string): Promise<number>;
 
 	// Graceful shutdown of the underlying client(s).
 	quit(): Promise<void>;

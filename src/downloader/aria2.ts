@@ -61,6 +61,37 @@ export interface Aria2AddUriOptions {
 	credentials?: { username: string; password: string };
 }
 
+// Per-download stall floor -- 2026-09-22, after a live investigation into
+// downloads not completing for some destinations during high message
+// volume. NOT settable through the deployed golfvert/aria2 image's own
+// entrypoint: its /etc/aria2.conf heredoc only maps a fixed, hardcoded
+// list of env vars (CONCURRENT_DOWNLOADS, SPLIT, CONNECTIONS_PER_SERVER,
+// MAX_TRIES, ...), and "lowest-speed-limit" isn't among them -- so
+// nothing today aborts a connection that's open but transferring at
+// near-zero speed; aria2's own default (0) means no floor at all. Set
+// here instead, per-download via addUri's own RPC options (confirmed
+// against aria2's manual: per-URI options have "exactly same meaning of
+// the ones in the command-line options"), since that needs no image or
+// compose change. 1000 (1 KB/s, bytes/sec per aria2's own units) is a
+// deliberately conservative starting floor -- these are described as
+// mostly small files, so this should only ever trip on a genuine
+// near-zero stall, never on a connection that's merely slow under
+// contention. Two open caveats, flagged rather than silently assumed
+// away: (1) aria2's manual doesn't say whether this is checked per
+// individual connection or against the download's combined speed, which
+// matters given the deployed config's split=4 (up to 4 parallel
+// connections per download) -- if it's per-connection, a healthy
+// 4-way-split transfer could false-positive; worth watching once live.
+// (2) this alone doesn't stop aria2's OWN internal retry (max-tries,
+// currently 3 in the deployed .conf) from re-trying the same stalled
+// server before Hauler's own source-aware retry pipeline
+// (error-retry.ts) ever hears about it via onDownloadError -- the
+// maintainer's own compose file needs MAX_TRIES=1 for the fast-fail
+// benefit to actually reach that better pipeline; not something this
+// app can set from here. Does not affect BitTorrent downloads (aria2's
+// own carve-out) -- irrelevant here, this pipeline never fetches torrents.
+export const LOWEST_SPEED_LIMIT_BYTES_PER_SEC = 1000;
+
 export interface Aria2StatusFile {
 	path: string;
 }
@@ -258,6 +289,7 @@ export class Aria2Client {
 		const fileOptions: Record<string, unknown> = {
 			out: options.filename,
 			'disk-cache': 0,
+			'lowest-speed-limit': LOWEST_SPEED_LIMIT_BYTES_PER_SEC,
 		};
 		if (options.checkCertificate !== undefined) {
 			fileOptions['check-certificate'] = options.checkCertificate;

@@ -23,7 +23,7 @@ import type { OverrideRule } from '../config/schema.ts';
 import type { RawStreamEntry, SubscriberStore } from './store.ts';
 import type { MqttLike } from '../mqtt/types.ts';
 import type { SourceLogger } from '../logging/logger.ts';
-import { compareStreamIds } from './stream-id.ts';
+import { compareStreamIds, streamIdMinusMs } from './stream-id.ts';
 
 // "Prepare"'s queuetopic / claim SET: EX 900. Same 900s the ingest-side
 // per-message dedup uses (flows.json literal, not a coincidence worth
@@ -149,26 +149,42 @@ export interface ConsumerDeps {
 	// own. Optional for the same reason as every other logger field
 	// here.
 	duplicateLog?: SourceLogger;
-	// Raw-stream health check (NOT a port of anything in flows.json --
-	// added 2026-09-21, see runConsumerLoop's own doc comment for the
-	// full incident and store.ts's getRawStreamLength/getRawStreamOldestId
-	// for the two signals this logs). Named "Redis" rather than folded
-	// into decisionLog: this is a pipeline-health signal, not a
-	// per-notification trace -- there's no dataId/wnmId/downloaderId to
-	// key it on, and it fires at most once per episode (start/clear),
-	// never per message. Optional for the same reason as every other
-	// logger field here; runConsumerLoop skips BOTH raw-stream health
-	// checks entirely when this or rawStreamWarnAtLength below is
+	// Raw-stream health/trim logger (NOT a port of anything in
+	// flows.json -- added 2026-09-21, see runConsumerLoop's own doc
+	// comment for the full incident and its same-day revision).
+	// Named "Redis" rather than folded into decisionLog: this is a
+	// pipeline-health signal, not a per-notification trace -- there's
+	// no dataId/wnmId/downloaderId to key it on. Carries three kinds of
+	// line now: an unconditional DEBUG trace of the stream's size after
+	// every periodic trim, an INFO line whenever that post-trim size is
+	// still close to the backstop (store.ts's trimRawStreamBefore doc
+	// comment), and the WARN/INFO confirmed-loss pair (unchanged from
+	// this feature's original form) if the trim horizon ever actually
+	// overtakes the consumer's own cursor. Optional for the same reason
+	// as every other logger field here; runConsumerLoop skips the whole
+	// periodic block when this or rawStreamTrimMarginMs below is
 	// undefined, so existing hand-built ConsumerDeps in tests keep
 	// compiling and behaving exactly as before this addition.
 	redisLog?: SourceLogger;
-	// The XLEN threshold (see store.ts's getRawStreamLength doc comment)
-	// above which runConsumerLoop logs an early warning through redisLog,
-	// before any entry has actually been trimmed unread -- run.ts sets
-	// this to a fraction of ioredis-store.ts's RAW_STREAM_MAXLEN.
-	// undefined disables both raw-stream health checks (this one
-	// directly, and the confirmed-loss one alongside it) -- there's
-	// nothing meaningful to compare against without a real cap.
+	// How far behind its own read cursor (lastId) runConsumerLoop trims
+	// the raw stream to, every healthCheckIntervalMs, via
+	// store.trimRawStreamBefore(queue, streamIdMinusMs(lastId, this)) --
+	// the PRIMARY trim mechanism as of 2026-09-21 (ioredis-store.ts's
+	// RAW_STREAM_MAXLEN is now just the backstop). run.ts sets this to
+	// 15 minutes, sized against WIS2's own Global Cache SLA (the
+	// maintainer: "A Global Cache must cache within 10 minutes to be
+	// OK") -- comfortably inside that window while still small next to
+	// the backstop. undefined disables the entire periodic block: no
+	// trim, no size logging, and no confirmed-loss check either (there
+	// would be nothing meaningful to trim against or compare).
+	rawStreamTrimMarginMs?: number;
+	// The post-trim length (store.ts's getRawStreamLength) at or above
+	// which runConsumerLoop logs an INFO line noting the stream is
+	// still close to RAW_STREAM_MAXLEN despite having just trimmed
+	// everything rawStreamTrimMarginMs allows -- run.ts sets this to a
+	// fraction of that constant. Checked AFTER every trim, not instead
+	// of one; undefined simply skips that one INFO line, the trim and
+	// DEBUG size logging still run off rawStreamTrimMarginMs alone.
 	rawStreamWarnAtLength?: number;
 }
 
@@ -634,28 +650,60 @@ export async function processEntry(entry: RawStreamEntry, deps: ConsumerDeps): P
  * -- no error, no warning, nothing, since trimming is an entirely
  * ordinary, successful Redis operation from Redis's own point of view.
  *
- * Below, once per healthCheckIntervalMs (wall-clock, via deps.now() --
- * not once per iteration, since a busy loop can spin many times a
- * second): two independent, complementary checks, both optional
- * (skipped entirely when deps.redisLog/rawStreamWarnAtLength aren't
- * configured) and both logged at most once per episode (start/clear),
- * matching mqtt/client.ts's own logOutageOnce pattern rather than
- * spamming one line per check while a condition persists.
- *   1. store.getRawStreamLength(queue) against rawStreamWarnAtLength --
- *      an EARLY warning while the buffer is filling up, before any
- *      loss has actually happened.
- *   2. store.getRawStreamOldestId(queue) against this loop's own
+ * REVISED same day, after further discussion: raising MAXLEN alone
+ * (10000 -> 100000) only ever bought a bigger blind buffer -- it never
+ * fixed the actual mismatch, which is that a COUNT-based cap has no
+ * idea whether the consumer has actually reached those entries. Live
+ * evidence over several hours confirmed it: under continuous
+ * high-volume ingest the stream simply sits pinned at/near the cap
+ * PERMANENTLY, healthy or not (XLEN held at ~100000 for hours
+ * regardless of load) -- so a warning keyed on "close to the count
+ * cap" can't distinguish routine operation from actual danger; it's
+ * always true. Below, once per healthCheckIntervalMs (wall-clock, via
+ * deps.now() -- not once per iteration, since a busy loop can spin
+ * many times a second):
+ *   1. store.trimRawStreamBefore(queue, streamIdMinusMs(lastId,
+ *      rawStreamTrimMarginMs)) -- the PRIMARY trim now, replacing
+ *      XADD's MAXLEN for that role. Keyed off this loop's OWN read
+ *      cursor rather than a blind count, so it structurally cannot
+ *      remove anything the consumer hasn't reached yet; MAXLEN
+ *      (ioredis-store.ts's RAW_STREAM_MAXLEN, raised to 500000) is
+ *      what's left of the old mechanism, kept only as a rare backstop
+ *      for a truly dead consumer. This also means the stream can
+ *      finally shrink back down when the consumer is caught up,
+ *      instead of sitting pinned at a fixed number forever.
+ *   2. An unconditional DEBUG trace of the post-trim length
+ *      (store.getRawStreamLength), every tick -- routine operational
+ *      visibility, not a warning.
+ *   3. An INFO line, every tick the post-trim length is still >=
+ *      rawStreamWarnAtLength -- unlike the old pre-trim near-cap
+ *      check, this one is meaningful precisely because it now runs
+ *      AFTER trimming everything the margin allows: still close to
+ *      the backstop at that point means the consumer is genuinely
+ *      behind by more than the margin, not merely "traffic is high".
+ *      No once-per-episode dedup here (unlike the pair below) --
+ *      logged every qualifying tick, since it's expected to be rare
+ *      enough that repetition shows duration/severity rather than
+ *      spamming.
+ *   4. store.getRawStreamOldestId(queue) against this loop's own
  *      lastId (stream-id.ts's compareStreamIds, not plain string
  *      comparison -- see that function's own doc comment for why) --
- *      a CONFIRMED-loss signal: if the stream's oldest surviving entry
- *      is newer than lastId, everything between them existed and was
- *      trimmed away before this loop ever read it. Skipped entirely
+ *      a CONFIRMED-loss signal, unchanged from this feature's
+ *      original form: if the stream's oldest surviving entry is newer
+ *      than lastId, everything between them existed and was trimmed
+ *      away before this loop ever read it. With trimming now keyed
+ *      off lastId itself, this should in practice only ever fire via
+ *      the MAXLEN backstop, not the routine MINID trim -- logged at
+ *      most once per episode (start/clear), matching
+ *      mqtt/client.ts's own logOutageOnce pattern. Skipped entirely
  *      until lastId has advanced past startId at least once, since a
  *      fresh process starting from "0-0" against an already-populated,
  *      long-lived stream will ALWAYS see an oldest-surviving-entry
- *      newer than "0-0" -- that's ordinary history MAXLEN already
- *      trimmed long before this run even started, not a loss THIS
- *      run's consumer is responsible for.
+ *      newer than "0-0" -- that's ordinary history already trimmed
+ *      long before this run even started, not a loss THIS run's
+ *      consumer is responsible for.
+ * All of the above is skipped entirely when deps.redisLog or
+ * rawStreamTrimMarginMs is undefined.
  */
 export async function runConsumerLoop(
 	deps: ConsumerDeps,
@@ -670,7 +718,6 @@ export async function runConsumerLoop(
 	let inFlight = 0;
 	// See this function's own "RAW-STREAM LAG DETECTION" doc comment above.
 	let lastHealthCheckAt = 0;
-	let rawStreamNearCapWarned = false;
 	let rawStreamLossWarned = false;
 	while (!signal.aborted) {
 		// Raw-stream health check -- runs on EVERY iteration (not just when
@@ -680,22 +727,21 @@ export async function runConsumerLoop(
 		// backlog to read -- exactly when checking often matters most. See
 		// the doc comment above for what each signal means and why signal 2
 		// is gated on lastId having actually advanced past startId.
-		if (deps.redisLog && deps.rawStreamWarnAtLength !== undefined) {
+		if (deps.redisLog && deps.rawStreamTrimMarginMs !== undefined) {
 			const nowMs = deps.now().getTime();
 			if (nowMs - lastHealthCheckAt >= healthCheckIntervalMs) {
 				lastHealthCheckAt = nowMs;
 
 				try {
+					const cutoffId = streamIdMinusMs(lastId, deps.rawStreamTrimMarginMs);
+					await deps.store.trimRawStreamBefore(deps.queue, cutoffId);
 					const length = await deps.store.getRawStreamLength(deps.queue);
-					if (length >= deps.rawStreamWarnAtLength && !rawStreamNearCapWarned) {
-						rawStreamNearCapWarned = true;
-						deps.redisLog.warn({ queue: deps.queue, length, warnAtLength: deps.rawStreamWarnAtLength, event: 'raw-stream-near-cap' });
-					} else if (length < deps.rawStreamWarnAtLength && rawStreamNearCapWarned) {
-						rawStreamNearCapWarned = false;
-						deps.redisLog.info({ queue: deps.queue, length, warnAtLength: deps.rawStreamWarnAtLength, event: 'raw-stream-near-cap-cleared' });
+					deps.redisLog.debug({ queue: deps.queue, length, event: 'raw-stream-trimmed' });
+					if (deps.rawStreamWarnAtLength !== undefined && length >= deps.rawStreamWarnAtLength) {
+						deps.redisLog.info({ queue: deps.queue, length, warnAtLength: deps.rawStreamWarnAtLength, event: 'raw-stream-near-cap' });
 					}
 				} catch (err) {
-					deps.log.error(`consumer: raw-stream length check failed: ${err instanceof Error ? err.message : String(err)}`);
+					deps.log.error(`consumer: raw-stream trim failed: ${err instanceof Error ? err.message : String(err)}`);
 				}
 
 				if (lastId !== startId) {

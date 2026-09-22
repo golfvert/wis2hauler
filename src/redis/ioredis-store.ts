@@ -20,45 +20,44 @@ import {
 	workQueueStreamKey,
 } from '../wis2/redis-keys.ts';
 
-// Approximate cap for the raw ingest stream (appendRawMessage's XADD
-// MAXLEN below) -- 2026-09-21, raised from 10000 after a live
-// investigation traced several wnm.id's whose Filter log showed
-// "ingested" (i.e. XADD succeeded) with NO trace of ANY kind
-// afterward, not even a Decision "ignore" line -- meaning
-// consumer.ts's processEntry was simply never called for them.
-// XINFO STREAM on the live deployment that surfaced this
-// (wis2gc:mqtt:queue-two) showed `length` pinned at the OLD cap and a
-// first-entry/last-entry timestamp spread of ~137 seconds for those
-// 10000 entries -- i.e. at that deployment's real ingest rate
-// (~73 msg/s onto ONE stream, itself inflated by weight-sources'
-// redundancy: every distinct global cache re-mints its own wnm.id for
-// the same underlying data_id, so one data_id can produce up to
-// len(weight-sources) separate, independently-delayed raw-stream
-// entries), the ENTIRE buffer held barely over two minutes of
-// history. That's the same order of magnitude as this pipeline's OWN
-// intentional worst-case per-message delay
-// (subscriber['weight-delay-max-seconds'], a 120s hard cap by
-// design -- order-links.ts's computeDelaySeconds) plus
-// runConsumerLoop's maxInFlight=5000 backpressure, which pauses
-// reading (not writing -- ingest.ts's onMessage handler is never
-// gated by consumer state at all) whenever that many entries are
-// simultaneously mid-delay. Put together: a burst, a Redis latency
-// blip, or simply maxInFlight saturating during a busy hour only
-// needs to pause the read loop for about as long as the stream's OWN
-// retention window for MAXLEN's approximate trim (XADD ... MAXLEN ~)
-// to start silently evicting entries the consumer hasn't read yet --
-// no error, no warning, nothing; trimming is a completely ordinary,
-// successful Redis operation from Redis's own point of view. Raised
-// 10x here (to 100000) to buy a wide margin over that 120s worst-case
-// delay even at several times the ingest rate that exposed this --
-// cheap in Redis memory (each entry is ~1-2KB) relative to the class
-// of bug it prevents (silent, permanent loss of a fully-valid,
-// already-parsed notification with no trace anywhere). Deliberately a
-// generous buffer, not a tightly "sized to current volume" number --
-// volume grows, and this cap failing quietly is exactly the failure
-// mode that took a full multi-session trace investigation to find the
-// first time.
-export const RAW_STREAM_MAXLEN = 100_000;
+// Backstop cap for the raw ingest stream (appendRawMessage's XADD
+// MAXLEN below) -- 2026-09-21, raised 10000 -> 100000 -> 500000 over
+// one deployment's live investigation, and demoted from PRIMARY trim
+// mechanism to BACKSTOP the same day. Full history: a live trace
+// found several wnm.id's whose Filter log showed "ingested" (XADD
+// succeeded) with NO trace of ANY kind afterward -- consumer.ts's
+// processEntry simply never called -- because MAXLEN's approximate
+// trim had evicted them before runConsumerLoop's XREAD ever reached
+// them; at that deployment's real ingest rate (~73 msg/s onto ONE
+// stream, inflated by weight-sources' redundancy -- every distinct
+// global cache re-mints its own wnm.id for the same underlying
+// data_id) the original 10000 cap held barely two minutes of history,
+// close enough to this pipeline's own worst-case per-message delay
+// (weight-delay-max-seconds, 120s) plus maxInFlight=5000 backpressure
+// (which pauses READING, not writing -- ingest.ts's onMessage is
+// never gated by consumer state) that an ordinary burst or Redis
+// blip was enough to start silently evicting unread entries. Raising
+// the cap alone (10000 -> 100000) only ever bought a bigger blind
+// buffer -- it didn't fix the actual mismatch: a COUNT-based cap has
+// no idea whether the consumer has actually reached those entries, so
+// under continuous high-volume ingest the stream simply sits pinned
+// at/near whatever the cap is, forever, healthy or not (confirmed
+// live: XLEN sat at ~100000 for hours regardless of load).
+//
+// Real fix, same day: runConsumerLoop now runs a periodic
+// `XTRIM ... MINID ~ <lastId minus a margin>` (stream-id.ts's
+// streamIdMinusMs) as the PRIMARY trim, keyed off the consumer's own
+// read cursor -- structurally unable to remove anything the consumer
+// hasn't reached yet, unlike a blind count. That lets the stream
+// actually shrink back down whenever the consumer is caught up,
+// instead of sitting permanently pinned at a fixed number. This
+// MAXLEN constant is what's left afterward: a rare backstop against
+// truly unbounded growth if the consumer is dead (crashed, not
+// restarting) rather than just temporarily behind -- raised to
+// 500000 (5x the old primary-mechanism cap) specifically because it's
+// now expected to almost never be the thing actually trimming
+// anything; routine operation should keep the stream far below it.
+export const RAW_STREAM_MAXLEN = 500_000;
 
 export type RedisConnection = Redis | Cluster;
 
@@ -134,6 +133,18 @@ export class IoredisStore implements SubscriberStore {
 	async getRawStreamOldestId(queue: string): Promise<string | undefined> {
 		const reply = (await this.redis.xrange(mqttRawStreamKey(queue), '-', '+', 'COUNT', 1)) as unknown as [string, string[]][];
 		return reply[0]?.[0];
+	}
+
+	// See SubscriberStore.trimRawStreamBefore's own doc comment -- the
+	// PRIMARY trim mechanism as of 2026-09-21 (MAXLEN above is now just
+	// the backstop). `~` for the same lazy, whole-radix-tree-node
+	// trimming MAXLEN already used: cheap on a high-volume stream, at
+	// the cost of the same small overshoot MAXLEN's own approximate
+	// trim already has -- this can leave a handful of entries older
+	// than cutoffId still present, never fewer than requested. Returns
+	// XTRIM's own return value (entries actually removed).
+	async trimRawStreamBefore(queue: string, cutoffId: string): Promise<number> {
+		return this.redis.xtrim(mqttRawStreamKey(queue), 'MINID', '~', cutoffId);
 	}
 
 	async isAlreadyComplete(downloaderId: string): Promise<boolean> {
