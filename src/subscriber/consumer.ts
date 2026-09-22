@@ -717,7 +717,16 @@ export async function runConsumerLoop(
 	let lastId = startId;
 	let inFlight = 0;
 	// See this function's own "RAW-STREAM LAG DETECTION" doc comment above.
-	let lastHealthCheckAt = 0;
+	// Seeded to the loop's actual start time, NOT 0 -- 0 would make
+	// nowMs - lastHealthCheckAt huge on the very first iteration, firing
+	// the health check before the loop has ever called readRawMessages
+	// even once. That ran the very first trim/debug-log with lastId still
+	// at startId (e.g. "0-0"), producing a bogus cutoffId and a misleading
+	// first "raw-stream-trimmed" log line before any real data had been
+	// read. Seeding here instead means the first check only fires after a
+	// full healthCheckIntervalMs has elapsed, by which point the loop has
+	// had a chance to read at least one batch and lastId reflects it.
+	let lastHealthCheckAt = deps.now().getTime();
 	let rawStreamLossWarned = false;
 	while (!signal.aborted) {
 		// Raw-stream health check -- runs on EVERY iteration (not just when
