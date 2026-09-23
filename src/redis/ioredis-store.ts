@@ -9,6 +9,7 @@
 import Redis, { Cluster } from 'ioredis';
 import type { RedisConfig } from '../config/schema.ts';
 import type { RawStreamEntry, SubscriberStore } from '../subscriber/store.ts';
+import { LUA_CHECK_AND_CLAIM } from '../subscriber/lua.ts';
 import {
 	downloaderClaimKey,
 	downloaderCompleteKey,
@@ -81,6 +82,23 @@ export function createRedisConnection(config: RedisConfig): RedisConnection {
 	return new Redis({ host: node.host, port: node.port, password: config.password });
 }
 
+// Small helper for the pipelined HSET+EXPIRE writes below
+// (writeDownloadJob, recordLineagePubtime, recordGlobalCacheLineagePubtime)
+// -- added 2026-09-23 while investigating SUBSCRIBER's per-message Redis
+// round-trip cost. Unlike two separate awaited calls (which throw
+// immediately on failure), ioredis's pipeline().exec() resolves with an
+// array of [error, result] pairs and does NOT reject just because one
+// command inside it failed -- silently swallowing that would be a
+// regression from today's behavior, so this re-throws the first error
+// found, preserving the same fail-loud semantics the two-round-trip
+// version had.
+function assertPipelineOk(results: Array<[Error | null, unknown]> | null): void {
+	if (!results) throw new Error('redis pipeline returned no results (connection issue?)');
+	for (const [err] of results) {
+		if (err) throw err;
+	}
+}
+
 export class IoredisStore implements SubscriberStore {
 	constructor(private readonly redis: RedisConnection) {}
 
@@ -147,13 +165,15 @@ export class IoredisStore implements SubscriberStore {
 		return this.redis.xtrim(mqttRawStreamKey(queue), 'MINID', '~', cutoffId);
 	}
 
-	async isAlreadyComplete(downloaderId: string): Promise<boolean> {
-		return (await this.redis.exists(downloaderCompleteKey(downloaderId))) === 1;
-	}
-
-	async claimDownload(downloaderId: string, ttlSeconds: number): Promise<boolean> {
-		const result = await this.redis.set(downloaderClaimKey(downloaderId), 'true', 'EX', ttlSeconds, 'NX');
-		return result === 'OK';
+	async checkAndClaimDownload(downloaderId: string, ttlSeconds: number): Promise<{ alreadyComplete: boolean; claimed: boolean }> {
+		const result = (await this.redis.eval(
+			LUA_CHECK_AND_CLAIM,
+			2,
+			downloaderCompleteKey(downloaderId),
+			downloaderClaimKey(downloaderId),
+			ttlSeconds,
+		)) as [number, number];
+		return { alreadyComplete: result[0] === 1, claimed: result[1] === 1 };
 	}
 
 	async initAttempt(downloaderId: string): Promise<void> {
@@ -162,16 +182,25 @@ export class IoredisStore implements SubscriberStore {
 
 	async writeDownloadJob(downloaderId: string, href: string, source: string, wnmJson: string, topic: string, published: string, dataId: string | undefined): Promise<void> {
 		const key = downloaderHashKey(downloaderId);
-		await this.redis.hset(key, {
-			[href]: 'queue',
-			[`src:${href}`]: source,
-			wnm: wnmJson,
-			topic,
-			published,
-			attempt: '1',
-			data_id: dataId ?? '', // see store.ts's doc comment -- NOT a port, an extra field
-		});
-		await this.redis.expire(key, 7200);
+		// PIPELINED, 2026-09-23 (previously two separate sequential round
+		// trips, HSET then EXPIRE) -- see assertPipelineOk's doc comment
+		// for the rationale: batches both commands into one network round
+		// trip.
+		assertPipelineOk(
+			await this.redis
+				.pipeline()
+				.hset(key, {
+					[href]: 'queue',
+					[`src:${href}`]: source,
+					wnm: wnmJson,
+					topic,
+					published,
+					attempt: '1',
+					data_id: dataId ?? '', // see store.ts's doc comment -- NOT a port, an extra field
+				})
+				.expire(key, 7200)
+				.exec(),
+		);
 	}
 
 	async enqueueWork(queue: string, downloaderId: string, href: string, topic: string, hasContent: boolean, dataId: string | undefined): Promise<void> {
@@ -210,8 +239,10 @@ export class IoredisStore implements SubscriberStore {
 
 	async recordLineagePubtime(originCentreId: string, dataIdRaw: string, pubtime: string, nowMillis: number, ttlSeconds: number): Promise<void> {
 		const key = subscriberLineageKey(originCentreId, dataIdRaw);
-		await this.redis.hset(key, pubtime, String(nowMillis));
-		await this.redis.expire(key, ttlSeconds);
+		// PIPELINED, 2026-09-23 (previously two separate sequential round
+		// trips, HSET then EXPIRE) -- see writeDownloadJob's own comment
+		// and assertPipelineOk's doc comment for the rationale.
+		assertPipelineOk(await this.redis.pipeline().hset(key, pubtime, String(nowMillis)).expire(key, ttlSeconds).exec());
 	}
 
 	async getGlobalCacheLineagePubtimes(globalCache: string, dataIdRaw: string): Promise<string[]> {
@@ -221,8 +252,8 @@ export class IoredisStore implements SubscriberStore {
 
 	async recordGlobalCacheLineagePubtime(globalCache: string, dataIdRaw: string, pubtime: string, nowMillis: number, ttlSeconds: number): Promise<void> {
 		const key = subscriberGlobalCacheLineageKey(globalCache, dataIdRaw);
-		await this.redis.hset(key, pubtime, String(nowMillis));
-		await this.redis.expire(key, ttlSeconds);
+		// PIPELINED, 2026-09-23 -- see recordLineagePubtime's own comment.
+		assertPipelineOk(await this.redis.pipeline().hset(key, pubtime, String(nowMillis)).expire(key, ttlSeconds).exec());
 	}
 
 	async quit(): Promise<void> {

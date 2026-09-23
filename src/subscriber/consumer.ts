@@ -409,8 +409,7 @@ export async function processEntry(entry: RawStreamEntry, deps: ConsumerDeps): P
 	const prepared = prepareMessage(wnm, entry.topic, overrideResult.override);
 	const downloaderId = computeDownloaderId(wnm);
 
-	const alreadyComplete = await deps.store.isAlreadyComplete(downloaderId);
-	const claimed = alreadyComplete ? false : await deps.store.claimDownload(downloaderId, CLAIM_TTL_SECONDS);
+	const { alreadyComplete, claimed } = await deps.store.checkAndClaimDownload(downloaderId, CLAIM_TTL_SECONDS);
 
 	const action = decideClaimAction({
 		alreadyComplete,

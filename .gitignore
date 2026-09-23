@@ -46,3 +46,8 @@ logs/
 # Staged for manual deletion (stale binaries, superseded source) --
 # never meant to reach the repo either way
 _to_delete/
+
+# Local investigation/analysis notes (session write-ups, not official
+# docs) -- kept on disk for reference, never meant to be committed.
+# See docs/ for the real, committed documentation.
+notes/

@@ -58,17 +58,20 @@ export interface SubscriberStore {
 	// (see run.ts). Empty array when nothing new -- not an error.
 	readRawMessages(queue: string, lastId: string, count: number): Promise<RawStreamEntry[]>;
 
-	// "Exists" -> EXISTS downloaderCompleteKey(downloaderId).
-	isAlreadyComplete(downloaderId: string): Promise<boolean>;
-
+	// "Exists" -> EXISTS downloaderCompleteKey(downloaderId), then
 	// "Prepare" -> "SET" (redis-command "Set", 5e3d36a879d79a9a): SETNX
 	// downloaderClaimKey(downloaderId) value "true", EX ttlSeconds (900
-	// in the original). true ("OK") if this message won the race; false
-	// (null) if someone already claimed it. Only ever called when
-	// isAlreadyComplete() was false -- the original's "Complete ?"
-	// switch gates the SET attempt itself out of the already-complete
-	// path.
-	claimDownload(downloaderId: string, ttlSeconds: number): Promise<boolean>;
+	// in the original) -- only attempted when the complete check comes
+	// back false, matching the original's "Complete ?" switch gating the
+	// SET attempt itself out of the already-complete path.
+	//
+	// COMBINED, 2026-09-23 (previously two separate SubscriberStore
+	// methods/round trips, isAlreadyComplete() + claimDownload()) into
+	// one EVAL (lua.ts's LUA_CHECK_AND_CLAIM) -- see that script's own
+	// doc comment for the full rationale: cutting SUBSCRIBER's
+	// per-message Redis round trips on its hot path, and closing the
+	// small window that used to exist between the two separate calls.
+	checkAndClaimDownload(downloaderId: string, ttlSeconds: number): Promise<{ alreadyComplete: boolean; claimed: boolean }>;
 
 	// "Hset" -> HSET (c12ae5d72cbceb70 / e4d3fac4c6c469c0): HSET
 	// downloaderHashKey(downloaderId) "attempt" "1". Used ONLY on the

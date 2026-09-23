@@ -144,7 +144,7 @@ describe('processEntry', () => {
 
 		await processEntry(entry('origin/a/wis2/fr-meteofrance/data/foo', w), deps);
 
-		expect(store.claimedIds.size).toBe(0); // claimDownload never called
+		expect(store.claimedIds.size).toBe(0); // checkAndClaimDownload's SET branch never reached
 		expect(store.hashes.size).toBe(0);
 	});
 
@@ -870,10 +870,10 @@ describe('runConsumerLoop', () => {
 		};
 
 		let fastClaimedAt: number | null = null;
-		const originalClaim = store.claimDownload.bind(store);
-		store.claimDownload = async (downloaderId: string) => {
+		const originalCheckAndClaim = store.checkAndClaimDownload.bind(store);
+		store.checkAndClaimDownload = async (downloaderId: string, ttlSeconds: number) => {
 			if (downloaderId.includes('fast-1')) fastClaimedAt = Date.now();
-			return originalClaim(downloaderId);
+			return originalCheckAndClaim(downloaderId, ttlSeconds);
 		};
 
 		const startedAt = Date.now();
@@ -932,11 +932,11 @@ describe('runConsumerLoop', () => {
 
 		let fastClaimedAt: number | null = null;
 		let slowClaimedAt: number | null = null;
-		const originalClaim = store.claimDownload.bind(store);
-		store.claimDownload = async (downloaderId: string) => {
+		const originalCheckAndClaim = store.checkAndClaimDownload.bind(store);
+		store.checkAndClaimDownload = async (downloaderId: string, ttlSeconds: number) => {
 			if (downloaderId.includes('fast-2')) fastClaimedAt = Date.now();
 			if (downloaderId.includes('slow-1')) slowClaimedAt = Date.now();
-			return originalClaim(downloaderId);
+			return originalCheckAndClaim(downloaderId, ttlSeconds);
 		};
 
 		const startedAt = Date.now();
@@ -997,10 +997,10 @@ describe('runConsumerLoop', () => {
 		const claimGate = new Promise<void>((resolve) => {
 			releaseClaim = resolve;
 		});
-		const originalClaim = store.claimDownload.bind(store);
-		store.claimDownload = async (downloaderId: string) => {
+		const originalCheckAndClaim = store.checkAndClaimDownload.bind(store);
+		store.checkAndClaimDownload = async (downloaderId: string, ttlSeconds: number) => {
 			await claimGate;
-			return originalClaim(downloaderId);
+			return originalCheckAndClaim(downloaderId, ttlSeconds);
 		};
 
 		// The backpressure branch below relies on deps.sleep actually

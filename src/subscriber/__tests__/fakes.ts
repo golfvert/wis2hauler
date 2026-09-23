@@ -70,14 +70,11 @@ export class FakeStore implements SubscriberStore {
 		return before - this.rawStream.length;
 	}
 
-	async isAlreadyComplete(downloaderId: string): Promise<boolean> {
-		return this.completeIds.has(downloaderId);
-	}
-
-	async claimDownload(downloaderId: string): Promise<boolean> {
-		if (this.claimedIds.has(downloaderId)) return false;
+	async checkAndClaimDownload(downloaderId: string, _ttlSeconds: number): Promise<{ alreadyComplete: boolean; claimed: boolean }> {
+		if (this.completeIds.has(downloaderId)) return { alreadyComplete: true, claimed: false };
+		if (this.claimedIds.has(downloaderId)) return { alreadyComplete: false, claimed: false };
 		this.claimedIds.add(downloaderId);
-		return true;
+		return { alreadyComplete: false, claimed: true };
 	}
 
 	private hashFor(downloaderId: string): Record<string, string> {
