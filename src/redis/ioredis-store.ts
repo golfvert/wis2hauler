@@ -9,7 +9,6 @@
 import Redis, { Cluster } from 'ioredis';
 import type { RedisConfig } from '../config/schema.ts';
 import type { RawStreamEntry, SubscriberStore } from '../subscriber/store.ts';
-import { LUA_CHECK_AND_CLAIM } from '../subscriber/lua.ts';
 import {
 	downloaderClaimKey,
 	downloaderCompleteKey,
@@ -166,14 +165,26 @@ export class IoredisStore implements SubscriberStore {
 	}
 
 	async checkAndClaimDownload(downloaderId: string, ttlSeconds: number): Promise<{ alreadyComplete: boolean; claimed: boolean }> {
-		const result = (await this.redis.eval(
-			LUA_CHECK_AND_CLAIM,
-			2,
-			downloaderCompleteKey(downloaderId),
-			downloaderClaimKey(downloaderId),
-			ttlSeconds,
-		)) as [number, number];
-		return { alreadyComplete: result[0] === 1, claimed: result[1] === 1 };
+		// REVERTED, 2026-09-23 (same day as the combine): the 2026-09-23
+		// combine above used ONE EVAL with KEYS[1]=downloaderCompleteKey,
+		// KEYS[2]=downloaderClaimKey -- two DIFFERENT key strings (no
+		// shared hash tag) that hash to different slots on a real Redis
+		// CLUSTER deployment (global.redis.mode: 'cluster' here -- this
+		// codebase supports both cluster and single-node, and the combine
+		// was only ever exercised against a single-node/fake store in
+		// testing). Every real deployment immediately started throwing
+		// "CROSSSLOT Keys in request don't hash to the same slot" on
+		// EVERY call, i.e. every message that reached this point --
+		// silently blocking all new downloads fleet-wide. Back to two
+		// separate single-key round trips (the original behavior, minus
+		// the interface split) until a cluster-safe combined version
+		// (hash-tagging both keys, e.g. `...:{${downloaderId}}`, which
+		// also needs a compatibility/migration pass since it changes the
+		// literal key string) is designed and tested against a real
+		// cluster, not just the in-memory fake.
+		const alreadyComplete = (await this.redis.exists(downloaderCompleteKey(downloaderId))) === 1;
+		const claimed = alreadyComplete ? false : (await this.redis.set(downloaderClaimKey(downloaderId), 'true', 'EX', ttlSeconds, 'NX')) === 'OK';
+		return { alreadyComplete, claimed };
 	}
 
 	async initAttempt(downloaderId: string): Promise<void> {
