@@ -158,35 +158,53 @@ function readLines(filePath: string, gzip: boolean): AsyncIterable<string> {
 // timestamp is never dropped by the time window (there's nothing to
 // compare), only lines with a timestamp outside it are.
 export async function* matchesInFile(filePath: string, parsed: ParsedLogFilename, needle: string, sinceMs?: number, untilMs?: number): AsyncGenerator<TraceMatch> {
-	for await (const line of readLines(filePath, parsed.gzip)) {
-		if (line.length === 0) continue;
+	// The whole loop below is wrapped in try/catch, not just the open --
+	// walkLogFiles' readdir listed this file a moment ago, but on a LIVE
+	// worker's actively-written logs/ directory, a high-volume logger
+	// (this file's own header: Filter, or Output - Error under load) can
+	// rotate it away -- renamed to .gz, or to the next .N.gz chunk --
+	// before, or partway through, our own read of it. That raced us, not
+	// a real misconfiguration, and walkLogFiles already treats the exact
+	// same race at the directory level as "warn and skip", not fatal
+	// (see its own doc comment) -- this mirrors that policy at the file
+	// level instead of letting one rotated-away file crash the entire
+	// trace (confirmed live 2026-09-23: ENOENT opening a just-rotated
+	// hauler-outputerror-*.debug.log mid-scan, root cause exactly this).
+	// Any matches already yielded before the failure are kept; only the
+	// rest of this one file's lines are lost.
+	try {
+		for await (const line of readLines(filePath, parsed.gzip)) {
+			if (line.length === 0) continue;
 
-		let data: Record<string, unknown>;
-		let timestamp: string | undefined;
-		try {
-			const value = JSON.parse(line) as unknown;
-			if (typeof value !== 'object' || value === null) continue;
-			data = value as Record<string, unknown>;
-			if (!valueContains(data, needle)) continue;
-			timestamp = typeof data.timestamp === 'string' ? data.timestamp : undefined;
-		} catch {
-			// Not valid JSON (truncated line at a rotation boundary, or a
-			// stray non-Hauler line in the same directory) -- fall back to a
-			// raw substring check so a genuine hit still surfaces, just
-			// without structured fields or a timestamp to sort it precisely.
-			if (!line.includes(needle)) continue;
-			data = { raw: line };
-			timestamp = undefined;
-		}
-
-		if (timestamp !== undefined) {
-			const ms = Date.parse(timestamp);
-			if (!Number.isNaN(ms)) {
-				if (sinceMs !== undefined && ms < sinceMs) continue;
-				if (untilMs !== undefined && ms > untilMs) continue;
+			let data: Record<string, unknown>;
+			let timestamp: string | undefined;
+			try {
+				const value = JSON.parse(line) as unknown;
+				if (typeof value !== 'object' || value === null) continue;
+				data = value as Record<string, unknown>;
+				if (!valueContains(data, needle)) continue;
+				timestamp = typeof data.timestamp === 'string' ? data.timestamp : undefined;
+			} catch {
+				// Not valid JSON (truncated line at a rotation boundary, or a
+				// stray non-Hauler line in the same directory) -- fall back to a
+				// raw substring check so a genuine hit still surfaces, just
+				// without structured fields or a timestamp to sort it precisely.
+				if (!line.includes(needle)) continue;
+				data = { raw: line };
+				timestamp = undefined;
 			}
-		}
 
-		yield { file: filePath, source: parsed.slug, level: parsed.level, timestamp, data };
+			if (timestamp !== undefined) {
+				const ms = Date.parse(timestamp);
+				if (!Number.isNaN(ms)) {
+					if (sinceMs !== undefined && ms < sinceMs) continue;
+					if (untilMs !== undefined && ms > untilMs) continue;
+				}
+			}
+
+			yield { file: filePath, source: parsed.slug, level: parsed.level, timestamp, data };
+		}
+	} catch (err) {
+		console.error(`wis2hauler-tracer: cannot read ${filePath}: ${err instanceof Error ? err.message : String(err)} (skipping -- likely rotated away mid-scan)`);
 	}
 }
