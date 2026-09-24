@@ -1,0 +1,38 @@
+services:
+  wis2hauler:
+    image: ghcr.io/golfvert/wis2hauler:2026.09.20
+    user: "1000:1000"          # or bake a different default at build time with --build-arg UID=/--build-arg GID=
+    volumes:
+      - ./configuration.yml:/configuration.yml:ro
+      - ./downloads:/downloads
+      - ./logs:/logs
+    ports:
+      - "8080:8080"             
+    restart: unless-stopped
+    networks:
+      - wis2hauler
+
+  aria2:
+    image: golfvert/aria2:1.0.7
+    environment:
+      - TZ=Europe/Paris
+      - RPC_SECRET=secret
+      - CONCURRENT_DOWNLOADS=32
+      - CONNECTIONS_PER_SERVER=12
+      - MAX_TRIES=5
+      - QUIET=false
+    volumes:
+      - ./downloads:/downloads
+    networks:
+      - wis2hauler
+
+  valkey:
+    image: valkey/valkey:9.0.6-alpine3.24
+    networks:
+      - wis2hauler
+    command: valkey-server --save "" --appendonly no
+    restart: unless-stopped
+
+networks:
+  wis2hauler:
+    external: true

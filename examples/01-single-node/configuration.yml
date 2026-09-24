@@ -1,0 +1,36 @@
+global:
+  roles: SUBSCRIBER,DOWNLOADER,CLEANER,REPORTER
+  worker: worker
+  queue: queue
+  redis:
+    mode: "single"
+    nodes:
+      - "valkey:6379"
+  log:
+    level: info
+    to: stdout
+  http-port: 8080
+  centre-id: "my-cache" # for the metrics available at http://localhost:http-port/metrics, this is the "centre" name that will appear in the metrics output
+  global-cache: false
+
+subscriber:
+  global-broker:
+    - broker: mqtts://globalbroker.meteo.fr
+      username: everyone
+      password: everyone
+    - broker: mqtts://globalbroker.inmet.gov.br
+      username: everyone
+      password: everyone
+  mqtt:
+    whitelist: [ "cache/a/wis2/jp-jma-gts-to-wis2/#" ]
+    blacklist: [ "+/+/+/+/+/+/+/experimental/#" ]
+downloader:
+  aria-secret: secret
+  aria-url: ws://aria2:6800/jsonrpc
+  aria-inqueue: 200
+  aria-download: /downloads
+  rename-to: "topic"
+
+cleaner:
+  keep-in-cache: 600  # the hauler will keep files in the cache for this many seconds before deleting them
+
