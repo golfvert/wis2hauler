@@ -1,0 +1,19 @@
+# Routes /downloads/* to phase 2's caddy (browsable downloaded files).
+http:
+  routers:
+    downloads:
+      rule: "PathPrefix(`/downloads`)"
+      entryPoints: ["web"]
+      middlewares: ["strip-downloads"]
+      service: downloads
+
+  middlewares:
+    strip-downloads:
+      stripPrefix:
+        prefixes: ["/downloads"]
+
+  services:
+    downloads:
+      loadBalancer:
+        servers:
+          - url: "http://caddy:80"

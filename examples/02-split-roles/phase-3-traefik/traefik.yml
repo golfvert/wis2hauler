@@ -1,0 +1,21 @@
+services:
+  traefik:
+    image: traefik:v3.3
+    command:
+      - "--providers.file.directory=/etc/traefik/dynamic"
+      - "--providers.file.watch=true"
+      - "--entrypoints.web.address=:80"
+      - "--api.dashboard=true"
+      - "--api.insecure=true"   # DEMO ONLY -- see README
+    volumes:
+      - ./dynamic:/etc/traefik/dynamic:ro
+    ports:
+      - "80:80"        # entrypoint -- fronts wis2hauler-sub / wis2hauler-downloader / caddy, see dynamic/
+      - "8082:8080"     # dashboard (--api.insecure) -- demo only, see README
+    networks:
+      - wis2hauler
+    restart: unless-stopped
+
+networks:
+  wis2hauler:
+    external: true       # same network phase-2-publish's containers are already on

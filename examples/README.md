@@ -28,16 +28,24 @@ introduced by earlier ones.
    nothing is republished — files are downloaded, sit in `./downloads`,
    and are cleaned up after `cleaner.keep-in-cache` elapses. The
    minimum viable deployment described in the main README.
-2. **Split roles** *(planned)* — SUBSCRIBER and DOWNLOADER separated
-   into their own processes, sharing one Redis, to relieve a single
-   process from doing both MQTT ingest and download orchestration.
-3. **Redis Cluster backing store** *(planned)* — the same split-role
+2. **[`02-split-roles`](02-split-roles/)** — SUBSCRIBER/CLEANER/REPORTER
+   and DOWNLOADER separated into two processes sharing one Redis, so
+   MQTT ingest and download orchestration no longer compete for the
+   same process. Also adds a second subscribed topic and a bigger
+   aria2, with the two scaled together deliberately (see that
+   example's own README).
+3. **[`03-split-queues`](03-split-queues/)** — two independent
+   queue pipelines (own SUBSCRIBER + DOWNLOADER each) rather than one
+   SUBSCRIBER covering several topics. Its own phases add redundancy
+   with broker diversity for both queues, then publish over real TLS
+   (Traefik + Let's Encrypt DNS-01 via Infomaniak).
+4. **Redis Cluster backing store** *(planned)* — the same kind of
    setup, backed by a Redis Cluster (minimum 6 nodes) instead of a
    single node.
-4. **Full redundant architecture** *(planned)* — multiple SUBSCRIBER
-   and multiple DOWNLOADER replicas (each DOWNLOADER with its own
-   aria2), a Redis Cluster backing store, and singleton roles
-   (CLEANER/REPORTER/REPLAYER) participating in leader election across
-   replicas.
+5. **Full redundant architecture** *(planned)* — everything above
+   combined: multiple queues, redundant SUBSCRIBER/DOWNLOADER replicas
+   with broker diversity, a Redis Cluster backing store, and singleton
+   roles (CLEANER/REPORTER/REPLAYER) participating in leader election
+   across replicas.
 
 This list is updated as each example is built.

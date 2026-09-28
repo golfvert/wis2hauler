@@ -1,0 +1,89 @@
+# Two independent queue pipelines (queue-1: JMA, queue-2: EUMETSAT),
+# each with its own SUBSCRIBER and DOWNLOADER -- see README.md. One
+# shared valkey; one shared ./downloads (safe to share since
+# rename-to: "topic" derives each file's path from its WIS2 topic,
+# which is centre-scoped -- the two queues' files can't collide). One
+# CLEANER (on sub-1) covers both queues' downloaded files -- see
+# README.md for why that's sufficient.
+services:
+  sub-1:
+    image: ghcr.io/golfvert/wis2hauler:2026.09.20
+    user: "1000:1000"
+    volumes:
+      - ./configuration-sub-1.yml:/configuration.yml:ro
+      - ./logs-sub-1:/logs
+    ports:
+      - "8110:8080"
+    restart: unless-stopped
+    networks: [wis2hauler]
+
+  down-1:
+    image: ghcr.io/golfvert/wis2hauler:2026.09.20
+    user: "1000:1000"
+    volumes:
+      - ./configuration-downloader-1.yml:/configuration.yml:ro
+      - ./downloads:/downloads
+      - ./logs-down-1:/logs
+    ports:
+      - "8112:8080"
+    restart: unless-stopped
+    networks: [wis2hauler]
+
+  sub-2:
+    image: ghcr.io/golfvert/wis2hauler:2026.09.20
+    user: "1000:1000"
+    volumes:
+      - ./configuration-sub-2.yml:/configuration.yml:ro
+      - ./logs-sub-2:/logs
+    ports:
+      - "8120:8080"
+    restart: unless-stopped
+    networks: [wis2hauler]
+
+  down-2:
+    image: ghcr.io/golfvert/wis2hauler:2026.09.20
+    user: "1000:1000"
+    volumes:
+      - ./configuration-downloader-2.yml:/configuration.yml:ro
+      - ./downloads:/downloads
+      - ./logs-down-2:/logs
+    ports:
+      - "8122:8080"
+    restart: unless-stopped
+    networks: [wis2hauler]
+
+  aria2-1:
+    image: golfvert/aria2:1.0.7
+    environment:
+      - TZ=Europe/Paris
+      - RPC_SECRET=secret
+      - CONCURRENT_DOWNLOADS=32
+      - CONNECTIONS_PER_SERVER=16
+      - MAX_TRIES=2
+      - QUIET=false
+    volumes:
+      - ./downloads:/downloads
+    networks: [wis2hauler]
+
+  aria2-2:
+    image: golfvert/aria2:1.0.7
+    environment:
+      - TZ=Europe/Paris
+      - RPC_SECRET=secret
+      - CONCURRENT_DOWNLOADS=32
+      - CONNECTIONS_PER_SERVER=16
+      - MAX_TRIES=2
+      - QUIET=false
+    volumes:
+      - ./downloads:/downloads
+    networks: [wis2hauler]
+
+  valkey:
+    image: valkey/valkey:9.0.6-alpine3.24
+    networks: [wis2hauler]
+    command: valkey-server --save "" --appendonly no
+    restart: unless-stopped
+
+networks:
+  wis2hauler:
+    external: true

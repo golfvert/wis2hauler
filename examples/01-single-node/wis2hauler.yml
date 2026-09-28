@@ -1,7 +1,7 @@
 services:
   wis2hauler:
     image: ghcr.io/golfvert/wis2hauler:2026.09.20
-    user: "1000:1000"          # or bake a different default at build time with --build-arg UID=/--build-arg GID=
+    user: "1000:1000"          # or use different uid/gid - eg. based on your current uid/gid on a linux host
     volumes:
       - ./configuration.yml:/configuration.yml:ro
       - ./downloads:/downloads
@@ -17,7 +17,7 @@ services:
     environment:
       - TZ=Europe/Paris
       - RPC_SECRET=secret
-      - CONCURRENT_DOWNLOADS=32
+      - CONCURRENT_DOWNLOADS=16
       - CONNECTIONS_PER_SERVER=12
       - MAX_TRIES=5
       - QUIET=false

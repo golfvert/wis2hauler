@@ -1,0 +1,50 @@
+services:
+  wis2hauler-sub:
+    image: ghcr.io/golfvert/wis2hauler:2026.09.20
+    user: "1000:1000"
+    volumes:
+      - ./configuration-sub.yml:/configuration.yml:ro
+      - ./logs-sub:/logs
+    ports:
+      - "8080:8080"             # REPORTER metrics + admin API for this instance
+    restart: unless-stopped
+    networks:
+      - wis2hauler
+
+  wis2hauler-downloader:
+    image: ghcr.io/golfvert/wis2hauler:2026.09.20
+    user: "1000:1000"
+    volumes:
+      - ./configuration-downloader.yml:/configuration.yml:ro
+      - ./downloads:/downloads
+      - ./logs-downloader:/logs
+    ports:
+      - "8081:8080"             # admin API only -- no REPORTER role on this instance, but http-port is always bound
+    restart: unless-stopped
+    networks:
+      - wis2hauler
+
+  aria2:
+    image: golfvert/aria2:1.0.7
+    environment:
+      - TZ=Europe/Paris
+      - RPC_SECRET=secret
+      - CONCURRENT_DOWNLOADS=32      
+      - CONNECTIONS_PER_SERVER=16    # up from 12
+      - MAX_TRIES=2
+      - QUIET=false
+    volumes:
+      - ./downloads:/downloads
+    networks:
+      - wis2hauler
+
+  valkey:
+    image: valkey/valkey:9.0.6-alpine3.24
+    networks:
+      - wis2hauler
+    command: valkey-server --save "" --appendonly no
+    restart: unless-stopped
+
+networks:
+  wis2hauler:
+    external: true

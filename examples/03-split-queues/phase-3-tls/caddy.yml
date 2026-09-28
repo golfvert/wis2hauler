@@ -1,0 +1,17 @@
+# Kept separate from wis2hauler.yml -- see examples/02-split-roles's
+# phase-2-publish/README.md for the reasoning. NOT published to the
+# host on its own this time (contrast with phase-2-publish's caddy.yml)
+# -- Traefik is the only way in, terminating TLS in front of it. See
+# traefik.yml / dynamic/downloads.yml.
+services:
+  caddy:
+    image: caddy:2.9-alpine
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./downloads:/srv/downloads:ro
+    networks: [wis2hauler]
+    restart: unless-stopped
+
+networks:
+  wis2hauler:
+    external: true

@@ -1,0 +1,8 @@
+# Static file server over ./downloads, directory browsing on -- same
+# as examples/02-split-roles's phase-2-publish/Caddyfile, except this
+# is now reached ONLY through Traefik (no host port published here at
+# all -- see caddy.yml and traefik.yml/dynamic/).
+:80 {
+	root * /srv/downloads
+	file_server browse
+}

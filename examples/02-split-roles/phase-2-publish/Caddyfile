@@ -1,0 +1,10 @@
+# Static file server over the same directory aria2/wis2hauler write
+# into, with directory browsing on -- this is what turns downloaded
+# files into clickable links (downloader.download-url in the
+# configuration-*.yml files points here). See docs/deployment.md's
+# "A way to serve the downloaded files back out to WIS2" for why this
+# needs to exist at all once global.local-broker is configured.
+:80 {
+	root * /srv/downloads
+	file_server browse
+}

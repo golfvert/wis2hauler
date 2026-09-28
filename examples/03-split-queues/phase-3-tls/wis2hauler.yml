@@ -1,0 +1,161 @@
+# Same 8 wis2hauler instances as phase-2-redundancy (see that phase's
+# README for the redundancy/broker-pair reasoning), now with
+# global.local-broker + downloader.download-url added -- see this
+# phase's own configuration-*.yml files and README.md. mosquitto,
+# caddy, and traefik are deliberately NOT in here -- see mosquitto.yml
+# / caddy.yml / traefik.yml and README.md.
+services:
+
+  sub-1-a:
+    image: ghcr.io/golfvert/wis2hauler:2026.09.20
+    user: "1000:1000"
+    volumes:
+      - ./configuration-sub-1-a.yml:/configuration.yml:ro
+      - ./logs-sub-1-a:/logs
+    ports:
+      - "8110:8080"
+    restart: unless-stopped
+    networks: [wis2hauler]
+
+  sub-1-b:
+    image: ghcr.io/golfvert/wis2hauler:2026.09.20
+    user: "1000:1000"
+    volumes:
+      - ./configuration-sub-1-b.yml:/configuration.yml:ro
+      - ./logs-sub-1-b:/logs
+    ports:
+      - "8111:8080"
+    restart: unless-stopped
+    networks: [wis2hauler]
+
+  down-1-a:
+    image: ghcr.io/golfvert/wis2hauler:2026.09.20
+    user: "1000:1000"
+    volumes:
+      - ./configuration-down-1-a.yml:/configuration.yml:ro
+      - ./downloads:/downloads
+      - ./logs-down-1-a:/logs
+    ports:
+      - "8112:8080"
+    restart: unless-stopped
+    networks: [wis2hauler]
+
+  down-1-b:
+    image: ghcr.io/golfvert/wis2hauler:2026.09.20
+    user: "1000:1000"
+    volumes:
+      - ./configuration-down-1-b.yml:/configuration.yml:ro
+      - ./downloads:/downloads
+      - ./logs-down-1-b:/logs
+    ports:
+      - "8113:8080"
+    restart: unless-stopped
+    networks: [wis2hauler]
+
+  aria2-1-a:
+    image: golfvert/aria2:1.0.7
+    environment:
+      - TZ=Europe/Paris
+      - RPC_SECRET=secret
+      - CONCURRENT_DOWNLOADS=32
+      - CONNECTIONS_PER_SERVER=16
+      - MAX_TRIES=2
+      - QUIET=false
+    volumes:
+      - ./downloads:/downloads
+    networks: [wis2hauler]
+
+  aria2-1-b:
+    image: golfvert/aria2:1.0.7
+    environment:
+      - TZ=Europe/Paris
+      - RPC_SECRET=secret
+      - CONCURRENT_DOWNLOADS=32
+      - CONNECTIONS_PER_SERVER=16
+      - MAX_TRIES=2
+      - QUIET=false
+    volumes:
+      - ./downloads:/downloads
+    networks: [wis2hauler]
+
+  sub-2-a:
+    image: ghcr.io/golfvert/wis2hauler:2026.09.20
+    user: "1000:1000"
+    volumes:
+      - ./configuration-sub-2-a.yml:/configuration.yml:ro
+      - ./logs-sub-2-a:/logs
+    ports:
+      - "8120:8080"
+    restart: unless-stopped
+    networks: [wis2hauler]
+
+  sub-2-b:
+    image: ghcr.io/golfvert/wis2hauler:2026.09.20
+    user: "1000:1000"
+    volumes:
+      - ./configuration-sub-2-b.yml:/configuration.yml:ro
+      - ./logs-sub-2-b:/logs
+    ports:
+      - "8121:8080"
+    restart: unless-stopped
+    networks: [wis2hauler]
+
+  down-2-a:
+    image: ghcr.io/golfvert/wis2hauler:2026.09.20
+    user: "1000:1000"
+    volumes:
+      - ./configuration-down-2-a.yml:/configuration.yml:ro
+      - ./downloads:/downloads
+      - ./logs-down-2-a:/logs
+    ports:
+      - "8122:8080"
+    restart: unless-stopped
+    networks: [wis2hauler]
+
+  down-2-b:
+    image: ghcr.io/golfvert/wis2hauler:2026.09.20
+    user: "1000:1000"
+    volumes:
+      - ./configuration-down-2-b.yml:/configuration.yml:ro
+      - ./downloads:/downloads
+      - ./logs-down-2-b:/logs
+    ports:
+      - "8123:8080"
+    restart: unless-stopped
+    networks: [wis2hauler]
+
+  aria2-2-a:
+    image: golfvert/aria2:1.0.7
+    environment:
+      - TZ=Europe/Paris
+      - RPC_SECRET=secret
+      - CONCURRENT_DOWNLOADS=32
+      - CONNECTIONS_PER_SERVER=16
+      - MAX_TRIES=2
+      - QUIET=false
+    volumes:
+      - ./downloads:/downloads
+    networks: [wis2hauler]
+
+  aria2-2-b:
+    image: golfvert/aria2:1.0.7
+    environment:
+      - TZ=Europe/Paris
+      - RPC_SECRET=secret
+      - CONCURRENT_DOWNLOADS=32
+      - CONNECTIONS_PER_SERVER=16
+      - MAX_TRIES=2
+      - QUIET=false
+    volumes:
+      - ./downloads:/downloads
+    networks: [wis2hauler]
+
+  valkey:
+    image: valkey/valkey:9.0.6-alpine3.24
+    networks: [wis2hauler]
+    command: valkey-server --save "" --appendonly no
+    restart: unless-stopped
+
+networks:
+  wis2hauler:
+    external: true

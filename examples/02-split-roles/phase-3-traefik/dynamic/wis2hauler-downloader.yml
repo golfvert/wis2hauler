@@ -1,0 +1,19 @@
+# Routes /downloader/* to phase 2's wis2hauler-downloader (DOWNLOADER).
+http:
+  routers:
+    wis2hauler-downloader:
+      rule: "PathPrefix(`/downloader`)"
+      entryPoints: ["web"]
+      middlewares: ["strip-downloader"]
+      service: wis2hauler-downloader
+
+  middlewares:
+    strip-downloader:
+      stripPrefix:
+        prefixes: ["/downloader"]
+
+  services:
+    wis2hauler-downloader:
+      loadBalancer:
+        servers:
+          - url: "http://wis2hauler-downloader:8080"

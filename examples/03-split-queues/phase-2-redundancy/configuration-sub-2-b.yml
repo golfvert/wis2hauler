@@ -1,0 +1,29 @@
+# SUBSCRIBER replica 'b' for queue-2 (SECONDARY broker pair) -- see ../README.md.
+# No cleaner:/no extra REPORTER here -- sub-1-a/sub-1-b already cover
+# both for the whole deployment, see ../README.md.
+global:
+  roles: SUBSCRIBER
+  worker: sub-2-b               # unique across every live instance sharing this Redis
+  queue: queue-2
+  redis:
+    mode: "single"
+    nodes:
+      - "valkey:6379"
+  log:
+    level: info
+    to: stdout
+  http-port: 8080
+  centre-id: "my-cache"
+  global-cache: false
+
+subscriber:
+  global-broker:
+    - broker: mqtts://wis2broker.globaldata.nws.noaa.gov
+      username: everyone
+      password: everyone
+    - broker: mqtts://gb.wis.cma.cn
+      username: everyone
+      password: everyone
+  mqtt:
+    whitelist: [ "cache/a/wis2/int-eumetsat/#" ]
+    blacklist: [ "+/+/+/+/+/+/+/experimental/#" ]

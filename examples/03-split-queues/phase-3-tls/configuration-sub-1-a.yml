@@ -1,0 +1,34 @@
+# SUBSCRIBER replica 'a' for queue-1 (PRIMARY broker pair) -- see ../README.md.
+# Also carries CLEANER+REPORTER, redundant with its 'a'/'b' twin via
+# leader election (see ../README.md).
+global:
+  roles: SUBSCRIBER,CLEANER,REPORTER
+  worker: sub-1-a               # unique across every live instance sharing this Redis
+  queue: queue-1
+  redis:
+    mode: "single"
+    nodes:
+      - "valkey:6379"
+  log:
+    level: info
+    to: stdout
+  http-port: 8080
+  centre-id: "my-cache"
+  global-cache: false
+  local-broker:               # NEW in phase 3 -- see ../README.md
+    - broker: mqtt://mosquitto:1883
+
+subscriber:
+  global-broker:
+    - broker: mqtts://globalbroker.meteo.fr
+      username: everyone
+      password: everyone
+    - broker: mqtts://globalbroker.inmet.gov.br
+      username: everyone
+      password: everyone
+  mqtt:
+    whitelist: [ "cache/a/wis2/jp-jma-gts-to-wis2/#" ]
+    blacklist: [ "+/+/+/+/+/+/+/experimental/#" ]
+
+cleaner:
+  keep-in-cache: 600  # the hauler will keep files in the cache for this many seconds before deleting them

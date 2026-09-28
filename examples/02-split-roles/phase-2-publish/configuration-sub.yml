@@ -1,0 +1,40 @@
+# SUBSCRIBER + CLEANER + REPORTER side of the split -- same as the base
+# example, plus global.local-broker so SUBSCRIBER's publish-only
+# outcomes get republished locally.
+global:
+  roles: SUBSCRIBER,CLEANER,REPORTER
+  worker: sub
+  queue: queue
+  redis:
+    mode: "single"
+    nodes:
+      - "valkey:6379"
+  log:
+    level: info
+    to: stdout
+  http-port: 8080
+  centre-id: "my-cache"
+  global-cache: false
+  local-broker:               # NEW vs. the base example -- see ../README.md
+    - broker: mqtt://mosquitto:1883
+      # demo broker only -- no auth (see mosquitto.conf: allow_anonymous
+      # true). Same object shape as subscriber.global-broker above, so
+      # add username/password/verifycert here for anything beyond a
+      # local test.
+
+subscriber:
+  global-broker:
+    - broker: mqtts://globalbroker.meteo.fr
+      username: everyone
+      password: everyone
+    - broker: mqtts://globalbroker.inmet.gov.br
+      username: everyone
+      password: everyone
+  mqtt:
+    whitelist:
+      - "cache/a/wis2/jp-jma-gts-to-wis2/#"
+      - "cache/a/wis2/int-eumetsat/#"
+    blacklist: [ "+/+/+/+/+/+/+/experimental/#" ]
+
+cleaner:
+  keep-in-cache: 600

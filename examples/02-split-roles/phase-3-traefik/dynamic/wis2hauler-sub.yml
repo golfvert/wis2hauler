@@ -1,0 +1,19 @@
+# Routes /sub/* to phase 2's wis2hauler-sub (SUBSCRIBER/CLEANER/REPORTER).
+http:
+  routers:
+    wis2hauler-sub:
+      rule: "PathPrefix(`/sub`)"
+      entryPoints: ["web"]
+      middlewares: ["strip-sub"]
+      service: wis2hauler-sub
+
+  middlewares:
+    strip-sub:
+      stripPrefix:
+        prefixes: ["/sub"]
+
+  services:
+    wis2hauler-sub:
+      loadBalancer:
+        servers:
+          - url: "http://wis2hauler-sub:8080"

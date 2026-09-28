@@ -51,3 +51,16 @@ _to_delete/
 # docs) -- kept on disk for reference, never meant to be committed.
 # See docs/ for the real, committed documentation.
 notes/
+
+# Example deployments' runtime artifacts (downloaded files, logs, ACME
+# state) -- never meant to be committed; each example's own compose
+# file creates these on first run.
+examples/**/downloads/
+examples/**/logs/
+examples/**/logs-*/
+examples/**/letsencrypt/
+
+# ...but DO keep the .env.example templates documenting required
+# secrets (e.g. examples/03-split-queues/phase-3-tls/.env.example) --
+# .env.* above would otherwise exclude them too.
+!examples/**/.env.example

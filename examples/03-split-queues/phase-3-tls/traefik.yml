@@ -1,0 +1,44 @@
+# Separate compose file, same reasoning as examples/02-split-roles's
+# phase-3-traefik: fronts caddy (and terminates real TLS this time)
+# without touching any of this phase's other compose files. Uses the
+# file provider (./dynamic/) rather than Docker-label discovery, same
+# as that earlier example, for the same reason -- nothing else needs
+# editing to add or remove this layer.
+#
+# ACME via DNS-01 through Infomaniak: lego (which Traefik uses
+# internally for ACME) expects the API token as INFOMANIAK_ACCESS_TOKEN
+# (https://go-acme.github.io/lego/dns/infomaniak/) -- NOT
+# INFOMANIAK_API_TOKEN, easy to get wrong. This compose file reads it
+# from a local .env's `my_dns_enabled_token` and maps it into that
+# expected name below; see .env.example and README.md.
+services:
+  traefik:
+    image: traefik:v3.3
+    command:
+      - "--providers.file.directory=/etc/traefik/dynamic"
+      - "--providers.file.watch=true"
+      - "--entrypoints.web.address=:80"
+      - "--entrypoints.web.http.redirections.entrypoint.to=websecure"
+      - "--entrypoints.web.http.redirections.entrypoint.scheme=https"
+      - "--entrypoints.websecure.address=:443"
+      - "--certificatesresolvers.letsencrypt.acme.dnschallenge=true"
+      - "--certificatesresolvers.letsencrypt.acme.dnschallenge.provider=infomaniak"
+      - "--certificatesresolvers.letsencrypt.acme.email=admin@example.com"   # replace with a real address you control -- Let's Encrypt sends expiry/problem notices here
+      - "--certificatesresolvers.letsencrypt.acme.storage=/letsencrypt/acme.json"
+      - "--api.dashboard=true"
+      - "--api.insecure=true"   # DEMO ONLY -- see README
+    environment:
+      - INFOMANIAK_ACCESS_TOKEN=${my_dns_enabled_token}
+    volumes:
+      - ./dynamic:/etc/traefik/dynamic:ro
+      - ./letsencrypt/acme.json:/letsencrypt/acme.json
+    ports:
+      - "80:80"
+      - "443:443"
+      - "8082:8080"     # dashboard (--api.insecure) -- demo only, see README
+    networks: [wis2hauler]
+    restart: unless-stopped
+
+networks:
+  wis2hauler:
+    external: true

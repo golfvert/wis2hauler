@@ -1,0 +1,15 @@
+# Kept separate from wis2hauler.yml -- see examples/02-split-roles's
+# phase-2-publish/README.md for the reasoning (same pattern here).
+services:
+  mosquitto:
+    image: eclipse-mosquitto:2.0.20
+    volumes:
+      - ./mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
+    ports:
+      - "1883:1883"        # exposed on the host too, so you can `mosquitto_sub -h localhost -t '#' -v` and watch republished notifications live
+    networks: [wis2hauler]
+    restart: unless-stopped
+
+networks:
+  wis2hauler:
+    external: true

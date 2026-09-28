@@ -1,0 +1,32 @@
+# DOWNLOADER-only side of the split -- same as the base example, plus
+# global.local-broker (completion notifications) and
+# downloader.download-url (now required once a local broker is
+# configured -- see ../README.md).
+global:
+  roles: DOWNLOADER
+  worker: downloader
+  queue: queue
+  redis:
+    mode: "single"
+    nodes:
+      - "valkey:6379"
+  log:
+    level: info
+    to: stdout
+  http-port: 8080
+  centre-id: "my-cache"
+  global-cache: false
+  local-broker:               # NEW vs. the base example
+    - broker: mqtt://mosquitto:1883
+
+downloader:
+  aria-secret: secret
+  aria-url: ws://aria2:6800/jsonrpc
+  aria-inqueue: 300
+  aria-download: /downloads
+  rename-to: "topic"
+  download-url: http://localhost:8090   # NEW -- Caddy's host-mapped port below.
+    # This has to be reachable by whoever receives the republished
+    # notification, not just by containers on this network -- localhost
+    # only works because you're trying this on one machine. Replace
+    # with your real public hostname/URL in an actual deployment.

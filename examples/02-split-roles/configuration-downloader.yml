@@ -1,0 +1,23 @@
+# DOWNLOADER-only side of the split. No subscriber:/cleaner: sections --
+# neither role is in this instance's roles, and neither needs one.
+global:
+  roles: DOWNLOADER
+  worker: downloader         # must differ from "sub" -- both share one Redis
+  queue: queue               # same value as the sub side -- this is what makes them one pipeline
+  redis:
+    mode: "single"
+    nodes:
+      - "valkey:6379"
+  log:
+    level: info
+    to: stdout
+  http-port: 8080             # always bound regardless of role -- mapped to a different host port than the sub side below
+  centre-id: "my-cache"
+  global-cache: false
+
+downloader:
+  aria-secret: secret
+  aria-url: ws://aria2:6800/jsonrpc
+  aria-inqueue: 300            # raised from example 1's 200 -- CONCURRENT_DOWNLOADS itself is unchanged at 32 (see wis2hauler.yml's aria2 service), this just gives the downloader more slack to have work queued/in-flight with aria2 at once
+  aria-download: /downloads
+  rename-to: "topic"

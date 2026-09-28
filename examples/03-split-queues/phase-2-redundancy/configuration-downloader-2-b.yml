@@ -1,0 +1,22 @@
+# DOWNLOADER replica 'b' for queue-2 -- see ../README.md.
+global:
+  roles: DOWNLOADER
+  worker: down-2-b               # unique across every live instance sharing this Redis
+  queue: queue-2
+  redis:
+    mode: "single"
+    nodes:
+      - "valkey:6379"
+  log:
+    level: info
+    to: stdout
+  http-port: 8080
+  centre-id: "my-cache"
+  global-cache: false
+
+downloader:
+  aria-secret: secret
+  aria-url: ws://aria2-2-b:6800/jsonrpc
+  aria-inqueue: 300
+  aria-download: /downloads
+  rename-to: "topic"

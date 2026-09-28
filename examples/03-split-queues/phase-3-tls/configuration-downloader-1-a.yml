@@ -1,0 +1,28 @@
+# DOWNLOADER replica 'a' for queue-1 -- see ../README.md.
+global:
+  roles: DOWNLOADER
+  worker: down-1-a               # unique across every live instance sharing this Redis
+  queue: queue-1
+  redis:
+    mode: "single"
+    nodes:
+      - "valkey:6379"
+  log:
+    level: info
+    to: stdout
+  http-port: 8080
+  centre-id: "my-cache"
+  global-cache: false
+  local-broker:               # NEW in phase 3 -- see ../README.md
+    - broker: mqtt://mosquitto:1883
+
+downloader:
+  aria-secret: secret
+  aria-url: ws://aria2-1-a:6800/jsonrpc
+  aria-inqueue: 300
+  aria-download: /downloads
+  rename-to: "topic"
+  download-url: https://cache.example.com   # NEW in phase 3 -- served via Traefik+ACME, see ../README.md.
+    # cache.example.com is RFC 2606's reserved example domain -- swap
+    # for a real domain you control the DNS zone for before this can
+    # actually issue a certificate.

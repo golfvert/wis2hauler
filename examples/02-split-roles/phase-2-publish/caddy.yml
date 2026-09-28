@@ -1,0 +1,20 @@
+# Kept separate from wis2hauler.yml on purpose -- same reasoning as
+# mosquitto.yml. Serves ./downloads (the same directory aria2 and
+# wis2hauler-downloader write into) as the target of
+# downloader.download-url. Add or remove it independently; it only
+# needs to be reachable as "caddy" on the shared external network.
+services:
+  caddy:
+    image: caddy:2.9-alpine
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./downloads:/srv/downloads:ro
+    ports:
+      - "8090:80"
+    networks:
+      - wis2hauler
+    restart: unless-stopped
+
+networks:
+  wis2hauler:
+    external: true

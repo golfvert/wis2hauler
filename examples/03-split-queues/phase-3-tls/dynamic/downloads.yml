@@ -1,0 +1,20 @@
+# Routes https://cache.example.com/* to caddy, TLS terminated here via
+# the "letsencrypt" resolver (DNS-01 through Infomaniak -- see
+# traefik.yml). cache.example.com is RFC 2606's reserved example
+# domain -- swap the Host rule for a real domain you control the
+# Infomaniak-hosted DNS zone for; this can't actually issue a
+# certificate for example.com.
+http:
+  routers:
+    downloads:
+      rule: "Host(`cache.example.com`)"
+      entryPoints: ["websecure"]
+      tls:
+        certResolver: letsencrypt
+      service: downloads
+
+  services:
+    downloads:
+      loadBalancer:
+        servers:
+          - url: "http://caddy:80"
