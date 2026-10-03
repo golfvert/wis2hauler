@@ -1,6 +1,6 @@
 {
   "name": "wis2hauler-tracer",
-  "version": "1.0.0",
+  "version": "2026.9.5",
   "private": true,
   "type": "module",
   "description": "Trace a single data_id or wnm.id across every hauler-*.log file a Hauler deployment writes -- SUBSCRIBER, DOWNLOADER, CLEANER, all workers, one chronological narrative.",

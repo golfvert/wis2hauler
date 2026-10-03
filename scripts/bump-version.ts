@@ -3,7 +3,9 @@
 // src/ imports this, so it is never pulled into the compiled binary). It
 // maintains a VERSION file that a job in .github/workflows/release.yml
 // reads to know what tag to publish a GitHub Release (and, for the
-// repo-root VERSION specifically, the ghcr.io Docker image) under.
+// repo-root VERSION specifically, the ghcr.io Docker image) under. It
+// also writes the same tag into the "version" field of the package.json
+// sitting next to that VERSION file, so the two never drift.
 //
 // Two independent version files use this same script and format:
 //   VERSION          -- the main wis2hauler binaries + Docker image
@@ -16,31 +18,34 @@
 //   bun scripts/bump-version.ts                  # main wis2hauler
 //   bun scripts/bump-version.ts Tracer/VERSION    # wis2hauler-tracer
 //
-// Tag format: YYYY.MM.X
-//   YYYY = calendar year, MM = calendar month (2 digits), X = the Nth
+// Tag format: YYYY.M.X
+//   YYYY = calendar year, M = calendar month (1-12, NO leading zero, so
+//   the tag is valid semver), X = the Nth
 //   release cut in that calendar month, starting at 1 and incrementing
 //   by one on every run within the same month. Rolling into a new month
 //   (or year) resets X back to 1. "Current month" is read from the
 //   machine running this script (UTC), not from the file's own history.
 //   (release.yml prefixes Tracer's tag with "tracer-" itself when it
 //   reads Tracer/VERSION -- this script always writes the bare
-//   YYYY.MM.X form, the same for either file.)
+//   YYYY.M.X form, the same for either file.)
 //
 // This is a MANUAL step, deliberately not run by CI: run it yourself,
 // from the repo root, whenever you're ready to cut a new release --
 //
 //   bun scripts/bump-version.ts [path-to-VERSION-file]
 //
-// -- then commit the updated file and push. The push is what triggers
-// the release workflow, which reads the new tag straight out of the
-// file; running this script alone changes nothing until you push.
+// -- then commit the updated files (VERSION and package.json) and push.
+// The push is what triggers the release workflow, which reads the new
+// tag straight out of VERSION; running this script alone changes nothing
+// until you push.
 
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 
 const TARGET = process.argv[2] ?? 'VERSION';
 const VERSION_FILE = join(import.meta.dir, '..', TARGET);
-const TAG_PATTERN = /^(\d{4})\.(\d{2})\.(\d+)$/;
+const PACKAGE_FILE = join(dirname(VERSION_FILE), 'package.json');
+const TAG_PATTERN = /^(\d{4})\.([1-9]|1[0-2])\.(\d+)$/;
 
 interface ParsedTag {
 	year: number;
@@ -55,7 +60,7 @@ function parseTag(raw: string): ParsedTag | null {
 }
 
 function formatTag(year: number, month: number, seq: number): string {
-	return `${year}.${String(month).padStart(2, '0')}.${seq}`;
+	return `${year}.${month}.${seq}`;
 }
 
 function readCurrentTag(): ParsedTag | null {
@@ -77,6 +82,22 @@ function nextTag(now: Date): string {
 	return formatTag(year, month, seq);
 }
 
+// Matches the first "version" line only -- the top-level field in both
+// package.json files. A targeted replace (rather than JSON.parse +
+// stringify) leaves the rest of the file's formatting untouched.
+const PACKAGE_VERSION_PATTERN = /^(\s*"version"\s*:\s*")[^"]*(")/m;
+
+function withPackageVersion(tag: string): string {
+	if (!existsSync(PACKAGE_FILE)) throw new Error(`${PACKAGE_FILE} not found`);
+	const raw = readFileSync(PACKAGE_FILE, 'utf-8');
+	if (!PACKAGE_VERSION_PATTERN.test(raw)) throw new Error(`${PACKAGE_FILE} has no "version" field`);
+	return raw.replace(PACKAGE_VERSION_PATTERN, `$1${tag}$2`);
+}
+
 const tag = nextTag(new Date());
+// Build the package.json content first: if it can't be updated, fail
+// before writing anything, so VERSION and package.json never disagree.
+const packageJson = withPackageVersion(tag);
 writeFileSync(VERSION_FILE, `${tag}\n`, 'utf-8');
+writeFileSync(PACKAGE_FILE, packageJson, 'utf-8');
 console.log(tag);

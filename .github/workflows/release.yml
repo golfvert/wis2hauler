@@ -2,13 +2,13 @@ name: Build & release binaries
 
 # Builds standalone wis2hauler executables for every supported platform
 # and publishes them, plus a multi-arch (amd64/arm64) Alpine-based Docker
-# image on GHCR, under a single version tag: YYYY.MM.X (X starting at 1,
+# image on GHCR, under a single version tag: YYYY.M.X (X starting at 1,
 # incrementing per release cut within a calendar month). The tag itself
 # is NOT computed here -- it's read verbatim from the repo-root VERSION
 # file, which you bump manually and deliberately before pushing:
 #
-#   bun scripts/bump-version.ts   # updates VERSION, prints the new tag
-#   git add VERSION && git commit -m "release: <tag>" && git push
+#   bun scripts/bump-version.ts   # updates VERSION + package.json, prints the new tag
+#   git add VERSION package.json && git commit -m "release: <tag>" && git push
 #
 # See scripts/bump-version.ts for the full rationale. If VERSION hasn't
 # changed since the last successful release (e.g. a push that only
@@ -23,7 +23,7 @@ name: Build & release binaries
 # Also builds wis2hauler-tracer, the standalone log-tracing CLI under
 # Tracer/ (see Tracer/README.md). Tracer is versioned and released
 # INDEPENDENTLY of the main wis2hauler binaries above, on its own
-# Tracer/VERSION file and its own tag (tracer-YYYY.MM.X, same format,
+# Tracer/VERSION file and its own tag (tracer-YYYY.M.X, same format,
 # "tracer-" prefixed so it can't collide with a main release tag) --
 # see tracer-version/build-tracer/release-tracer below. That's
 # deliberate: a Tracer-only change (a new field it should search, a
@@ -33,7 +33,7 @@ name: Build & release binaries
 # way as the main one, just pointed at its own file:
 #
 #   bun scripts/bump-version.ts Tracer/VERSION
-#   git add Tracer/VERSION && git commit -m "release(tracer): <tag>" && git push
+#   git add Tracer/VERSION Tracer/package.json && git commit -m "release(tracer): <tag>" && git push
 #
 # Tracer never goes into the Docker image (see the `docker` job's own
 # steps, which reference only the main binary's musl artifacts) --
@@ -84,8 +84,8 @@ jobs:
         name: Read VERSION
         run: |
           tag="$(tr -d '[:space:]' < VERSION)"
-          if ! [[ "$tag" =~ ^[0-9]{4}\.[0-9]{2}\.[0-9]+$ ]]; then
-            echo "VERSION does not contain a YYYY.MM.X tag (got: '$tag')." >&2
+          if ! [[ "$tag" =~ ^[0-9]{4}\.([1-9]|1[0-2])\.[0-9]+$ ]]; then
+            echo "VERSION does not contain a YYYY.M.X tag (got: '$tag')." >&2
             echo "Run 'bun scripts/bump-version.ts' and commit the result." >&2
             exit 1
           fi
@@ -116,8 +116,8 @@ jobs:
         name: Read Tracer/VERSION
         run: |
           version="$(tr -d '[:space:]' < Tracer/VERSION)"
-          if ! [[ "$version" =~ ^[0-9]{4}\.[0-9]{2}\.[0-9]+$ ]]; then
-            echo "Tracer/VERSION does not contain a YYYY.MM.X tag (got: '$version')." >&2
+          if ! [[ "$version" =~ ^[0-9]{4}\.([1-9]|1[0-2])\.[0-9]+$ ]]; then
+            echo "Tracer/VERSION does not contain a YYYY.M.X tag (got: '$version')." >&2
             echo "Run 'bun scripts/bump-version.ts Tracer/VERSION' and commit the result." >&2
             exit 1
           fi
