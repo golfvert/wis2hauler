@@ -1,7 +1,8 @@
 services:
   wis2hauler:
     image: ghcr.io/golfvert/wis2hauler:2026.09.20
-    user: "1000:1000"          # or use different uid/gid - eg. based on your current uid/gid on a linux host
+    user: "1000:1000"          # or use different uid/gid - should be based on the user (uid/gid) running the container on a linux host
+      - GID=1000
     volumes:
       - ./configuration.yml:/configuration.yml:ro
       - ./downloads:/downloads
@@ -21,6 +22,8 @@ services:
       - CONNECTIONS_PER_SERVER=12
       - MAX_TRIES=5
       - QUIET=false
+      - UID=1000               # or use different uid/gid - should be based on the user (uid/gid) running the container on a linux host
+      - GID=1000
     volumes:
       - ./downloads:/downloads
     networks:

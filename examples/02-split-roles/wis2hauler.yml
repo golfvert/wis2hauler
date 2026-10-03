@@ -33,6 +33,8 @@ services:
       - CONNECTIONS_PER_SERVER=16    # up from 12
       - MAX_TRIES=2
       - QUIET=false
+      - UID=1000              
+      - GID=1000
     volumes:
       - ./downloads:/downloads
     networks:
