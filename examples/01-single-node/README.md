@@ -51,7 +51,7 @@ Then, prepare the directories (the top-level directory is wherever is convenient
 
 ```bash
 cd $HOME
-mkdir -p mkdir downloads logs
+mkdir downloads logs
 docker compose -f wis2hauler.yml up -d
 ```
 
