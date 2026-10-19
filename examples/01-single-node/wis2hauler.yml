@@ -4,8 +4,8 @@ services:
     user: "1000:1000"          # or use different uid/gid - should be based on the user (uid/gid) running the container on a linux host
     volumes:
       - ./configuration.yml:/configuration.yml:ro
-      - ./hauler/downloads:/downloads
-      - ./hauler/logs:/logs
+      - ./downloads:/downloads
+      - ./logs:/logs
     ports:
       - "8080:8080"             
     restart: unless-stopped
@@ -24,7 +24,7 @@ services:
       - UID=1000               # or use different uid/gid - should be based on the user (uid/gid) running the container on a linux host
       - GID=1000
     volumes:
-      - ./hauler/downloads:/downloads
+      - ./downloads:/downloads
     networks:
       - wis2hauler
 

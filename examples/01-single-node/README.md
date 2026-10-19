@@ -50,7 +50,8 @@ docker network create wis2hauler
 Then, prepare the directories (the top-level directory is wherever is convenient):
 
 ```bash
-mkdir -p mkdir hauler hauler/downloads hauler/logs
+cd $HOME
+mkdir -p mkdir downloads logs
 docker compose -f wis2hauler.yml up -d
 ```
 
