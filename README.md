@@ -74,7 +74,22 @@ chmod +x <asset-name>
 
 If you want to produce that binary yourself instead of downloading it (e.g. for a platform without a published release,...)? See "Building a standalone binary" below.
 
-A config file is a required argument either way — there is no default path. See [`docs/configuration-and-roles.md`](docs/configuration-and-roles.md) for every option, and `fixtures/*.yaml` for working examples (a full multi-role config, a minimal single-role one, and one that fails validation on purpose).
+### Option C — Docker, with Docker Compose
+
+Prebuilt images are published on GHCR (`ghcr.io/golfvert/wis2hauler`, see the [package page](https://github.com/golfvert/wis2hauler/pkgs/container/wis2hauler)). The simplest way to run one is the Docker Compose file [`examples/01-single-node/wis2hauler.yml`](https://github.com/golfvert/wis2hauler/blob/main/examples/01-single-node/wis2hauler.yml): it starts wis2hauler, aria2 and a single Valkey node together, with the configuration file, `downloads/` and `logs/` directories mounted from the host.
+
+```bash
+git clone https://github.com/golfvert/wis2hauler.git
+cd wis2hauler/examples/01-single-node
+docker network create wis2hauler          # once; the compose file joins this external network
+mkdir -p downloads logs
+docker compose -f wis2hauler.yml up -d
+curl http://localhost:8080/metrics
+```
+
+Set `user` (wis2hauler) and `UID`/`GID` (aria2) in the compose file to the uid/gid of the host user that owns `downloads/` and `logs/`, and change `RPC_SECRET` and `downloader.aria-secret` (both `secret` in the example) before using it beyond a local test. The example's own [README](examples/01-single-node/README.md) describes what it runs; [`docs/deployment.md`](docs/deployment.md) covers the Docker options in full, and [`examples/`](examples/) has progressively larger setups (split roles, split queues).
+
+A config file is required in every case — there is no default path. See [`docs/configuration-and-roles.md`](docs/configuration-and-roles.md) for every option, and `fixtures/*.yaml` for working examples (a full multi-role config, a minimal single-role one, and one that fails validation on purpose).
 
 Every running instance exposes a small HTTP admin API (`GET /get`, `POST /set`, plus role-specific routes) on `global.http-port` (default `8080`), regardless of which roles it carries — the same API a Node-RED admin UI used to expose. See the "Runtime admin API" section of the configuration doc.
 
