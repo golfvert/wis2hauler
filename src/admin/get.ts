@@ -15,7 +15,6 @@ import type { Config, Role } from '../config/schema.ts';
 import type { RuntimeConfigStore } from './runtime-store.ts';
 import type { DownloaderStore } from '../downloader/store.ts';
 import { parseCredentials, type CredentialMap } from '../downloader/credentials.ts';
-import type { DebugController } from '../debug.ts';
 
 export interface GetContext {
 	config: Config;
@@ -25,10 +24,6 @@ export interface GetContext {
 	// own role gate below (isFieldAllowed already refuses the request
 	// before get() would ever run with credentialsStore === null).
 	credentialsStore: DownloaderStore | null;
-	// Always present -- unlike credentialsStore, every process has one
-	// regardless of which roles are active (../main.ts constructs it
-	// unconditionally). Backs the 'debug' field below.
-	debug: DebugController;
 	warn: (message: string) => void;
 }
 
@@ -46,10 +41,6 @@ export const GET_FIELDS: Record<string, GetField> = {
 	whitelist: { roles: ['SUBSCRIBER'], get: (ctx) => ctx.store.getWhitelist() },
 	blacklist: { roles: ['SUBSCRIBER'], get: (ctx) => ctx.store.getBlacklist() },
 	'global-replay': { roles: null, get: (ctx) => ctx.store.getGlobalReplay() },
-	// See ../debug.ts's getDynamic() doc comment -- this is the whole
-	// state, not a layer on top of anything else: there is no CLI flag
-	// or file feeding debug categories any more, only this admin API.
-	debug: { roles: null, get: (ctx) => ctx.debug.getDynamic() },
 	credentials: {
 		roles: ['DOWNLOADER'],
 		get: async (ctx): Promise<CredentialMap> => {

@@ -165,10 +165,10 @@ async function runCompletion(deps: ConsumerDeps, downloaderId: string, gid: stri
 		// CompleteOutcome.dataId/hashDetail doc comments -- HASH_NOK used
 		// to be indistinguishable from "unsupported hash method" and
 		// carried no data_id at all.
-		deps.correctLog?.warn({ downloaderId: completeOutcome.downloaderId, dataId: completeOutcome.dataId, hashOutcome: completeOutcome.hashOutcome, hashDetail: completeOutcome.hashDetail });
+		deps.correctLog?.warn({ downloader_id: completeOutcome.downloaderId, data_id: completeOutcome.dataId, hashOutcome: completeOutcome.hashOutcome, hashDetail: completeOutcome.hashDetail });
 		await reportBadHash(deps.errorRetry, completeOutcome.wnmTopic);
-		void runRetryDecision(deps.errorRetry, completeOutcome.downloaderId).catch((err) =>
-			deps.log.error(`downloader: retry decision failed for ${completeOutcome.downloaderId} (data_id ${completeOutcome.dataId || '(none)'}): ${err instanceof Error ? err.message : String(err)}`),
+		void runRetryDecision(deps.errorRetry, completeOutcome.downloaderId, 'integrity').catch((err) =>
+			deps.log.error(`downloader: retry decision failed for ${completeOutcome.downloaderId} (data_id ${completeOutcome.dataId || '(none)'}): ${err instanceof Error ? err.message : String(err)}`, { data_id: completeOutcome.dataId, downloader_id: completeOutcome.downloaderId }),
 		);
 	} else {
 		// 'FAIL': no further action beyond the "Correct ?" Warn above --
@@ -177,7 +177,7 @@ async function runCompletion(deps: ConsumerDeps, downloaderId: string, gid: stri
 		// failure or a rename-target collision is simply abandoned, not
 		// retried or reported. Ported as-is, not fixed -- this wasn't one
 		// of the specific ambiguities the maintainer resolved this phase.)
-		deps.correctLog?.warn({ downloaderId: completeOutcome.downloaderId, dataId: completeOutcome.dataId, hashOutcome: completeOutcome.hashOutcome, hashDetail: completeOutcome.hashDetail });
+		deps.correctLog?.warn({ downloader_id: completeOutcome.downloaderId, data_id: completeOutcome.dataId, hashOutcome: completeOutcome.hashOutcome, hashDetail: completeOutcome.hashDetail });
 	}
 }
 
@@ -203,8 +203,13 @@ export async function handleAriaNotification(
 		// with different casing or naming (observed live: the maintainer's own
 		// aria2.conf uses .../Aria2/Downloads, capital D).
 		if (status.status !== 'complete' || !status.files[0]?.path.startsWith(deps.ariaDownloadDir)) return;
-		deps.outputCompleteLog?.debug({ gid: notification.gid, status: status.status });
 		const acked = await startAck(deps.store, deps.queue, deps.worker, notification.gid, deps.ackLog);
+		// Logged AFTER the ack (2026-10-24, NOT a port): the ack is what reads
+		// the gid's record, so only now are dataId/downloaderId known --
+		// needed to group this line with the rest of a data_id's lifecycle.
+		// Still always logged: when the record is gone (`acked` null), the
+		// line keeps just gid/status, exactly as before.
+		deps.outputCompleteLog?.debug({ gid: notification.gid, status: status.status, data_id: acked?.dataId, downloader_id: acked?.downloaderId });
 		if (!acked) return;
 		await runCompletion(deps, acked.downloaderId, notification.gid, status.files[0].path);
 	} else if (notification.method.includes('Error')) {
@@ -214,13 +219,21 @@ export async function handleAriaNotification(
 		// tellStatus reply carries these for a failed gid, but they were
 		// never read -- this line used to say only "gid X failed", never
 		// WHY (timeout, HTTP error, checksum, name resolution, ...).
-		deps.outputErrorLog?.debug({ gid: notification.gid, status: status.status, errorCode: status.errorCode, errorMessage: status.errorMessage });
 		const acked = await startAck(deps.store, deps.queue, deps.worker, notification.gid, deps.ackLog);
+		// After the ack for the same reason as "Output - Complete" above.
+		deps.outputErrorLog?.debug({
+			gid: notification.gid,
+			status: status.status,
+			errorCode: status.errorCode,
+			errorMessage: status.errorMessage,
+			data_id: acked?.dataId,
+			downloader_id: acked?.downloaderId,
+		});
 		if (!acked) return;
 		deps.inFlight.release();
 		await reportDownloadError(deps.errorRetry, undefined); // wnmtopic unknown at this point, matches the original
-		void runRetryDecision(deps.errorRetry, acked.downloaderId).catch((err) =>
-			deps.log.error(`downloader: retry decision failed for ${acked.downloaderId} (data_id ${acked.dataId || '(none)'}): ${err instanceof Error ? err.message : String(err)}`),
+		void runRetryDecision(deps.errorRetry, acked.downloaderId, 'download_error').catch((err) =>
+			deps.log.error(`downloader: retry decision failed for ${acked.downloaderId} (data_id ${acked.dataId || '(none)'}): ${err instanceof Error ? err.message : String(err)}`, { data_id: acked.dataId, downloader_id: acked.downloaderId }),
 		);
 	}
 }
@@ -271,13 +284,13 @@ export async function pollOnce(deps: ConsumerDeps): Promise<void> {
 				await processQueueEntry(deps, entry);
 			} catch (err) {
 				const message = err instanceof Error ? err.message : String(err);
-				deps.log.error(`downloader: failed processing work-queue entry ${entry.id} (${entry.href}, data_id ${entry.dataId || '(none)'}): ${message}`);
+				deps.log.error(`downloader: failed processing work-queue entry ${entry.id} (${entry.href}, data_id ${entry.dataId || '(none)'}): ${message}`, { data_id: entry.dataId, entryId: entry.id, href: entry.href });
 				// NOT a port (2026-09-20): deps.log is plain console, never
 				// captured by the file sink regardless of global.log.to --
 				// this is the ONE place a whole download can silently vanish
 				// with nothing on disk (e.g. aria2 unreachable, addUri
 				// rejected). Mirrored here, file-backed, with the data_id.
-				deps.errorLog?.warn({ downloaderId: entry.downloaderId, dataId: entry.dataId, href: entry.href, error: message });
+				deps.errorLog?.warn({ downloader_id: entry.downloaderId, data_id: entry.dataId, href: entry.href, error: message });
 			}
 		}),
 	);

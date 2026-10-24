@@ -71,7 +71,6 @@ export interface IngestDeps {
 	sleep: (ms: number) => Promise<void>;
 	now: () => number;
 	log: typeof console;
-	isDebugEnabled: () => boolean;
 	// NOT a port of flows.json node-for-node (there's no single change
 	// node this corresponds to), but restoring a CAPABILITY the
 	// maintainer confirmed the original had and this port had dropped
@@ -164,13 +163,6 @@ export interface IngestDeps {
 	// actually set. At any other level, it's one boolean check, nothing
 	// more -- safe to ship and run everywhere, not just a special debug
 	// build. See each call site (`filterLogWantsIt`) below.
-	//
-	// `deps.isDebugEnabled()` remains relevant only for the separate
-	// plain-text stdout lines below, which just duplicate this same
-	// information unstructured, and independently ALSO triggers the extra
-	// parse when it's on (so flipping that legacy toggle still works
-	// exactly as it always did) -- ignore it entirely if all you want is
-	// the traced file logs via `log.level: debug`.
 	//
 	// Named "Filter" -- the ingest-side counterpart to consumer.ts's own
 	// "Decision" log: this is "what did THIS wire message's ingest stage do
@@ -356,7 +348,7 @@ export function createIngestHandler(deps: IngestDeps, stats: IngestStats): (topi
 			// still the only meaningful number available, same as before this
 			// fix.
 			const bytes = receivedWnm !== undefined ? canonicalContentBytes(receivedWnm) : payload.length;
-			deps.receivedLog.debug({ source: deps.sourceLabel, topic, bytes, wnmId, dataId });
+			deps.receivedLog.debug({ source: deps.sourceLabel, topic, bytes, wnm_id: wnmId, data_id: dataId });
 		}
 		if (deps.preDelayMs > 0) await deps.sleep(deps.preDelayMs);
 
@@ -378,17 +370,12 @@ export function createIngestHandler(deps: IngestDeps, stats: IngestStats): (topi
 			// unconditionally regardless of log level. `?? true` if filterLog
 			// doesn't implement debugEnabled() at all (a hand-built fake, in
 			// tests) -- assume yes rather than silently going quiet.
-			// isDebugEnabled() (the separate, older per-role runtime toggle)
-			// still independently gates the plain stdout console.log line
-			// below, which duplicates this same information as unstructured
-			// text -- not needed to get the full traced picture.
 			const filterLogWantsIt = deps.filterLog !== undefined && (deps.filterLog.debugEnabled?.() ?? true);
-			if (deps.isDebugEnabled() || filterLogWantsIt) {
+			if (filterLogWantsIt) {
 				const { wnm: parsedWnm } = parseForLogging(raw);
 				const wnmId = typeof parsedWnm?.id === 'string' ? parsedWnm.id : undefined;
 				const dataId = typeof parsedWnm?.properties?.data_id === 'string' ? parsedWnm.properties.data_id : undefined;
-				if (deps.isDebugEnabled()) deps.log.log(`[${deps.sourceLabel}] unchanged payload (rbe), dropping: ${topic}${dataId ? ` (data_id ${dataId})` : ''}`);
-				if (filterLogWantsIt) deps.filterLog!.debug({ source: deps.sourceLabel, topic, wnmId, dataId, outcome: 'unchanged', wnm: parsedWnm });
+				if (filterLogWantsIt) deps.filterLog!.debug({ source: deps.sourceLabel, topic, wnm_id: wnmId, data_id: dataId, outcome: 'unchanged', wnm: parsedWnm });
 			}
 			return;
 		}
@@ -397,12 +384,11 @@ export function createIngestHandler(deps: IngestDeps, stats: IngestStats): (topi
 		if (isBlacklisted(normalisedTopic, deps.blacklist)) {
 			stats.blacklisted++;
 			const filterLogWantsIt = deps.filterLog !== undefined && (deps.filterLog.debugEnabled?.() ?? true);
-			if (deps.isDebugEnabled() || filterLogWantsIt) {
+			if (filterLogWantsIt) {
 				const { wnm: parsedWnm } = parseForLogging(raw);
 				const wnmId = typeof parsedWnm?.id === 'string' ? parsedWnm.id : undefined;
 				const dataId = typeof parsedWnm?.properties?.data_id === 'string' ? parsedWnm.properties.data_id : undefined;
-				if (deps.isDebugEnabled()) deps.log.log(`[${deps.sourceLabel}] blacklisted, dropping: ${topic}${dataId ? ` (data_id ${dataId})` : ''}`);
-				if (filterLogWantsIt) deps.filterLog!.debug({ source: deps.sourceLabel, topic, wnmId, dataId, outcome: 'blacklisted', wnm: parsedWnm });
+				if (filterLogWantsIt) deps.filterLog!.debug({ source: deps.sourceLabel, topic, wnm_id: wnmId, data_id: dataId, outcome: 'blacklisted', wnm: parsedWnm });
 			}
 			return;
 		}
@@ -414,7 +400,6 @@ export function createIngestHandler(deps: IngestDeps, stats: IngestStats): (topi
 		} catch (err) {
 			stats.malformed++;
 			const message = err instanceof Error ? err.message : String(err);
-			deps.log.error(`[${deps.sourceLabel}] malformed WNM on ${topic}: ${message}`);
 			// Best-effort -- JSON.parse may have actually succeeded before the
 			// "missing wnm.id" throw fired just above, so there can still be a
 			// full object (and a data_id within it) worth surfacing even
@@ -426,7 +411,8 @@ export function createIngestHandler(deps: IngestDeps, stats: IngestStats): (topi
 			const { wnm: parsedWnm } = parseForLogging(raw);
 			const wnmId = typeof parsedWnm?.id === 'string' ? parsedWnm.id : undefined;
 			const dataId = typeof parsedWnm?.properties?.data_id === 'string' ? parsedWnm.properties.data_id : undefined;
-			deps.filterLog?.debug({ source: deps.sourceLabel, topic, wnmId, dataId, outcome: 'malformed', error: message, wnm: parsedWnm });
+			deps.log.error(`[${deps.sourceLabel}] malformed WNM on ${topic}: ${message}`, { source: deps.sourceLabel, topic, wnm_id: wnmId, data_id: dataId });
+			deps.filterLog?.debug({ source: deps.sourceLabel, topic, wnm_id: wnmId, data_id: dataId, outcome: 'malformed', error: message, wnm: parsedWnm });
 			return;
 		}
 
@@ -435,23 +421,21 @@ export function createIngestHandler(deps: IngestDeps, stats: IngestStats): (topi
 		const isNew = await deps.store.claimMessageId(wnm.id, MESSAGE_ID_DEDUP_TTL_SECONDS);
 		if (!isNew) {
 			stats.duplicate++;
-			if (deps.isDebugEnabled()) deps.log.log(`[${deps.sourceLabel}] duplicate wnm.id ${wnm.id}, dropping: ${topic}`);
 			// wnm, not just wnmId/dataId (2026-09-20, same day, NOT a port):
 			// see IngestDeps.filterLog's doc comment -- `wnm` is already
 			// sitting in scope from this handler's own real parse above (the
 			// dedup check itself needs it), so attaching the whole thing here
 			// costs nothing beyond what this call already paid.
-			deps.filterLog?.debug({ source: deps.sourceLabel, topic, wnmId: wnm.id, dataId, outcome: 'duplicate', wnm });
+			deps.filterLog?.debug({ source: deps.sourceLabel, topic, wnm_id: wnm.id, data_id: dataId, outcome: 'duplicate', wnm });
 			return;
 		}
 
 		await deps.store.appendRawMessage(deps.queue, topic, raw, deps.now());
 		stats.ingested++;
-		if (deps.isDebugEnabled()) deps.log.log(`[${deps.sourceLabel}] ingested ${wnm.id}: ${topic}`);
 		// Same rationale as the 'duplicate' outcome just above -- `wnm` is
 		// the exact object this handler already parsed and is about to hand
 		// to appendRawMessage; logging it here is the "after deduplication"
 		// full-content record the maintainer asked for, at zero extra cost.
-		deps.filterLog?.debug({ source: deps.sourceLabel, topic, wnmId: wnm.id, dataId, outcome: 'ingested', wnm });
+		deps.filterLog?.debug({ source: deps.sourceLabel, topic, wnm_id: wnm.id, data_id: dataId, outcome: 'ingested', wnm });
 	};
 }

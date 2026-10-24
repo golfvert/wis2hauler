@@ -25,7 +25,7 @@
 // original's "Next" function left in msg.payload (see retry.ts's
 // decideRetry). Since 2026-09-13 (error-retry.ts's runRetryDecision --
 // NOT a port, see that file's own comment) a RETRY_NOK entry's `error`
-// field is instead `{downloaderId, hashFound, hash}`, wrapping that
+// field is instead `{downloader_id, data_id, hashFound, hash}`, wrapping that
 // same array -- this module doesn't need to know or care about the
 // difference, since `payload` is handed through as `unknown` either
 // way and it's run.ts's debug/console logging that actually renders

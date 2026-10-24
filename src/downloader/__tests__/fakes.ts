@@ -202,6 +202,14 @@ export class FakeDownloaderStore implements DownloaderStore {
 		this.trimmedTo.set(worker, minId);
 	}
 
+	cacheMarkers = new Set<string>();
+	deletedMarkers: string[] = [];
+
+	async deleteCacheMarker(downloaderId: string): Promise<boolean> {
+		this.deletedMarkers.push(downloaderId);
+		return this.cacheMarkers.delete(downloaderId);
+	}
+
 	async markDownloadComplete(downloaderId: string): Promise<void> {
 		this.completeIds.add(downloaderId);
 	}

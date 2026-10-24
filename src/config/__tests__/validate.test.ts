@@ -95,6 +95,24 @@ describe('validateConfig — warning-only cases (should not fail validation)', (
 		expect(result.warnings).toContain('global.local-broker[0].password: missing');
 	});
 
+	test('global.cache-deadline: a positive integer is valid and is not reported as an unknown key', () => {
+		const raw = parseYaml(validYaml) as { global: Record<string, unknown> };
+		raw.global['cache-deadline'] = 300;
+		const result = validateConfig(raw);
+		expect(result.errors).toEqual([]);
+		expect(result.warnings.some((w) => w.includes('cache-deadline'))).toBe(false);
+	});
+
+	test('global.cache-deadline: zero, negative or fractional values are rejected', () => {
+		for (const bad of [0, -5, 1.5, 'ten']) {
+			const raw = parseYaml(validYaml) as { global: Record<string, unknown> };
+			raw.global['cache-deadline'] = bad;
+			const result = validateConfig(raw);
+			expect(result.valid).toBe(false);
+			expect(result.errors.some((e) => e.includes('cache-deadline'))).toBe(true);
+		}
+	});
+
 	test('unknown top-level section warns but stays valid', () => {
 		const cfg = parseYaml(validYaml) as Record<string, any>;
 		cfg.notasection = { foo: 'bar' };

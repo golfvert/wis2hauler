@@ -17,13 +17,15 @@ export interface CompleteDeps {
 	hashConfig: HashConfig;
 	hashIo: HashIO;
 	newUuid: () => string;
-	// "Duplicates" (Downloader tab, previous-node b632c75a30bcbb2b,
-	// Debug) -- a `catch` node in the original, matching the
+	// "File Error" (renamed 2026-10-24 from the original's "Duplicates" --
+	// Downloader tab, previous-node b632c75a30bcbb2b, Debug -- which
+	// never described what it logs: a rename/move or hash-read I/O
+	// failure, not a duplicate) -- a `catch` node in the original, matching the
 	// RenameIoError/HashReadError branch below (the maintainer's own routing
 	// decision for what the original lets escape uncaught). Optional so
 	// every existing hand-built CompleteDeps in this file's own tests
 	// keeps compiling without it.
-	duplicatesLog?: SourceLogger;
+	fileErrorLog?: SourceLogger;
 }
 
 export interface CompleteOutcome {
@@ -125,7 +127,7 @@ export async function runComplete(deps: CompleteDeps, downloaderId: string, gid:
 		// retry/error pipeline as an ordinary HASH_NOK instead of being
 		// swallowed.
 		if (err instanceof RenameIoError || err instanceof HashReadError) {
-			deps.duplicatesLog?.debug({ downloaderId, dataId, filepath, error: err.message });
+			deps.fileErrorLog?.debug({ downloader_id: downloaderId, data_id: dataId, filepath, error: err.message });
 			hashResult = { outcome: 'HASH_NOK', length: 0 };
 		} else {
 			throw err;

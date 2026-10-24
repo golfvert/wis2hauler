@@ -11,8 +11,8 @@
 //
 // See README.md for the full walkthrough. Short version: point --root at
 // wherever this deployment's worker directories (each with its own
-// logs/) live, paste in whatever id you're chasing (a `dataId` or a
-// `wnmId` -- this tool doesn't need to know which, it searches for the
+// logs/) live, paste in whatever id you're chasing (a `data_id` or a
+// `wnm_id` -- this tool doesn't need to know which, it searches for the
 // string wherever it appears), and it prints every matching log line
 // across every hauler-*.log[.gz] file under that root, in chronological
 // order, one line per hit.

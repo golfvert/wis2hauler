@@ -79,6 +79,15 @@ export async function runFinishing(
 	const transitioned = await deps.store.completeHref(downloaderId, href, String(Date.now()), localHref, localPath ?? '');
 	if (transitioned !== 'complete') return;
 
+	// The download is done: delete the deadline marker so it cannot
+	// expire. REPORTER decides `cached` vs `late` from the completion
+	// report that follows, so a marker that already expired is fine.
+	try {
+		await deps.store.deleteCacheMarker(downloaderId);
+	} catch (err) {
+		deps.error?.(`Finishing (${downloaderId}): deleting the deadline marker failed: ${err instanceof Error ? err.message : String(err)}`);
+	}
+
 	// Step 1/4: "WNM" (d430de06ba1e6656) -> "Link" chain: swap in the
 	// LOCAL href on link[0] only, strip downloader_id, stamp
 	// global-cache, republish under the "cache" (was "origin") topic
@@ -102,7 +111,7 @@ export async function runFinishing(
 				// "Link" (Warn): no link to swap the local href into -- an
 				// anomaly the original still lets through (links.slice(1) alone),
 				// worth flagging.
-				deps.publishLog?.warn({ downloaderId, role: 'DOWNLOADER', wnmTopic, href });
+				deps.publishLog?.warn({ downloader_id: downloaderId, role: 'DOWNLOADER', wnmTopic, href });
 			}
 			const cacheWnm: Wnm = {
 				...wnm,
@@ -123,7 +132,7 @@ export async function runFinishing(
 			// disambiguates this from Subscriber's own publish-only republish,
 			// now sharing the same `hauler-publish-*` log file (see
 			// FinishingDeps.publishLog's doc comment).
-			deps.publishLog?.info({ downloaderId, role: 'DOWNLOADER', topic: cacheTopic, link: localHref, wnm: cacheWnm });
+			deps.publishLog?.info({ downloader_id: downloaderId, role: 'DOWNLOADER', topic: cacheTopic, link: localHref, wnm: cacheWnm });
 			for (const client of deps.publishClients) {
 				try {
 					await client.publish(cacheTopic, cachePayload);

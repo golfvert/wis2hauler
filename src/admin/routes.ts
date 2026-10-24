@@ -17,7 +17,6 @@ import type { Config, Role } from '../config/schema.ts';
 import type { RuntimeConfigStore } from './runtime-store.ts';
 import type { DownloaderStore } from '../downloader/store.ts';
 import type { SourceLogger } from '../logging/logger.ts';
-import type { DebugController } from '../debug.ts';
 import { GET_FIELDS, buildGetResponse } from './get.ts';
 import { buildSetResponse } from './set.ts';
 
@@ -29,7 +28,6 @@ export interface AdminRouteDeps {
 	// see ./get.ts's GetContext / ./set.ts's SetContext doc comments.
 	credentialsStore: DownloaderStore | null;
 	// Always present -- see ./get.ts's GetContext doc comment.
-	debug: DebugController;
 	log: typeof console;
 	// "Change ?" (Setup tab, previous-node eeca55e8996b39fc, Info) --
 	// bound to the shared module-logger sink/gate in ../main.ts. Optional
@@ -44,7 +42,7 @@ function jsonResponse(status: number, body: unknown): Response {
 
 export function registerAdminRoutes(router: HttpRouter, deps: AdminRouteDeps): void {
 	const warn = (message: string): void => deps.log.warn(`ADMIN: ${message}`);
-	const ctxBase = { config: deps.config, store: deps.store, credentialsStore: deps.credentialsStore, debug: deps.debug, warn };
+	const ctxBase = { config: deps.config, store: deps.store, credentialsStore: deps.credentialsStore, warn };
 
 	router.get('/get', async (req) => {
 		const url = new URL(req.url);
@@ -60,7 +58,7 @@ export function registerAdminRoutes(router: HttpRouter, deps: AdminRouteDeps): v
 		} catch {
 			return jsonResponse(400, { changes: {}, errors: ['Body must be valid JSON.'] });
 		}
-		const result = await buildSetResponse(body, deps.activeRoles, { store: deps.store, credentialsStore: deps.credentialsStore, debug: deps.debug, warn });
+		const result = await buildSetResponse(body, deps.activeRoles, { store: deps.store, credentialsStore: deps.credentialsStore, warn });
 		// "Change ?" -- one Info log per key the patch actually changed,
 		// matching the original's own "Change ?" switch (7b0525ef3667eb54)
 		// only routing a key onward to logging when its {value,changed}

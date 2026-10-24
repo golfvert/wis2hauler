@@ -45,7 +45,6 @@
 // effectiveBlacklist below, so GB1 and GB2 are symmetric on both
 // safeguards now, not just the new one.
 import type { Config } from '../config/schema.ts';
-import type { DebugController } from '../debug.ts';
 import { createRedisConnection, IoredisStore, RAW_STREAM_MAXLEN } from '../redis/ioredis-store.ts';
 import type { MqttLike } from '../mqtt/types.ts';
 import {
@@ -59,13 +58,13 @@ import {
 import { runConsumerLoop, type ConsumerDeps } from './consumer.ts';
 import { createSourceLogger, type LevelGate } from '../logging/logger.ts';
 import type { LogSink } from '../logging/sink.ts';
+import { cacheDeadlineSeconds } from '../wis2/cache-deadline.ts';
 
 // GB2's fixed per-message ingest delay (flows.json node 68d4df2b43657354).
 const GB2_INGEST_DELAY_MS = 2000;
 
 export async function runSubscriber(
 	config: Config,
-	debug: DebugController,
 	log: typeof console,
 	signal: AbortSignal,
 	upstreamClients: MqttLike[],
@@ -77,8 +76,6 @@ export async function runSubscriber(
 	if (!sub) throw new Error('runSubscriber called without a subscriber: config section (global.roles includes SUBSCRIBER but validation should have caught this)');
 	const queue = config.global.queue;
 	if (!queue) throw new Error('runSubscriber called without global.queue (validation should have caught this)');
-
-	const isDebugEnabled = () => debug.has('SUBSCRIBER');
 	const globalCacheMode = config.global['global-cache'] ?? false;
 	const centreId = config.global['centre-id'] ?? '';
 
@@ -141,14 +138,13 @@ export async function runSubscriber(
 				sleep: defaultSleep,
 				now: () => Date.now(),
 				log,
-				isDebugEnabled,
 				receivedLog,
 				filterLog,
 			},
 			stats,
 		);
 		client.onMessage((topic, payload) => {
-			void handler(topic, payload).catch((err) => log.error(`[${label}] ingest error on ${topic}: ${err instanceof Error ? err.message : String(err)}`));
+			void handler(topic, payload).catch((err) => log.error(`[${label}] ingest error on ${topic}: ${err instanceof Error ? err.message : String(err)}`, { source: label, topic }));
 		});
 		log.log(`SUBSCRIBER: ${label} subscribed to ${whitelist.length} whitelist pattern(s)`);
 	}
@@ -172,10 +168,10 @@ export async function runSubscriber(
 		weightDelayMaxSeconds: sub['weight-delay-max-seconds'] ?? 120,
 		random: Math.random,
 		globalCacheMode,
+		cacheDeadlineSeconds: cacheDeadlineSeconds(config),
 		centreId,
 		publishClients,
 		log,
-		isDebugEnabled,
 		sleep: defaultSleep,
 		now: () => new Date(),
 		decisionLog: logSink && gate ? createSourceLogger('Decision', logSink, gate, 'SUBSCRIBER') : undefined,

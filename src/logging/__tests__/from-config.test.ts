@@ -14,6 +14,11 @@ describe('resolveSinkOptions', () => {
 		});
 	});
 
+	test('worker is passed through when given, and absent otherwise', () => {
+		expect(resolveSinkOptions({ level: 'info' }, 'five').worker).toBe('five');
+		expect(resolveSinkOptions({ level: 'info' }).worker).toBeUndefined();
+	});
+
 	test('to: "stdout" maps to the stdout destination', () => {
 		const log: LogConfig = { level: 'debug', to: 'stdout' };
 		expect(resolveSinkOptions(log).destination).toBe('stdout');

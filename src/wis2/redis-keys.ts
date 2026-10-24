@@ -41,6 +41,17 @@ export const subscriberLineageKey = (originCentreId: string, dataIdRaw: string):
 export const subscriberGlobalCacheLineageKey = (globalCache: string, dataIdRaw: string): string =>
 	`wis2gc:subscriber:lineage:gc:${globalCache}:${dataIdRaw}`;
 
+// Deadline marker: set by SUBSCRIBER when a notification is accepted for
+// download, deleted by DOWNLOADER when the download completes or its
+// retries are exhausted. If it expires first, REPORTER logs `missed`.
+// Only the downloader_id is encoded in the key name (an expiry event
+// carries nothing else); everything else is read from the
+// downloader_id hash.
+export const CACHE_MARKER_PREFIX = 'wis2gc:marker:';
+export const cacheMarkerKey = (downloaderId: string): string => `${CACHE_MARKER_PREFIX}${downloaderId}`;
+export const parseCacheMarkerKey = (key: string): string | null =>
+	key.startsWith(CACHE_MARKER_PREFIX) && key.length > CACHE_MARKER_PREFIX.length ? key.slice(CACHE_MARKER_PREFIX.length) : null;
+
 export const downloaderHashKey = (downloaderId: string): string => `wis2gc:downloader:downloader_id:${downloaderId}`;
 export const downloaderClaimKey = (downloaderId: string): string => `wis2gc:downloader:set:downloader_id:${downloaderId}`;
 export const downloaderCompleteKey = (downloaderId: string): string => `wis2gc:downloader:complete:downloader_id:${downloaderId}`;

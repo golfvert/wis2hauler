@@ -6,7 +6,7 @@ This replaces the manual shell recipe in Hauler's own `docs/configuration-and-ro
 
 - walks every worker's `logs/` directory under a given root, recursively;
 - transparently reads both plain `.log` files and rotated `.log.gz` archives;
-- matches the id **anywhere in the parsed line** — top-level `dataId`/`wnmId`, nested inside the full `wnm` object `Filter` now attaches, inside an `href`, wherever — not just a fixed set of known field names, so it keeps working as Hauler's own log shapes evolve;
+- matches the id **anywhere in the parsed line** — top-level `data_id`/`wnm_id`, nested inside the full `wnm` object `Filter` now attaches, inside an `href`, wherever — not just a fixed set of known field names, so it keeps working as Hauler's own log shapes evolve;
 - sorts every hit into one chronological timeline, labeled with which role/stage it came from.
 
 ## Usage
@@ -52,7 +52,7 @@ bun run src/trace.ts wis2/de-dwd-gts-to-wis2/data/core/I/S/X/X/14/EUSR/ISXX14EUS
 
 [2026-09-20T16:08:19.663Z] SUBSCRIBER Received             debug {"bytes":999,...}
 [2026-09-20T16:08:19.664Z] SUBSCRIBER Filter               debug {"outcome":"ingested","wnm":{...},...}
-[2026-09-20T16:08:20.100Z] DOWNLOADER Ack                  debug {"downloaderId":"wis2:centre:abc",...}
+[2026-09-20T16:08:20.100Z] DOWNLOADER Ack                  debug {"downloader_id":"wis2:centre:abc",...}
 [2026-09-20T16:08:20.100Z] DOWNLOADER Aria                 debug {"gid":"a1b2c3",...}
 
 First seen: Received at 2026-09-20T16:08:19.663Z

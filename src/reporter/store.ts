@@ -32,5 +32,8 @@ export interface ReporterStore {
 	/** EVAL LUA_ACTIVE_IPS 1 reporterActiveIpsKey() ip String(keepIpSeconds) -- returns the sliding-window distinct-IP ZCARD (see active-ips.ts). */
 	recordActiveIp(ip: string, keepIpSeconds: number): Promise<number>;
 
+	/** HGETALL downloaderHashKey(downloaderId), flattened. Empty array once the hash has expired. */
+	readDownloaderRecord(downloaderId: string): Promise<string[]>;
+
 	quit(): Promise<void>;
 }

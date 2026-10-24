@@ -41,10 +41,12 @@
 // same bug in the live Node-RED flow).
 //
 // Console (stdout) destination: matches the original's "Docker" loggers
-// (consoleIsJsonFormat: true) -- one JSON line per call, level and
-// source included as fields (there's no per-source *file* to name, so
-// no rotation/transport-per-source needed there, and `size`/`number`
-// are simply unused in this mode).
+// (consoleIsJsonFormat: true) -- one JSON line per call, with `level`
+// (added by winston) and `logger` (the slug, same as the filename's
+// <source> part) as fields -- NOT `source`, which Received/Filter already
+// use for GB1/GB2 (there's no per-source *file* to name, so no
+// rotation/transport-per-source needed there, and `size`/`number` are
+// simply unused in this mode).
 import winston from 'winston';
 import DailyRotateFile from 'winston-daily-rotate-file';
 import type { LogLevel } from '../config/runtime.ts';
@@ -63,6 +65,8 @@ export interface WinstonSinkOptions {
 	maxSize?: number;
 	/** Max number of rotated files kept per (level, source). Defaults to DEFAULT_MAX_FILES. Applied to every level uniformly -- see this file's header. */
 	maxFiles?: number;
+	/** This process's `global.worker`, stamped on every line as `worker` so lines stay attributable once centralized (e.g. by Vector). Omitted lines simply have no `worker` field. */
+	worker?: string;
 }
 
 const DEFAULT_LOG_DIR = './logs';
@@ -79,12 +83,14 @@ export class WinstonLogSink implements LogSink {
 	private readonly logDir: string;
 	private readonly maxSize: number;
 	private readonly maxFiles: number;
+	private readonly worker: string | undefined;
 
 	constructor(options: WinstonSinkOptions) {
 		this.destination = options.destination;
 		this.logDir = options.logDir ?? DEFAULT_LOG_DIR;
 		this.maxSize = options.maxSize ?? DEFAULT_MAX_SIZE_MB;
 		this.maxFiles = options.maxFiles ?? DEFAULT_MAX_FILES;
+		this.worker = options.worker;
 	}
 
 	private getLogger(level: LogLevel, source: string): winston.Logger {
@@ -133,6 +139,6 @@ export class WinstonLogSink implements LogSink {
 
 	write(level: LogLevel, source: string, data: Record<string, unknown>): void {
 		// isTimestampUTC: true on every original logger -- toISOString() is always UTC.
-		this.getLogger(level, source).log(level, { ...data, timestamp: new Date().toISOString() });
+		this.getLogger(level, source).log(level, { logger: source, worker: this.worker, ...data, timestamp: new Date().toISOString() });
 	}
 }

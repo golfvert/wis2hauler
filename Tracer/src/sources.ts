@@ -43,7 +43,7 @@ export const SOURCE_META: Record<string, SourceMeta> = {
 	decision: {
 		name: 'Decision',
 		role: 'SUBSCRIBER',
-		stage: 'per-notification decision: ignore / already-complete / download / wait / drop / publish-only',
+		stage: 'per-notification decision: ignore / duplicate (lineage) / already-complete / download / wait / drop / publish-only',
 	},
 	duplicate: {
 		name: 'Duplicate',
@@ -59,7 +59,10 @@ export const SOURCE_META: Record<string, SourceMeta> = {
 	correct: { name: 'Correct ?', role: 'DOWNLOADER', stage: 'hash validation anomaly at complete time (hashOutcome/hashDetail: digest-mismatch vs unsupported-method)' },
 	requeue: { name: 'Re-queue', role: 'DOWNLOADER', stage: 'a failed attempt was requeued for retry' },
 	update: { name: 'Update', role: 'DOWNLOADER', stage: 'a retry was promoted to a new real download attempt' },
-	duplicates: { name: 'Duplicates', role: 'DOWNLOADER', stage: 'evicted as a duplicate file write at complete time' },
+	retryfailed: { name: 'Retry Failed', role: 'DOWNLOADER', stage: 'retries exhausted (or none possible) -- the download is given up and recorded on the error stream for CLEANER' },
+	fileerror: { name: 'File Error', role: 'DOWNLOADER', stage: 'file rename/move or hash-read I/O failure at complete time -- treated as HASH_NOK, so a Correct ? and the retry path follow' },
+	// Former name of fileerror (renamed 2026-10-24); kept so already-written hauler-duplicates-* files still trace with a meaningful label.
+	duplicates: { name: 'Duplicates (now File Error)', role: 'DOWNLOADER', stage: 'file rename/move or hash-read I/O failure at complete time (logged under this name before 2026-10-24)' },
 	pollerror: { name: 'Poll Error', role: 'DOWNLOADER', stage: 'poll-loop error before/around aria2 (aria2 unreachable, addUri rejected, etc.)' },
 
 	// Shared between SUBSCRIBER and DOWNLOADER -- disambiguate with the

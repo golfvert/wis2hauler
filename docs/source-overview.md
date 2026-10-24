@@ -17,16 +17,10 @@ The process entrypoint and orchestrator. Parses the CLI (`<config.yaml>`), loads
 - Builds the shared `RuntimeConfigStore` (per-process live state backing `GET /get`/`POST /set`) and the log sink.
 - Opens the **one** shared HTTP server for the process (always, regardless of active roles) and registers the admin routes on it.
 - Opens every MQTT connection this process needs itself, rather than letting each role open its own: `PUB1`/`PUB2` (local broker) once, shared between `SUBSCRIBER` and `DOWNLOADER` when both are active; `GB1`/`GB2` (global broker) inside `SUBSCRIBER`'s own try/catch, so a bad broker only fails that one role.
-- Starts every active role's runner concurrently (`Promise.allSettled`, not a sequential chain — an earlier version awaited each role in sequence, which meant a instance combining two roles only ever actually ran the first one), plus the always-on heartbeat.
+- Starts every active role's runner concurrently (`Promise.allSettled`, not a sequential chain, so an instance combining several roles runs all of them), plus the always-on heartbeat.
 - Wires a `SIGINT`/`SIGTERM` handler with a bounded 10-second shutdown grace period, so one hung teardown can't make Ctrl-C do nothing.
 
 The `RoleRunners` interface (which every role's `run*` function implements, plus `connectMqtt`/`connectMqttBestEffort`) is what makes this file's own tests possible without dialing real infrastructure: `defaultRunners` wires up the real implementations, and `main.test.ts` swaps in fakes that resolve immediately.
-
-### `src/debug.ts`
-
-`DebugController`: the set of roles currently logging at debug level, controlled entirely through `GET /get?key=debug` / `POST /set {"debug": [...]}`. Replaces two earlier mechanisms that were deliberately removed — a live-reloaded `--debug-file` and, later, a static `-d` CLI flag — so debug toggling now goes through the exact same one live-mutation channel as everything else, with no CLI flag and no file at all.
-
----
 
 ## `src/config/` — loading, schema, validation
 
@@ -90,7 +84,7 @@ One `Bun.serve()` instance per process, always created (not gated behind any rol
 
 ### `src/admin/set.ts`
 
-The `POST /set` half: validates the patch (`config/runtime.ts`), applies the in-memory keys via `RuntimeConfigStore.applyPatch`, and separately applies the two keys that store doesn't own itself — `credentials` (a real Redis HSET/HDEL through the downloader's own store) and `debug` (through `DebugController`) — folding both into the same `{value, changed}` response shape as everything else.
+The `POST /set` half: validates the patch (`config/runtime.ts`), applies the in-memory keys via `RuntimeConfigStore.applyPatch`, and separately applies the one key that store doesn't own itself — `credentials` (a real Redis HSET/HDEL through the downloader's own store) — folding it into the same `{value, changed}` response shape as everything else.
 
 ### `src/admin/routes.ts`
 
@@ -114,15 +108,19 @@ The cumulative INFO/WARN/DEBUG admission ladder: `debug` admits everything, `inf
 
 ### `src/logging/sink.ts`
 
-Where a log line actually goes: stdout, or a rotating file (one winston-daily-rotate-file logger per level+source pair, created lazily) — strictly either/or per `global.log.to`, never both.
+Where a log line actually goes: stdout, or a rotating file (one winston-daily-rotate-file logger per level+source pair, created lazily) — strictly either/or per `global.log.to`, never both. Every line gets `logger`, `worker` and `timestamp` added here.
 
 ### `src/logging/from-config.ts`
 
 Translates `config/schema.ts`'s `LogConfig` (the static `global.log` section) into real `WinstonSinkOptions` — the small mapping between "what does this config field mean" and an actual running sink, kept as its own pure function so it's testable without spinning up real winston loggers.
 
+### `src/logging/process-log.ts`
+
+`createProcessLog(logger)`: wraps a `SourceLogger` in a `console`-shaped object, so every `log.log` / `log.warn` / `log.error` call in the roles becomes a JSON line written at `info` with `severity` and `message` (and any trailing plain object merged in as extra fields such as `data_id`). `main.ts` builds one per role (`Subscriber Process`, `Downloader Process`, …), so `global.log.to` decides where all output goes.
+
 ### `src/logging/slug.ts`
 
-`slugifySource(name)`: lowercases and strips non-`[a-z]` characters, for building log filenames — ported verbatim from how the original derived a log filename from whichever node last touched a message.
+`slugifySource(name)`: lowercases and strips non-`[a-z]` characters, for building log filenames
 
 ---
 
@@ -160,9 +158,13 @@ The canonical `Wnm` (WIS2 Notification Message) type, plus `selectLink`/`firstOf
 
 MQTT wildcard topic matching (`+`/`#` semantics) and the `replay/a/wis2/...` prefix-stripping applied before matching a replayed message against blacklist/overridelist rules — this exact algorithm appeared three times independently in the original (two blacklist checks, one override check); centralized here.
 
+### `src/wis2/cache-deadline.ts`
+
+`DEFAULT_CACHE_DEADLINE_SECONDS` (600) and `cacheDeadlineSeconds(config)`, which reads `global.cache-deadline`. Shared by SUBSCRIBER (marker TTL) and REPORTER (late/missed decision).
+
 ### `src/wis2/redis-keys.ts`
 
-Every Redis key-name builder shared across roles (`downloaderHashKey`, `downloaderClaimKey`, `downloaderCompleteKey`, `electionHashKey`, and more), so the `wis2gc:...` key templates exist in exactly one place instead of being re-typed as string literals at each call site.
+Every Redis key-name builder shared across roles (`downloaderHashKey`, `downloaderClaimKey`, `downloaderCompleteKey`, `electionHashKey`, `cacheMarkerKey`, and more), so the `wis2gc:...` key templates exist in exactly one place instead of being re-typed as string literals at each call site.
 
 ---
 
@@ -186,14 +188,14 @@ Ingests WIS2 notifications from GB1/GB2, dedups and filters them, and queues mat
 
 Pulls queued work, downloads via aria2, verifies, relocates, and republishes completion.
 
-- **`aria2.ts`** — the single real WebSocket JSON-RPC client to aria2, correlating every request/response by JSON-RPC id. Collapses what used to be three separate Node-RED WebSocket connections into one.
+- **`aria2.ts`** — the single real WebSocket JSON-RPC client to aria2, correlating every request/response by JSON-RPC id. One connection serves every request.
 - **`aria-start.ts`** — starts one real aria2 download for a given href (the HSET/expire bookkeeping plus the actual `addUri` call and gid registration).
 - **`decode-write.ts`** — the embedded-content fast path: when a queued entry already carries its content inline (small payloads), decodes and writes it straight to disk without ever registering a real aria2 download, minting a synthetic gid in the same shape a real one would have. Falls back to the real aria2 path on any decode/integrity failure.
 - **`consumer.ts`** — the main loop: pulls queue entries via XREADGROUP, fans each into the embedded-content path or the real-aria2 path, and (via `aria2.ts`'s notification callback) handles aria2's asynchronous completion/error pushes.
 - **`ack.ts`** — the common ack/cleanup routine every completed-or-cancelled download runs through, regardless of which of the four possible trigger paths (real completion, real error, embedded-content fast path, cleaner-issued cancel) reached it.
 - **`complete.ts`** — reached once a download is ack'd: rebuilds the WNM from the stored hash record, cleans up this attempt's aria2-gid bookkeeping, and runs `hash.ts`'s integrity check.
 - **`hash.ts`** — file-integrity verification plus rename/relocate (by date, by topic, or to S3). A genuine filesystem error during relocation is a real thrown `RenameIoError` here (a deliberate behavior change from the original, which let the equivalent error escape uncaught and silently drop the job).
-- **`finishing.ts`** — reached only on a successful hash check: transitions the hash record to `complete` and, in four independently try/catch-wrapped steps (a real bug fix — an earlier unwrapped version let one optional step's failure silently skip the other three), republishes the completion notification, marks the dedup-complete flag, publishes cleaner/reporter stats, and records the Caddy-driven info-granule record.
+- **`finishing.ts`** — reached only on a successful hash check: transitions the hash record to `complete` and, in four independently try/catch-wrapped steps (one optional step's failure never skips the others), republishes the completion notification, marks the dedup-complete flag, publishes cleaner/reporter stats, and records the Caddy-driven info-granule record.
 - **`error-retry.ts`** — reached on a bad hash or a real aria2 error: publishes a cleaner-reporter notification, waits 30s, then runs the shared retry decision.
 - **`retry.ts`** — the pure retry-decision state machine: given a queue entry's current hash-record state, decide whether another href is worth trying.
 - **`lua.ts`** — the two Lua scripts (`LUA_COMPLETE`, `LUA_RETRY`) used for atomic hash-record state transitions, ported character-for-character.
@@ -220,11 +222,13 @@ A singleton (elected) role that deletes expired cached files.
 
 ## `src/reporter/` — the REPORTER role
 
-A singleton (elected) role that exposes Prometheus metrics and tracks active users.
+A singleton (elected) role that exposes Prometheus metrics, tracks active users, and writes one `Reporter` log line per accepted notification (`cached`, `late`, `failed`, `missed`).
 
+- **`cache-result.ts`** — pure builders of the one-line outcome written to the `Reporter` log: `cached`/`late` from a completion report, `failed` from a `download_failed` report, `missed` from the stored record, each carrying the full initial WNM.
+- **`expiry.ts`** — subscribes to Redis key-expiry events (one subscriber per node in Cluster mode), makes sure `notify-keyspace-events` includes `Ex`, and reports expired deadline markers.
 - **`kv.ts`** — reshapes the same cache-reporter record `cleaner/schedule.ts` also consumes into named fields (length, delay, centre id, subtopic, source).
-- **`route.ts`** — classifies a report as `integrity_fail`, `download_error`, or plain `stats`.
-- **`hash-error.ts`** — builds the counter-increment op for an integrity failure or download error. Contains a documented, deliberately-fixed bug from the original (a field reference that never actually resolved, always yielding an undefined centre id).
+- **`route.ts`** — classifies a report as `integrity_fail`, `download_error`, `download_failed` (retries exhausted) or plain `stats`.
+- **`hash-error.ts`** — builds the counter-increment op for an integrity failure or download error.
 - **`stats.ts`** — writes windowed per-combo/per-source counters into Redis hashes, each tagged so a Cluster keeps them on one shard.
 - **`window.ts`** — a self-scheduling 30-second-aligned window clock that stamps the just-started window for `stats.ts` to write into and hands the just-ended window to `metrics.ts` to aggregate.
 - **`metrics.ts`** — reads a closed window's Redis hashes and turns them into Prometheus metric ops.

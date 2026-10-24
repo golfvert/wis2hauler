@@ -86,7 +86,13 @@ describe('processCleanerCommands', () => {
 		await Promise.all(processCleanerCommands(deps, entries));
 
 		expect(store.acked).toEqual([{ queue: 'wis2gc:downloader-queue', entryId: '1694198400000-0' }]);
-		expect(store.cleanerReports).toEqual([{ worker: 'downloader1', report: JSON.stringify(['type', 'download_error', 'topic', '']) }]);
+		// The per-failure metrics report, then the one-off `download_failed`
+		// report for REPORTER's `failed` line (this fixture has no retry left).
+		expect(store.cleanerReports).toHaveLength(2);
+		expect(store.cleanerReports[0]).toEqual({ worker: 'downloader1', report: JSON.stringify(['type', 'download_error', 'topic', '']) });
+		const failed = JSON.parse(store.cleanerReports[1]!.report) as string[];
+		expect(failed.slice(0, 6)).toEqual(['type', 'download_failed', 'downloader_id', 'wis2:centre:abc', 'reason', 'download_error']);
+		expect(store.deletedMarkers).toEqual(['wis2:centre:abc']);
 	});
 
 	test('a cancel action for an already-gone gid is a silent no-op (startAck rejects it)', async () => {

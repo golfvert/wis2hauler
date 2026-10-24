@@ -81,6 +81,45 @@ describe('runFinishing', () => {
 		expect(store.infoGranules).toEqual([{ uri: '/downloads/f.grib2', length: '12345', centreid: 'centre', topic: 'path/here' }]);
 	});
 
+	test('a completed download deletes its deadline marker, even with no local broker', async () => {
+		const store = new FakeDownloaderStore();
+		store.hashes.set('wis2:centre:abc', { 'https://example.com/f.grib2': 'queue' });
+		store.cacheMarkers.add('wis2:centre:abc');
+		const deps: FinishingDeps = { store, worker: 'downloader1', centreId: 'my-centre', publishClients: [] };
+
+		await runFinishing(deps, 'wis2:centre:abc', wnm, 'origin/a/wis2/centre/foo/bar', 'https://example.com/f.grib2', 'https://local.example.com/f.grib2', '/downloads/f.grib2', 100);
+
+		expect(store.deletedMarkers).toEqual(['wis2:centre:abc']);
+		expect(store.cacheMarkers.has('wis2:centre:abc')).toBe(false);
+	});
+
+	test('when nothing transitioned to complete the marker is left alone', async () => {
+		const store = new FakeDownloaderStore();
+		store.cacheMarkers.add('wis2:centre:abc');
+		const deps: FinishingDeps = { store, worker: 'downloader1', centreId: 'my-centre', publishClients: [] };
+
+		await runFinishing(deps, 'wis2:centre:abc', wnm, 'origin/a/wis2/centre/foo/bar', 'https://example.com/f.grib2', 'https://local.example.com/f.grib2', '/downloads/f.grib2', 100);
+
+		expect(store.deletedMarkers).toEqual([]);
+		expect(store.cacheMarkers.has('wis2:centre:abc')).toBe(true);
+	});
+
+	test('a failing marker delete is reported but does not stop the completion', async () => {
+		const store = new FakeDownloaderStore();
+		store.hashes.set('wis2:centre:abc', { 'https://example.com/f.grib2': 'queue' });
+		store.deleteCacheMarker = async () => {
+			throw new Error('redis down');
+		};
+		const errors: string[] = [];
+		const deps: FinishingDeps = { store, worker: 'downloader1', centreId: 'my-centre', publishClients: [], error: (m) => errors.push(m) };
+
+		await runFinishing(deps, 'wis2:centre:abc', wnm, 'origin/a/wis2/centre/foo/bar', 'https://example.com/f.grib2', 'https://local.example.com/f.grib2', '/downloads/f.grib2', 100);
+
+		expect(errors.some((e) => e.includes('deadline marker') && e.includes('redis down'))).toBe(true);
+		expect(store.completeIds.has('wis2:centre:abc')).toBe(true);
+		expect(store.cleanerReports).toHaveLength(1);
+	});
+
 	test('passes localPath through to the store as the "local-path" hash field (2026-09-13: feeds cleaner/schedule.ts, see lua.ts LUA_COMPLETE)', async () => {
 		const store = new FakeDownloaderStore();
 		store.hashes.set('wis2:centre:abc', { 'https://example.com/f.grib2': 'queue' });
@@ -137,7 +176,7 @@ describe('runFinishing', () => {
 
 		expect(infoCalls).toEqual([
 			{
-				downloaderId: 'wis2:centre:abc',
+				downloader_id: 'wis2:centre:abc',
 				role: 'DOWNLOADER',
 				topic: 'cache/a/wis2/centre/foo/bar',
 				link: 'https://local.example.com/f.grib2',
@@ -161,7 +200,7 @@ describe('runFinishing', () => {
 
 		await runFinishing(deps, 'wis2:centre:abc', noLinkWnm, 'origin/a/wis2/centre/foo/bar', 'https://example.com/f.grib2', 'https://local.example.com/f.grib2', '/downloads/f.grib2', 1);
 
-		expect(warnCalls).toEqual([{ downloaderId: 'wis2:centre:abc', role: 'DOWNLOADER', wnmTopic: 'origin/a/wis2/centre/foo/bar', href: 'https://example.com/f.grib2' }]);
+		expect(warnCalls).toEqual([{ downloader_id: 'wis2:centre:abc', role: 'DOWNLOADER', wnmTopic: 'origin/a/wis2/centre/foo/bar', href: 'https://example.com/f.grib2' }]);
 		// The Info still fires afterward -- it isn't gated on firstLink being present.
 		expect(infoCalls).toHaveLength(1);
 	});

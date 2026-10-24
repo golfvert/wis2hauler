@@ -67,7 +67,7 @@ export function processCleanerCommands(deps: CleanerIpcDeps, entries: readonly W
 								const acked = await startAck(deps.store, deps.queue, deps.worker, gid);
 								if (!acked) return;
 								await reportDownloadError(deps.errorRetry, undefined);
-								await runRetryDecision(deps.errorRetry, acked.downloaderId);
+								await runRetryDecision(deps.errorRetry, acked.downloaderId, 'download_error');
 							})(),
 						);
 						break;

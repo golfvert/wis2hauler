@@ -22,7 +22,6 @@
 //     9ca6f5b65925e91b), POST /caddy (GeoIP + active-IP tracking,
 //     gated on role-active only, NOT primary -- 0acb04c88a3ca878).
 import type { Config } from '../config/schema.ts';
-import type { DebugController } from '../debug.ts';
 import { createRedisConnection } from '../redis/ioredis-store.ts';
 import { IoredisReporterStore } from '../redis/ioredis-reporter-store.ts';
 import { IoredisElectionStore } from '../redis/ioredis-election-store.ts';
@@ -38,6 +37,11 @@ import { applyCounterOp, applyGaugeOp, createReporterMetrics } from './prom.ts';
 import { cleanerReporterKey } from '../wis2/redis-keys.ts';
 import type { HttpRouter } from '../http/router.ts';
 import path from 'node:path';
+import { createSourceLogger, type LevelGate } from '../logging/logger.ts';
+import type { LogSink } from '../logging/sink.ts';
+import { cacheDeadlineSeconds } from '../wis2/cache-deadline.ts';
+import { buildCompletionResult, buildFailedResult, buildMissedResult, isCompleted, type CacheResult } from './cache-result.ts';
+import { startExpiryListener, type ExpiryListener } from './expiry.ts';
 
 // "Start" inject: onceDelay 2s, once (no repeat).
 const HASHSTAT_START_DELAY_MS = 2000;
@@ -46,7 +50,15 @@ function defaultSleep(ms: number): Promise<void> {
 	return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-export async function runReporter(config: Config, debug: DebugController, log: typeof console, signal: AbortSignal, processUuid: string, router: HttpRouter): Promise<void> {
+export async function runReporter(
+	config: Config,
+	log: typeof console,
+	signal: AbortSignal,
+	processUuid: string,
+	router: HttpRouter,
+	logSink?: LogSink,
+	gate?: LevelGate,
+): Promise<void> {
 	// geoip-lite reads its .dat files as a MODULE-LEVEL side effect (its
 	// lib/geoip.js unconditionally calls preload()/preload6() at the bottom
 	// of the file) using a directory it resolves off `__dirname` at the
@@ -79,8 +91,6 @@ export async function runReporter(config: Config, debug: DebugController, log: t
 	const reportBy = config.global['centre-id'] ?? '';
 	const keepIpSeconds = config.reporter?.['keep-ip-address'] ?? 86400;
 
-	const isDebugEnabled = () => debug.has('REPORTER');
-
 	const commandConn = createRedisConnection(config.global.redis);
 	const store = new IoredisReporterStore(commandConn);
 	const electionStore = new IoredisElectionStore(commandConn);
@@ -89,6 +99,15 @@ export async function runReporter(config: Config, debug: DebugController, log: t
 	const metrics = createReporterMetrics();
 	const state = { primary: false };
 
+	// One line per notification accepted for download: cached, late,
+	// failed or missed (see cache-result.ts). Info: it is the record of
+	// what this cache did with each notification.
+	const resultLog = logSink && gate ? createSourceLogger('Reporter', logSink, gate, 'REPORTER') : undefined;
+	const deadlineMs = cacheDeadlineSeconds(config) * 1000;
+	const logResult = (result: CacheResult | null): void => {
+		if (result) resultLog?.info({ status: result.status, ...result.fields });
+	};
+
 	// -- Election --
 	const electionLoop = runElectionLoop(
 		{
@@ -96,8 +115,9 @@ export async function runReporter(config: Config, debug: DebugController, log: t
 			role: 'reporter',
 			uuid: processUuid,
 			onResult: (priority) => {
-				state.primary = priority === 'primary';
-				if (isDebugEnabled()) log.log(`REPORTER: election -> ${priority}`);
+				const primary = priority === 'primary';
+				if (primary !== state.primary) log.log(primary ? 'REPORTER: primary, logging cache results and listening for deadline expiries' : 'REPORTER: secondary, idle');
+				state.primary = primary;
 			},
 			warn: (m) => log.warn(`REPORTER: ${m}`),
 		},
@@ -127,9 +147,15 @@ export async function runReporter(config: Config, debug: DebugController, log: t
 					applyCounterOp(metrics.integrityFailedTotal, buildHashOrErrorOp(topic, reportBy));
 				} else if (kind === 'download_error') {
 					applyCounterOp(metrics.downloadedErrorsTotal, buildHashOrErrorOp(topic, reportBy));
-				} else if (currentWindowKey) {
-					const cmd = buildStatsWrite(currentWindowKey, record);
-					await store.writeStatsWindow(cmd);
+				} else if (kind === 'download_failed') {
+					logResult(buildFailedResult(flat));
+				} else {
+					// A completion report: the whole downloader_id hash.
+					logResult(buildCompletionResult(flat, deadlineMs));
+					if (currentWindowKey) {
+						const cmd = buildStatsWrite(currentWindowKey, record);
+						await store.writeStatsWindow(cmd);
+					}
 				}
 			} catch (err) {
 				log.error(`REPORTER: report processing failed: ${err instanceof Error ? err.message : String(err)}`);
@@ -137,6 +163,31 @@ export async function runReporter(config: Config, debug: DebugController, log: t
 		})();
 	});
 	await subConn.psubscribe(reportChannel);
+
+	// A deadline marker expired: the notification is neither completed
+	// nor failed. Only the primary reports it; the hash is read now so
+	// that a download that completed in the meantime is not reported.
+	let expiryListener: ExpiryListener | undefined;
+	try {
+		expiryListener = await startExpiryListener(
+			config.global.redis,
+			(downloaderId) => {
+				if (!state.primary) return;
+				void (async () => {
+					try {
+						const flat = await store.readDownloaderRecord(downloaderId);
+						if (isCompleted(flat)) return;
+						logResult(buildMissedResult(downloaderId, flat, deadlineMs));
+					} catch (err) {
+						log.error(`REPORTER: deadline expiry processing failed for ${downloaderId}: ${err instanceof Error ? err.message : String(err)}`);
+					}
+				})();
+			},
+			(message) => log.warn(`REPORTER: ${message}`),
+		);
+	} catch (err) {
+		log.error(`REPORTER: cannot listen for deadline expiries, "missed" will not be logged: ${err instanceof Error ? err.message : String(err)}`);
+	}
 
 	// -- HashStat / Metrics window clock --
 	async function runMetricsTick(previousWindowKey: string): Promise<void> {
@@ -256,6 +307,7 @@ export async function runReporter(config: Config, debug: DebugController, log: t
 	await Promise.allSettled([electionLoop, windowLoop]);
 	log.log('REPORTER: shutdown signalled, closing connections');
 
+	await expiryListener?.close();
 	await subConn.punsubscribe(reportChannel);
 	await subConn.quit();
 	await store.quit();

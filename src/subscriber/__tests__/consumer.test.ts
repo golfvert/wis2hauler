@@ -41,7 +41,6 @@ function baseDeps(store: FakeStore, overrides: Partial<ConsumerDeps> = {}): Cons
 		centreId: 'fr-meteofrance',
 		publishClients: [],
 		log,
-		isDebugEnabled: () => false,
 		sleep: async () => {}, // never actually wait in tests
 		now: () => new Date('2026-01-01T00:00:00.000Z'),
 		...overrides,
@@ -94,6 +93,44 @@ describe('processEntry', () => {
 		expect(store.workQueue).toHaveLength(1);
 		expect(store.workQueue[0]).toEqual({ queue: 'q1', downloaderId, href: 'https://origin.example.org/file.grib2', topic: 'origin/a/wis2/fr-meteofrance/data/foo', content: false, dataId: 'data-m2' });
 		expect(hash!.data_id).toBe('data-m2'); // the downloader-side retry/complete record now also carries data_id directly (2026-09-20)
+	});
+
+	test('a download gets a deadline marker (default 600 s), written BEFORE the job is queued, and the job records when it was accepted', async () => {
+		const store = new FakeStore();
+		const deps = baseDeps(store);
+		const w = wnm('m-marker');
+		const downloaderId = computeDownloaderId(w);
+		const before = Date.now();
+
+		await processEntry(entry('origin/a/wis2/fr-meteofrance/data/foo', w), deps);
+
+		expect(store.cacheMarkers.get(downloaderId)).toBe(600);
+		expect(store.order.indexOf('marker')).toBeGreaterThanOrEqual(0);
+		expect(store.order.indexOf('marker')).toBeLessThan(store.order.indexOf('enqueue'));
+		expect(store.order.indexOf('marker')).toBeLessThan(store.order.indexOf('job'));
+		expect(Number(store.hashes.get(downloaderId)!.accepted)).toBeGreaterThanOrEqual(before);
+	});
+
+	test('the marker TTL follows global.cache-deadline', async () => {
+		const store = new FakeStore();
+		const deps = { ...baseDeps(store), cacheDeadlineSeconds: 90 };
+		const w = wnm('m-marker-90');
+
+		await processEntry(entry('origin/a/wis2/fr-meteofrance/data/foo', w), deps);
+
+		expect(store.cacheMarkers.get(computeDownloaderId(w))).toBe(90);
+	});
+
+	test('a message that is not downloaded (already complete) gets no marker', async () => {
+		const store = new FakeStore();
+		const deps = baseDeps(store);
+		const w = wnm('m-marker-done');
+		const downloaderId = computeDownloaderId(w);
+		store.completeIds.add(downloaderId);
+
+		await processEntry(entry('origin/a/wis2/fr-meteofrance/data/foo', w), deps);
+
+		expect(store.cacheMarkers.size).toBe(0);
 	});
 
 	// weight-sources present but origin omitted -> origin resolves to weight
@@ -280,7 +317,7 @@ describe('processEntry', () => {
 
 		expect(infoCalls).toHaveLength(1);
 		const call = infoCalls[0]!;
-		expect(call.downloaderId).toBe(downloaderId);
+		expect(call.downloader_id).toBe(downloaderId);
 		expect(call.role).toBe('SUBSCRIBER');
 		expect(call.topic).toBe('cache/a/wis2/fr-meteofrance/data/foo');
 		expect((call.wnm as Wnm).properties['global-cache']).toBe('fr-meteofrance');
@@ -506,9 +543,9 @@ describe('processEntry', () => {
 
 			expect(debugCalls).toEqual([
 				{
-					downloaderId,
-					dataId: 'data-d1',
-					wnmId: 'd1',
+					downloader_id: downloaderId,
+					data_id: 'data-d1',
+					wnm_id: 'd1',
 					topic: 'origin/a/wis2/fr-meteofrance/data/foo',
 					pubtime: '2026-01-01T00:00:00Z',
 					href: 'https://origin.example.org/file.grib2',
@@ -529,9 +566,9 @@ describe('processEntry', () => {
 
 			expect(debugCalls).toEqual([
 				{
-					downloaderId,
-					dataId: 'data-d2',
-					wnmId: 'd2',
+					downloader_id: downloaderId,
+					data_id: 'data-d2',
+					wnm_id: 'd2',
 					topic: 'origin/a/wis2/fr-meteofrance/data/foo',
 					pubtime: '2026-01-01T00:00:00Z',
 					href: 'https://origin.example.org/file.grib2',
@@ -552,9 +589,9 @@ describe('processEntry', () => {
 
 			expect(debugCalls).toEqual([
 				{
-					downloaderId,
-					dataId: 'data-d3',
-					wnmId: 'd3',
+					downloader_id: downloaderId,
+					data_id: 'data-d3',
+					wnm_id: 'd3',
 					topic: 'origin/a/wis2/fr-meteofrance/data/foo',
 					pubtime: '2026-01-01T00:00:00Z',
 					href: 'https://origin.example.org/file.grib2',
@@ -575,9 +612,9 @@ describe('processEntry', () => {
 
 			expect(debugCalls).toEqual([
 				{
-					downloaderId,
-					dataId: 'data-d4',
-					wnmId: 'd4',
+					downloader_id: downloaderId,
+					data_id: 'data-d4',
+					wnm_id: 'd4',
 					topic: 'origin/a/wis2/fr-meteofrance/data/foo',
 					pubtime: '2026-01-01T00:00:00Z',
 					href: 'https://origin.example.org/file.grib2',
@@ -600,8 +637,8 @@ describe('processEntry', () => {
 
 			expect(debugCalls).toEqual([
 				{
-					dataId: 'data-d5',
-					wnmId: 'd5',
+					data_id: 'data-d5',
+					wnm_id: 'd5',
 					topic: 'metadata/a/wis2/fr-meteofrance/metadata/foo',
 					pubtime: '2026-01-01T00:00:00Z',
 					action: 'ignore',
@@ -653,9 +690,31 @@ describe('lineage (origin-topic data_id duplicate detection)', () => {
 		expect(infoCalls[0]).toEqual({
 			topic: originTopic,
 			originCentreId: 'fr-meteofrance',
-			dataId: 'data-l2',
-			wnmId: 'l2b',
+			data_id: 'data-l2',
+			wnm_id: 'l2b',
 			pubtime: '2026-01-01T00:00:00Z',
+			reason: 'pubtime is not newer than a previously seen publish for this data_id',
+		});
+	});
+
+	test('a lineage duplicate also gets a Decision line (action: duplicate) so every parsed entry ends with exactly one', async () => {
+		const store = new FakeStore();
+		const { logger: decisionLogger, debugCalls } = fakeReceivedLogger();
+		const deps = baseDeps(store, { decisionLog: decisionLogger });
+		const first = wnmWithLinks('l2a', 'data-l2', '2026-01-01T00:00:00Z', 'canonical');
+		const second = wnmWithLinks('l2b', 'data-l2', '2026-01-01T00:00:00Z', 'canonical');
+
+		await processEntry(entry(originTopic, first, '1-0'), deps);
+		await processEntry(entry(originTopic, second, '1-1'), deps);
+
+		expect(debugCalls).toHaveLength(2);
+		expect(debugCalls[0]!.action).toBe('download');
+		expect(debugCalls[1]).toEqual({
+			data_id: 'data-l2',
+			wnm_id: 'l2b',
+			topic: originTopic,
+			pubtime: '2026-01-01T00:00:00Z',
+			action: 'duplicate',
 			reason: 'pubtime is not newer than a previously seen publish for this data_id',
 		});
 	});
@@ -734,8 +793,8 @@ describe('lineage (origin-topic data_id duplicate detection)', () => {
 			expect(infoCalls).toHaveLength(1);
 			expect(infoCalls[0]).toEqual({
 				topic: 'cache/a/wis2/fr-meteofrance/data/foo',
-				dataId: 'data-g1',
-				wnmId: 'g1b',
+				data_id: 'data-g1',
+				wnm_id: 'g1b',
 				pubtime: '2026-01-01T00:00:00Z',
 				reason: 'pubtime is not newer than a previously seen publish for this data_id',
 				globalCache: 'gc-a-global-cache',

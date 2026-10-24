@@ -7,7 +7,6 @@
 // Setup tab's "Ready ?" gate: config_valid && process-mode==='run',
 // no role condition -- see heartbeat.ts's own header).
 import type { Config, Role } from '../config/schema.ts';
-import type { DebugController } from '../debug.ts';
 import { createRedisConnection } from '../redis/ioredis-store.ts';
 import { IoredisElectionStore } from '../redis/ioredis-election-store.ts';
 import { runHeartbeatLoop, type HeartbeatDeps } from './heartbeat.ts';
@@ -46,7 +45,7 @@ function defaultSleep(ms: number): Promise<void> {
 	return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-export async function runHeartbeat(config: Config, _debug: DebugController, log: typeof console, signal: AbortSignal, processUuid: string): Promise<void> {
+export async function runHeartbeat(config: Config, log: typeof console, signal: AbortSignal, processUuid: string): Promise<void> {
 	const roles = config.global.roles.split(',').map((r) => r.trim()) as Role[];
 	const worker = config.global.worker;
 

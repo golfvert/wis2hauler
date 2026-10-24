@@ -249,7 +249,7 @@ describe('handleAriaNotification', () => {
 
 		await handleAriaNotification(deps, notification, async () => status);
 
-		expect(warnCalls).toEqual([{ downloaderId: 'wis2:centre:abc', dataId: '', hashOutcome: 'HASH_NOK', hashDetail: 'digest-mismatch' }]);
+		expect(warnCalls).toEqual([{ downloader_id: 'wis2:centre:abc', data_id: '', hashOutcome: 'HASH_NOK', hashDetail: 'digest-mismatch' }]);
 	});
 
 	test('a Complete notification for a real download acks it and runs completion', async () => {
@@ -266,7 +266,7 @@ describe('handleAriaNotification', () => {
 		expect(store.completeIds.has('wis2:centre:abc')).toBe(true);
 	});
 
-	test('"Output - Complete" (Debug): logs once, before the ack, with the gid', async () => {
+	test('"Output - Complete" (Debug): logs once, after the ack, with gid + the dataId/downloaderId the ack read', async () => {
 		const store = new FakeDownloaderStore();
 		const href = 'https://example.com/f.grib2';
 		seedRealDownloadRecord(store, 'gid-debug-1', href, 'wis2:centre:abc');
@@ -277,7 +277,19 @@ describe('handleAriaNotification', () => {
 
 		await handleAriaNotification(deps, notification, async () => status);
 
-		expect(debugCalls).toEqual([{ gid: 'gid-debug-1', status: 'complete' }]);
+		expect(debugCalls).toEqual([{ gid: 'gid-debug-1', status: 'complete', data_id: '', downloader_id: 'wis2:centre:abc' }]);
+	});
+
+	test('"Output - Complete" (Debug): with no gid record to ack, still logs once with just gid + status', async () => {
+		const store = new FakeDownloaderStore();
+		const { logger, debugCalls } = fakeSourceLogger();
+		const deps = makeDeps(store, { outputCompleteLog: logger });
+		const notification: Aria2Notification = { method: 'aria2.onDownloadComplete', gid: 'gid-unknown' };
+		const status: Aria2Status = { status: 'complete', files: [{ path: '/downloads/abc_f.grib2' }] };
+
+		await handleAriaNotification(deps, notification, async () => status);
+
+		expect(debugCalls).toEqual([{ gid: 'gid-unknown', status: 'complete', data_id: undefined, downloader_id: undefined }]);
 	});
 
 	test('a Complete notification whose status is not actually complete is ignored', async () => {
@@ -319,7 +331,7 @@ describe('handleAriaNotification', () => {
 		expect(store.cleanerReports).toEqual([{ worker: 'downloader1', report: JSON.stringify(['type', 'download_error', 'topic', '']) }]);
 	});
 
-	test('"Output - Error" (Debug): logs once, before the ack, with the gid', async () => {
+	test('"Output - Error" (Debug): logs once, after the ack, with the gid + the dataId/downloaderId the ack read', async () => {
 		const store = new FakeDownloaderStore();
 		const href = 'https://example.com/f.grib2';
 		seedRealDownloadRecord(store, 'gid-debug-2', href, 'wis2:centre:abc');
@@ -330,7 +342,9 @@ describe('handleAriaNotification', () => {
 
 		await handleAriaNotification(deps, notification, async () => status);
 
-		expect(debugCalls).toEqual([{ gid: 'gid-debug-2', status: 'error' }]);
+		expect(debugCalls).toEqual([
+			{ gid: 'gid-debug-2', status: 'error', errorCode: undefined, errorMessage: undefined, data_id: '', downloader_id: 'wis2:centre:abc' },
+		]);
 	});
 
 	test('an Error notification whose status is not actually an error is ignored', async () => {
@@ -411,7 +425,7 @@ describe('pollOnce', () => {
 		// above is never captured by global.log's file sink regardless of
 		// log.to, which used to mean a whole download could vanish with
 		// nothing on disk (see consumer.ts's ConsumerDeps.errorLog doc).
-		expect(errorLogCalls).toEqual([{ downloaderId: 'wis2:centre:abc', dataId: 'data-abc', href: 'https://example.com/a.grib2', error: 'aria2 unreachable' }]);
+		expect(errorLogCalls).toEqual([{ downloader_id: 'wis2:centre:abc', data_id: 'data-abc', href: 'https://example.com/a.grib2', error: 'aria2 unreachable' }]);
 	});
 
 	test('processes every entry in a batch CONCURRENTLY, not one at a time -- a slow entry must not delay the others', async () => {

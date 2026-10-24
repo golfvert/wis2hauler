@@ -2,7 +2,7 @@
 
 This document covers every key in the YAML configuration file, the five roles and how they combine on a instance, the always-on heartbeat/leader-election mechanism underneath the singleton roles, and the runtime HTTP admin API.
 
-It replaces the old Node-RED-era `configuration_reference.md`. The overall shape is very similar — this is a faithful behavioral port — but the two systems differ in a few concrete ways, called out inline: this app reads its config from **one YAML file passed as a CLI argument**, not from environment variables (`CONFIGURATION`/`REDIS_URL`) plus a mounted YAML file; Redis connection details live inline under `global.redis` instead of in a `REDIS_URL` env var; and there is no Node-RED admin UI — only the HTTP admin API described at the end of this document.
+This app reads its config from **one YAML file passed as a CLI argument**. Redis connection details live inline under `global.redis`. The only admin interface is the HTTP admin API described at the end of this document.
 
 ---
 
@@ -79,6 +79,17 @@ global:
 
 `level` is a verbosity ladder, not a severity threshold: `debug` admits everything, `info` admits the least. A **per-role override** on top of the global default can be set at runtime (`POST /set {"log-level-role": {"role": "SUBSCRIBER", "value": "debug"}}`) — useful for turning up verbosity on just one role without drowning every other role's logs. This per-role override has no equivalent in the original Node-RED flow; it's a deliberate addition.
 
+### `global.cache-deadline` — optional, default `600`
+
+```yaml
+global:
+  cache-deadline: 600   # seconds, integer >= 1
+```
+
+The time allowed between SUBSCRIBER accepting a notification for download and that download completing (WIS2 requires new or updated data to be cached within 10 minutes). It decides whether the REPORTER writes `cached` or `late` for a completed download, and when it writes `missed` for one that never completed or failed. SUBSCRIBER sets a Redis marker `wis2gc:marker:<downloader_id>` with this TTL; DOWNLOADER deletes it on completion or retry exhaustion; its expiry produces `missed`. See [`logging.md`](logging.md#55-reporter-replayer-heartbeat).
+
+The expiry is detected through Redis keyspace notifications, so Redis `notify-keyspace-events` must include `Ex`. The REPORTER merges `E` and `x` into the setting with `CONFIG SET` at start and logs a warning in `Reporter Process` if the server refuses (managed Redis often does: set it in the server configuration instead). In a Cluster, set it on every node.
+
 ### `global.global-cache` — optional, default `false`
 
 Set `true` when this deployment is operating as a WIS2 Global Cache rather than a local downloader. When `true`, the subscriber applies an extra rule: a message whose `properties.cache` is `false` is still forwarded to the local broker (so other local consumers still see it) but is **not** queued for download — this is what respects a data provider's explicit "don't cache this globally" flag.
@@ -91,7 +102,7 @@ This instance's own WIS2 centre identifier, used as part of the MQTT client id b
 
 Up to two local MQTT brokers, wired to `PUB1`/`PUB2`, that `SUBSCRIBER`'s publish-only outcomes and `DOWNLOADER`'s completion notifications get republished to. See [`deployment.md`](deployment.md#local-mqtt-brokers-and-publish-only-outcomes). Same broker object shape as `subscriber.global-broker` below (`broker`, `username`, `password`, `version`, `verifycert`). If absent, downloaded files are stored after download and rename (see below) and sits there for further processing (eg. using an external notify)
 
-Omitting it entirely is a perfectly normal deployment shape, not a degraded one — it's flagged exactly once, as a startup warning (`global.local-broker: missing or empty — no local MQTT broker configured (PUB1/PUB2 will not connect)`), not re-logged on every message. With no `PUB1`/`PUB2` connected, `SUBSCRIBER`'s own republish step still has nothing to iterate over (unchanged); `DOWNLOADER`'s completion side goes further (since 2026-09-14) and skips preparing the cache-topic WNM at all, not just publishing it — see `finishing.ts`. Either way, every notification and every completed download still processes exactly as it otherwise would, just silently skipping the republish, with no per-message log line marking the skip. With no local-broker configured, `downloader.download-url` becomes optional too — see that field below.
+Omitting it entirely is a perfectly normal deployment shape, not a degraded one — it's flagged exactly once, as a startup warning (`global.local-broker: missing or empty — no local MQTT broker configured (PUB1/PUB2 will not connect)`), not re-logged on every message. With no `PUB1`/`PUB2` connected, `SUBSCRIBER`'s own republish step still has nothing to iterate over (unchanged); `DOWNLOADER`'s completion side goes further and skips preparing the cache-topic WNM at all, not just publishing it — see `finishing.ts`. Either way, every notification and every completed download still processes exactly as it otherwise would, just silently skipping the republish, with no per-message log line marking the skip. With no local-broker configured, `downloader.download-url` becomes optional too — see that field below.
 
 ### `global.http-port` — optional, default `8080`
 
@@ -107,7 +118,7 @@ Required iff `SUBSCRIBER` is in `global.roles`.
 
 Up to two WIS2 Global Brokers, wired to `GB1`/`GB2`. Messages from GB1 are processed immediately; GB2 messages are deliberately delayed 2 seconds before deduplication, so that when the same notification arrives on both, the GB1 copy wins and the GB2 copy is dropped as a duplicate. If GB1 is unreachable, GB2 still works on its own. Same broker object shape as `global.local-broker`.
 
-### `subscriber.weight-sources` / `subscriber.weight-delay-seconds` / `subscriber.weight-delay-max-seconds` — optional (2026-09-20, replaces `priority-global-cache`)
+### `subscriber.weight-sources` / `subscriber.weight-delay-seconds` / `subscriber.weight-delay-max-seconds` — optional
 
 Controls which sources (the true origin, and/or specific Global Cache repeaters) this Subscriber is willing to claim content from, and how the claim race between them is decided when the same content arrives via more than one source.
 
@@ -121,7 +132,7 @@ Two default rules govern weight resolution:
 1. **`weight-sources` entirely unset** — every source (origin and any recognized cache repeater) gets weight 1. This is the zero-config behavior: everything races on equal footing, matching the old unset-`priority-global-cache` behavior.
 2. **`weight-sources` is set (even with just one entry)** — any source not explicitly listed as a key gets weight 0, meaning it is never used at all (treated the same as an unrecognized `global-cache` label always was). **This includes `origin` if it's omitted** — configuring `weight-sources` without an explicit `origin:` entry silently disables all direct-from-origin downloads for every centre. Always list `origin` explicitly once `weight-sources` is used for anything, unless you deliberately mean to exclude it (e.g. a Subscriber whose `mqtt.whitelist` only subscribes to `cache/...` topics for one centre in the first place — see the worked example below).
 
-A source with weight 0 (whether by rule 2's default or an explicit `0`) is discarded outright, before any claim attempt or download — the same as the old priority list's "not in the allowlist" behavior.
+A source with weight 0 (whether by rule 2's default or an explicit `0`) is discarded outright, before any claim attempt or download.
 
 **The delay formula.** For any source with weight > 0, the delay before it enters the claim race is drawn randomly:
 
@@ -131,7 +142,7 @@ delaySeconds = min( -ln(random()) * (weight-delay-seconds / weight),  weight-del
 
 The `-ln(random()) * (weight-delay-seconds / weight)` part draws from an **exponential distribution** with mean `mu = weight-delay-seconds / weight`. This has a useful property: when several sources are racing for the same content, each independently drawing a delay this way, the probability that a given source's delay elapses *first* (i.e. it wins the claim) is exactly its share of the total weight across all racing sources — with no coordination between sources needed. A weight of 2 wins roughly twice as often as a weight of 1; a weight of 0.2 loses to a weight of 1 about 5 times out of 6. This is an approximation, not an exact guarantee, since real messages from different sources don't all start their delay clock at the same instant — origin structurally arrives first, since a Global Cache can only republish after receiving from origin — so `weight-delay-seconds` should be set comfortably larger than the typical real arrival-time gap between origin and its mirrors for the approximation to hold well.
 
-An exponential distribution has **no natural upper bound** — the `min(..., weight-delay-max-seconds)` is a hard cap added after a 2026-09-20 production incident (see the "production incident" note below), truncating the rare long draw rather than letting it run arbitrarily high. It's a plain clip, not a re-normalization: for the (by design, rare) fraction of draws that actually hit the cap, the weight-proportional win-share property above stops applying to that fraction specifically (every candidate clipped to the same cap value effectively ties). `weight-delay-max-seconds` defaults to 120 if unset.
+An exponential distribution has **no natural upper bound** — the `min(..., weight-delay-max-seconds)` is a hard cap, truncating the rare long draw rather than letting it run arbitrarily high. It's a plain clip, not a re-normalization: for the (by design, rare) fraction of draws that actually hit the cap, the weight-proportional win-share property above stops applying to that fraction specifically (every candidate clipped to the same cap value effectively ties). `weight-delay-max-seconds` defaults to 120 if unset.
 
 **Choosing values — the recipe.** Rather than guessing, work from an operational requirement. Useful facts about an exponential distribution with mean `mu`:
 
@@ -165,66 +176,38 @@ subscriber:
 
 With these numbers: `de-dwd-global-cache` (weight 0.2, `mu ≈ 26s`) has a median wait around 18s, a 90th percentile around 60s, and virtually never (≈1%) hits the 120s cap. Every other listed source (weight ≥ 1, `mu ≤ 5.2s`) is far faster still (median under 4s, 90th percentile under 12s) and effectively never approaches the cap at all. Any `cache/...` notification whose `global-cache` label isn't one of the six keys above (or is missing the property altogether) is dropped — and since `origin` isn't listed here, so is any `origin/...` notification, which is intentional given this Subscriber's whitelist never subscribes to `origin/...` topics for this centre in the first place.
 
-**Production incident, 2026-09-20**: an earlier rollout of this mechanism (before `weight-delay-max-seconds` existed) used `weight-delay-seconds: 10` with `de-dwd-global-cache: 0.2` (mean delay 50s, unbounded tail) on a Subscriber whose traffic was *entirely* that one centre's content. Combined with a since-fixed bug in `consumer.ts`'s `runConsumerLoop` (it used to block reading the next batch of raw-stream entries on the current batch's delays finishing), the long tail of a handful of unlucky draws stalled the whole consumer loop for minutes at a time — collapsing download throughput for every source on that centre, not just the low-weight one, even though notifications kept arriving on the wire the whole time. Both issues are fixed: the loop no longer blocks reads on delays completing (with a `maxInFlight` backpressure cap as a safety net against unbounded concurrent in-flight entries instead), and `weight-delay-max-seconds` now bounds every delay outright. The recipe above is how to pick values that stay well clear of this failure mode by construction.
+**Choosing values.** A large `weight-delay-seconds` combined with a low weight gives a long delay tail (for example `weight-delay-seconds: 10` with weight `0.2` is a mean of 50 s). The consumer loop never blocks reading the next batch on a batch's delays (a `maxInFlight` cap bounds the number of concurrent in-flight entries), and `weight-delay-max-seconds` bounds every delay outright. The recipe above picks values that keep delays short for every source.
 
-### Tracing a missing `data_id` through SUBSCRIBER (2026-09-20)
+### Tracing a `data_id`
 
-After the fixes above, some `data_id`s were still reported missing (fewer than before, but not zero). Rather than guess further, SUBSCRIBER's logging was made deep enough to answer *why*, for any specific `data_id`, from the logs alone — no code changes needed to investigate a given case.
+Every log line about a message carries that message's `data_id` (and usually its `wnm.id`), from arrival on the wire to the final download, wait, drop or publish. Switching it on needs one setting: `global.log.level: debug`, globally or for one role with `POST /set {"log-level-role": {"role": "SUBSCRIBER", "value": "debug"}}`. `global.log.to` chooses stdout or `hauler-<logger>-<date-hour>.<level>.log` files; the content is the same. Details for every logger, field and file: `docs/logging.md`.
 
-**Every log line SUBSCRIBER emits about a message now carries that message's `data_id`** (and usually its raw `wnm.id` too), from the moment it arrives on the wire through to the final download/wait/drop/publish decision. This spans two files/loggers per pipeline stage:
+**SUBSCRIBER**
 
-| Stage | Logger (source name) | Log file (when `to: "file"`) | Fires |
+| Stage | Logger | File | Fires |
 | --- | --- | --- | --- |
-| `ingest.ts`, arrival | `Received` | `hauler-received-*.debug.log` | Unconditionally, for every message that arrives on the wire — before any parsing. This is the ground truth for "did anything arrive on this topic at all". Carries `wnmId`/`dataId` too (added same day — see below), whenever the payload was parseable enough to extract them, so it's no longer just a topic/byte-count firehose. |
-| `ingest.ts`, per-message outcome | `Filter` | `hauler-filter-*.debug.log` | For every one of the five ingest-side outcomes: `unchanged` (rbe), `blacklisted`, `malformed`, `duplicate` (repeat `wnm.id`), `ingested`. Carries `wnmId`/`dataId` *and the full parsed `wnm`* (added 2026-09-20 — see below) whenever the payload was parseable enough. |
-| `consumer.ts`, per-notification decision | `Decision` | `hauler-decision-*.debug.log` | For every classified stream entry's outcome: `ignore` (added 2026-09-20 — see below), `already-complete`, `download`, `wait`, `drop`, `publish-only`. Carries `dataId`/`wnmId`/`pubtime`/`href`/`action`, and for `ignore`, the specific `reason` (from `classifyTopic`). |
-| `consumer.ts`, data_id lineage | `Duplicate` | `hauler-duplicate-*.info.log` | Only when a data_id-reuse-without-`rel=update` duplicate is caught (see the `weight-sources` section above's neighbor, `lineage.ts`). Carries `dataId`/`wnmId`/`pubtime`/`reason`. |
-| `consumer.ts`, raw-stream trim/health check | `Redis` | `hauler-redis-*.debug.log` (routine size trace), `.info.log` (near-backstop + loss-cleared), `.warn.log` (confirmed loss) | Not per-message: a periodic (every `healthCheckIntervalMs`, default 5s) `XTRIM ... MINID ~ <lastId minus rawStreamTrimMarginMs>` against the raw Redis stream, added 2026-09-21 after a production incident where a count-only `MAXLEN ~` trim silently evicted unread entries out from under the consumer with zero error, then revised the same day once live data showed raising the count cap alone just bought a bigger blind buffer — a count-based cap can't tell whether the consumer has actually reached an entry, so the stream sat permanently pinned near the cap regardless of load. Now: the periodic `MINID` trim (keyed off the consumer's own read cursor, `rawStreamTrimMarginMs` = 15 minutes, sized against WIS2's own Global Cache 10-minute SLA) is the PRIMARY trim, structurally unable to remove anything unread; `RAW_STREAM_MAXLEN` (500000) is kept only as a rare backstop for a genuinely dead consumer. Every tick logs the post-trim length at DEBUG unconditionally, and at INFO whenever that post-trim length is still >= 80% of `RAW_STREAM_MAXLEN` (no dedup — logged every qualifying tick, since it should now be rare). Separately, a WARN/INFO once-per-episode pair fires only if the stream's oldest surviving entry actually overtakes the consumer's own cursor — confirmed loss, expected in practice only via the `MAXLEN` backstop, not the routine `MINID` trim. |
+| Arrival | `Received` | `hauler-received-*.debug.log` | Every message that arrives on the wire, before any filter. Carries `wnm_id`/`data_id` when the payload parses. Ground truth for "did anything arrive on this topic at all". |
+| Ingest outcome | `Filter` | `hauler-filter-*.debug.log` | One line per message and outcome: `unchanged` (rbe), `blacklisted`, `malformed`, `duplicate` (repeat `wnm.id`), `ingested`. Carries `wnm_id`, `data_id` and the full parsed `wnm` when parseable. |
+| Decision | `Decision` | `hauler-decision-*.debug.log` | Once per parsed stream entry: `ignore`, `duplicate` (lineage duplicate), `already-complete`, `download`, `wait`, `drop`, `publish-only`. Carries `data_id`, `wnm_id`, `pubtime`, `action`, plus `href` and `downloader_id` (or `reason` for `ignore` and `duplicate`). |
+| Lineage | `Duplicate` | `hauler-duplicate-*.info.log` | A `data_id` reused without `rel=update` or without a newer `pubtime`. Carries `data_id`, `wnm_id`, `pubtime`, `reason`. |
+| Raw-stream health | `Redis` | `hauler-redis-*.debug.log` / `.info.log` / `.warn.log` | Not per message. Every 5 s the consumer trims the raw stream with `XTRIM … MINID ~ <read cursor − 15 min>`, which cannot remove anything unread. `RAW_STREAM_MAXLEN` (500000) is only a backstop for a dead consumer. Each tick logs the post-trim length at debug, and at info when it is at least 80% of the backstop. A once-per-episode warn/info pair reports a confirmed loss (the oldest surviving entry overtook the consumer's cursor) and its recovery. |
 
-To reconstruct one `data_id`'s whole journey: grep (or run a JSON query over) all four files for that `data_id`, in order of arrival timestamp. If it's genuinely missing end-to-end (no `Received` line at all, on either GB1 or GB2), the message never reached this replica's broker connection — look upstream (the global broker, or the origin/GC never publishing it in the first place). If a `Received` line exists but nothing else does, or the trail stops at a `Filter`/`Decision` entry, that entry's `outcome`/`action`/`reason` is the answer.
+To follow one `data_id`, search all the files for it and order by `timestamp`. No `Received` line on either GB1 or GB2 means the message never reached this replica's broker connection; look upstream. Otherwise the `outcome`, `action` or `reason` of the last line is the answer.
 
-**Turning this on: one switch.** `global.log.level: debug` (or a per-role override, `POST /set {"log-level-role": {"role": "SUBSCRIBER", "value": "debug"}}` — see the `global.log` section above) is all that's required for `Received`/`Filter`/`Decision`/`Duplicate` to be fully written, with every `wnmId`/`dataId` field populated — these are all file-routed loggers gated purely by this setting, same as every other structured log in this codebase. `to: "file"` sends them to `hauler-<source>-<date-hour>.<level>.log` files as shown in the table above; leave it at the `stdout` default to see the same JSON lines in the container's own log output instead.
+Tracing costs nothing below `debug`. `Received`, `Decision` and `Duplicate` hand a small object to the logger, which does one boolean level check before writing. `Filter` outcomes `duplicate`, `ingested` and `malformed` reuse the already parsed message. For `unchanged`, `blacklisted` and `Received`, the extra best-effort `JSON.parse` that extracts the ids runs only when the logger reports that `debug` is admitted.
 
-There used to be a second, separate runtime toggle (`POST /set {"debug": [...]}`) gating part of `Filter`'s output — removed 2026-09-20 at the maintainer's explicit request ("I'd prefer that debug in log-level is enough to enable all debug. Don't get why this...") in favor of this single switch, matching how every other logger here already worked. That runtime toggle still exists and still affects a separate, older set of plain-text `console.log` lines scattered through this role (pre-existing, unrelated to this tracing effort) — it's not needed for, and doesn't need to be considered for, tracing a `data_id` through the four logs above.
+**DOWNLOADER**
 
-For a dedicated debug build/deployment used specifically to chase a reported-missing `data_id`: set `global.log: {level: "debug", to: "file"}`, restart (or apply it live via the per-role override above), then grep the four log files by the `data_id` in question.
+`data_id` travels with the work: SUBSCRIBER writes it onto the work-queue entry and the `downloader_id` hash record, and every later stage reads it from there with no extra Redis round trip or JSON parse. `Aria`, `Ack`, `Correct ?`, `File Error`, `Re-queue`, `Update`, `Retry Failed`, `Poll Error`, `Output - Complete` and `Output - Error` carry `data_id` together with `downloader_id`.
 
-**Is this safe to run everywhere, not just a special debug build?** Yes. `Received`/`Decision`/`Duplicate` were already unconditional before this feature existed — they build a small object and hand it to the logger regardless of level, and the logger itself does one cheap boolean check before deciding whether to actually write. `Filter` follows the same rule for three of its five outcomes (`duplicate`/`ingested`/`malformed`), since the message is already parsed by that point for the pipeline's own sake anyway — logging it is free.
+- `Correct ?` carries `hashDetail: 'digest-mismatch' | 'unsupported-method'` for `HASH_NOK`, so a real integrity failure is distinguishable from a configuration problem.
+- `Output - Error` carries aria2's own `errorCode` and `errorMessage`.
+- `Poll Error` records a download that fails before aria2 accepts it (aria2 unreachable, `addUri` rejected).
+- `Retry Failed` (`hauler-retryfailed-*.warn.log`) records exhausted retries, with `downloader_id`, `data_id` and `hashFound`, before the failure is written to the Redis error stream.
 
-The two outcomes that need care are `unchanged` (rbe) and `blacklisted`: they run *before* this role's own parse, so producing `wnmId`/`dataId` for them means an extra `JSON.parse` of a payload that's about to be discarded regardless — real, avoidable cost if paid on every message at a normal (`info`) log level, on exactly the kind of high-volume path that caused the 2026-09-20 production incident above. That extra parse only happens when the logger itself reports that `global.log.level` (or a per-role override) actually admits `debug` — at any other level it's a single boolean check, nothing more. In short: this is the normal build, safe to run on every replica; the only thing that changes at `log.level: debug` is that you get the full trace, not that anything behaves differently below it.
+**Everything else**
 
-### `Received` gained `data_id` too (2026-09-20, same day)
-
-Originally `Received` logged only `{source, topic, bytes}` — deliberately, since it fires before any parsing at all, ahead of every filter, so it's the ground truth for "did this arrive on the wire." In practice that made it close to useless for chasing a specific missing `data_id`: a topic string never contains one, so the one file guaranteed to have a line for every message ever received couldn't be grepped for the message you actually cared about (per the maintainer, plainly: "typically the content of wis2gc-received-*.debug.log is useless").
-
-Fixed the same way as `Filter`'s `unchanged`/`blacklisted` outcomes above: `Received` now also carries `wnmId`/`dataId`, extracted with the same best-effort, throws-nothing parse — but only when `receivedLog.debugEnabled()` says the configured level actually admits `debug`. This call site fires on literally every message received, unconditionally, at any log level — the hottest path this whole effort touches — so an unconditional extra `JSON.parse` here would have been worse than the `Filter` case, not equivalent to it. Below `debug`, it costs one boolean check; at `debug`, every `Received` line is now groupable by `data_id` like everything else.
-
-### `Filter` logs the full WNM, not just its extracted ids (2026-09-20, same day)
-
-Immediately after the `Received` fix above, the maintainer pushed back on the whole *extraction* approach it (and `Filter`) used: *"What should be logged is the WNM (probably full content) after deduplication. Not that 'extract'..."* Fair — `wnmId`/`dataId` alone can confirm a message existed, but can't explain *why* it was decided the way it was (a malformed notification missing an expected field, two genuinely different messages colliding on `wnm.id`, and so on); only the notification's own content answers that.
-
-`Filter`'s five outcomes now each carry a `wnm` field — the actual parsed object, not a two-field summary of it — with the id extraction kept alongside it purely as a convenience for grepping/structured queries:
-
-- **`duplicate` and `ingested`** (the two outcomes that fire strictly *after* this handler's own wnm.id dedup check has run) get this at **zero extra cost**: by the time either outcome is decided, `ingest.ts` has already parsed the payload into `wnm` for its own real control flow (the dedup check itself needs it), so handing that same in-memory object to `filterLog.debug()` adds no extra parse, at any log level. This is the literal "after deduplication" case the maintainer asked for.
-- **`unchanged` and `blacklisted`** piggyback on the same `filterLog.debugEnabled()`-gated extra parse these two outcomes already needed (see above) — now that parse's result is kept whole rather than reduced to two fields, at no additional cost beyond what was already being paid once `debug` is the configured level.
-- **`malformed`** already parsed unconditionally (a rare, error-path call, never the routine case) — its result is attached too, when the isolated parse got far enough to produce an object at all. A payload that isn't even valid JSON still has no `wnm` to attach, same as before.
-
-Same safety story as everywhere else in this effort: nothing here changes what gets parsed or when — it only changes what's done with an object this code was already going to hold in memory regardless.
-
-### The same tracing, extended through DOWNLOADER (2026-09-20)
-
-The trace above stops the moment SUBSCRIBER hands a message off to the work queue — everything DOWNLOADER does with it afterwards (embedded-content decode, the real aria2 download, hash verification, retries) used to be correlatable only by `downloaderId`, an internal hash of the WNM with no relationship to anything an operator would actually be looking for. Per the maintainer: *"data_id is the key to identify missing downloads... this is the thread that can be followed from begin to end. downloaderId is only an internal variable."*
-
-`data_id` is now threaded as its own field the whole way through DOWNLOADER's Redis records too — SUBSCRIBER's `enqueueWork`/`writeDownloadJob` writes it as an extra `data_id` field (alongside the ones already written) on both the work-queue entry and the `downloader_id` hash record, so every DOWNLOADER-side stage picks it up with **no extra Redis round trip**: the work-queue entry (`WorkQueueEntry.dataId`) carries it into `decode-write.ts`/`aria-start.ts`, which write it onward into the `stream_id`/`aria2_gid` records, which `ack.ts`'s `AckedEntry.dataId` reads back — and `error-retry.ts`'s 30-second-later retry decision reads it straight off the `downloader_id` hash record's own new field, no `wnm` JSON parse required.
-
-Every DOWNLOADER-side logger now carries `dataId` (in addition to `downloaderId`, still there for anyone correlating against the Redis key itself): `Aria`, `Ack`, `Correct ?`, `Re-queue`, `Update`, `Duplicates`. Two more things closed at the same time:
-
-- **`Correct ?`'s `HASH_NOK` used to mean two different things with no way to tell them apart** — a genuine digest mismatch, or an unsupported hash method (a config problem, nothing wrong with the download). It now also carries `hashDetail: 'digest-mismatch' | 'unsupported-method'`.
-- **A real aria2 download failure (`onDownloadError`) used to log only the gid and `status: 'error'`**, never aria2's own reason. `Output - Error` now also carries `errorCode`/`errorMessage` straight off aria2's `tellStatus` reply.
-
-One more gap: a download that fails before aria2 even accepts it (aria2 unreachable, `addUri` rejected) was previously only ever logged via plain `console.error` — never captured by the file sink regardless of `global.log.to`, since that particular catch block predates this role having any structured logging at all. It's now also mirrored to a new file-backed `Poll Error` logger, with `dataId`/`downloaderId`/`href`, so a download that vanishes at the very first step still leaves a trace on disk.
-
-Same safety story as SUBSCRIBER's: every new field above was either already sitting in an object that gets built regardless of level (the Redis records themselves, and every logger call bar one), or read off a record DOWNLOADER already fetches for its own logic (`error-retry.ts`'s retry decision) — nothing here adds a new unconditional Redis round trip or JSON.parse. Safe to run everywhere, same as before.
+Every JSON line carries `logger` (the slug used in the filename) and `worker` (`global.worker`). Operational messages (role start and stop, failures, aria2 or broker connectivity, per-message failures) are written by the process loggers `Main Process`, `Subscriber Process`, `Downloader Process`, `Cleaner Process`, `Reporter Process`, `Replayer Process`, `Heartbeat Process` and `Admin Process`, always at `info`, with `severity` (`info`, `warn`, `error`) and `message`; per-message failures also carry `data_id`, `downloader_id`, `topic` or `entryId` where known. Log verbosity is controlled only by `log.level` and `log-level-role`. Only the pre-config usage and `config invalid` output and the process entrypoint's fatal handler are printed outside the log sink.
 
 ### `subscriber.mqtt.whitelist` — required, runtime-settable
 
@@ -311,7 +294,7 @@ This cache's own WIS2 identifier, stamped into `properties.global-cache` on ever
 
 The public base URL downloaded files are served from — combined with the stored path (which depends on `rename-to`) to build the `links[0].href` of the cache-topic WNM `DOWNLOADER` republishes to `PUB1`/`PUB2` on a successful download.
 
-Optional since 2026-09-14: with no `global.local-broker` configured at all, there's nothing to republish that WNM to, so `finishing.ts`'s whole "build the cache WNM" step is skipped outright (not just left with nothing to iterate over, the way an empty `local-broker` already behaved) — and `download-url` has no remaining use, so it can be omitted too. Validation reflects the pairing: omitting `download-url` while `local-broker` *is* configured is still an error (there'd be a broker to publish to but no way to build the link), while omitting both together is silent.
+Optional: with no `global.local-broker` configured at all, there's nothing to republish that WNM to, so `finishing.ts`'s whole "build the cache WNM" step is skipped outright (not just left with nothing to iterate over, the way an empty `local-broker` already behaved) — and `download-url` has no remaining use, so it can be omitted too. Validation reflects the pairing: omitting `download-url` while `local-broker` *is* configured is still an error (there'd be a broker to publish to but no way to build the link), while omitting both together is silent.
 
 ### `downloader.rename-to` — optional
 
@@ -342,7 +325,7 @@ Seconds a downloaded file is kept before deletion. Deletion is triggered by the 
 
 ### `cleaner.redis-gc-threshold-seconds` — optional, default `43200` (12h)
 
-How stale a bookkeeping hash has to be before the periodic Redis-side garbage-collection sweep reclaims it. Not present in the original Node-RED flow (which hardcoded 12h) — exposed here as ordinary config, pulled from the same system as everything else, per a deliberate engineering decision rather than a guess about the original's intent.
+How stale a bookkeeping hash has to be before the periodic Redis-side garbage-collection sweep reclaims it. Ordinary config, like everything else.
 
 ---
 
@@ -412,7 +395,6 @@ Without `key`, returns every field the instance's active roles are allowed to se
 | `queue` | any | `global.queue` |
 | `whitelist` / `blacklist` | `SUBSCRIBER` | the active topic lists |
 | `global-replay` | any | the active replay topic, or `null` |
-| `debug` | any | the currently-set debug categories |
 | `credentials` | `DOWNLOADER` | the current in-memory `{topic: {username, password}}` map |
 
 `overridelist` is settable (see the `POST /set` table below) but not currently readable back through `GET /get` — `?key=overridelist` returns `400` (unknown key), a gap in this table's counterpart on the get side, not a rule against it. Until that's added, the only way to confirm what's active is whatever you last `POST`ed (or the static YAML, if it hasn't been patched at runtime).
@@ -429,7 +411,6 @@ Body is a JSON object; any subset of these keys may be present in one request. T
 | `whitelist` / `blacklist` | `SUBSCRIBER` | Replaces the active list; brokers re-subscribe in the background. |
 | `overridelist` | `SUBSCRIBER` | Replaces the active rule list wholesale — see `subscriber.mqtt.overridelist` above for the rule shape. Include every rule you want kept, not just the one being added or changed. |
 | `credentials` | `DOWNLOADER` | `{"op": "create"\|"update"\|"delete", "topic": "...", "username"?: "...", "password"?: "..."}` — applied as a real Redis HSET/HDEL, picked up by every `DOWNLOADER` instance within its next 10s sync. |
-| `debug` | any | Replaces the dynamic debug-category set wholesale (e.g. `["SUBSCRIBER", "DOWNLOADER"]`). |
 
 Example — pause a instance for maintenance:
 

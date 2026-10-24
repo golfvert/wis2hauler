@@ -23,7 +23,6 @@
 //     said was out of scope until this phase. Response shape matches
 //     ../admin/set.ts's /set: {changes, errors?}.
 import type { Config } from '../config/schema.ts';
-import type { DebugController } from '../debug.ts';
 import { createRedisConnection } from '../redis/ioredis-store.ts';
 import { IoredisElectionStore } from '../redis/ioredis-election-store.ts';
 import { runElectionLoop } from '../election/elector.ts';
@@ -51,8 +50,7 @@ async function postReplayRequest(req: ReplayRequest): Promise<void> {
 	await fetch(req.url, { method: req.method, headers, body: req.body });
 }
 
-export async function runReplayer(config: Config, debug: DebugController, log: typeof console, signal: AbortSignal, processUuid: string, router: HttpRouter, runtimeStore: RuntimeConfigStore): Promise<void> {
-	const isDebugEnabled = () => debug.has('REPLAYER');
+export async function runReplayer(config: Config, log: typeof console, signal: AbortSignal, processUuid: string, router: HttpRouter, runtimeStore: RuntimeConfigStore): Promise<void> {
 
 	const commandConn = createRedisConnection(config.global.redis);
 	const electionStore = new IoredisElectionStore(commandConn);
@@ -66,7 +64,6 @@ export async function runReplayer(config: Config, debug: DebugController, log: t
 			uuid: processUuid,
 			onResult: (priority) => {
 				state.primary = priority === 'primary';
-				if (isDebugEnabled()) log.log(`REPLAYER: election -> ${priority}`);
 			},
 			warn: (m) => log.warn(`REPLAYER: ${m}`),
 		},

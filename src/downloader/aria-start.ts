@@ -129,7 +129,7 @@ export async function startRealDownload(deps: AriaStartDeps, entry: AriaStartEnt
 		checkCertificate: deps.checkCertificate,
 		credentials: creds,
 	});
-	deps.ariaLog?.debug({ dataId: entry.dataId, downloaderId: entry.downloaderId, href: entry.href, filename, gid, hasCredentials: creds !== undefined });
+	deps.ariaLog?.debug({ data_id: entry.dataId, downloader_id: entry.downloaderId, href: entry.href, filename, gid, hasCredentials: creds !== undefined });
 
 	// "Map" -> HGETALL -> "Aria2" -> HSET -> "Cancel" -> ZADD: promote the
 	// pre-registration record to the gid-keyed hash, verbatim, then

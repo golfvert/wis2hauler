@@ -6,6 +6,9 @@ describe('classifyReportType', () => {
 		expect(classifyReportType('integrity_fail')).toBe('integrity_fail');
 		expect(classifyReportType('download_error')).toBe('download_error');
 	});
+	test('download_failed (retries exhausted) is its own kind', () => {
+		expect(classifyReportType('download_failed')).toBe('download_failed');
+	});
 	test('anything else (including undefined) falls through to stats', () => {
 		expect(classifyReportType(undefined)).toBe('stats');
 		expect(classifyReportType('something-else')).toBe('stats');

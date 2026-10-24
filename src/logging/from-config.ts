@@ -25,16 +25,17 @@ import type { LogSink } from './sink.ts';
  * "./logs") for whichever of these the config left unset, so this
  * function doesn't need to duplicate them.
  */
-export function resolveSinkOptions(log: LogConfig): WinstonSinkOptions {
+export function resolveSinkOptions(log: LogConfig, worker?: string): WinstonSinkOptions {
 	return {
 		destination: log.to === 'file' ? 'file' : 'stdout',
 		logDir: log.dir,
 		maxSize: log.size,
 		maxFiles: log.number,
+		worker,
 	};
 }
 
 /** Builds the real sink a running process should log through, straight from the loaded static config's `global.log` section. */
-export function createLogSinkFromConfig(log: LogConfig): LogSink {
-	return new WinstonLogSink(resolveSinkOptions(log));
+export function createLogSinkFromConfig(log: LogConfig, worker?: string): LogSink {
+	return new WinstonLogSink(resolveSinkOptions(log, worker));
 }

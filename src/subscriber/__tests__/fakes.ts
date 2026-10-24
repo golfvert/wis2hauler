@@ -99,10 +99,13 @@ export class FakeStore implements SubscriberStore {
 		h.published = published;
 		h.attempt = '1';
 		h.data_id = dataId ?? '';
+		h.accepted = String(Date.now());
+		this.order.push('job');
 		this.expirations.set(downloaderId, 7200);
 	}
 
 	async enqueueWork(queue: string, downloaderId: string, href: string, topic: string, content: boolean, dataId: string | undefined): Promise<void> {
+		this.order.push('enqueue');
 		this.workQueue.push({ queue, downloaderId, href, topic, content, dataId });
 	}
 
@@ -110,6 +113,14 @@ export class FakeStore implements SubscriberStore {
 		const h = this.hashFor(downloaderId);
 		h[href] = 'wait';
 		h[`src:${href}`] = source;
+	}
+
+	cacheMarkers = new Map<string, number>();
+	order: string[] = [];
+
+	async setCacheMarker(downloaderId: string, ttlSeconds: number): Promise<void> {
+		this.cacheMarkers.set(downloaderId, ttlSeconds);
+		this.order.push('marker');
 	}
 
 	async releaseClaim(downloaderId: string): Promise<void> {

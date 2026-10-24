@@ -2,7 +2,7 @@
 
 This document covers how to actually run wis2hauler: as a container or as a standalone binary, against a single Redis node or a Redis Cluster, and how the pieces (this app, aria2, Redis, an MQTT broker if you're publishing locally) fit together.
 
-It replaces the old Node-RED-era `docker-compose_reference.md`, adapted to this app's actual interface — the two systems differ in several important ways covered below.
+Deployment reference for this app's actual interface.
 
 ---
 
@@ -35,7 +35,7 @@ bun build --compile --target=bun-linux-x64-musl src/main.ts --outfile wis2hauler
 
 The `--target=...-musl` variant is required — the Dockerfile's base image is `alpine:3.24` (musl libc), and a binary built with the default `bun-linux-x64`/`bun-linux-arm64` target is glibc-linked and fails immediately on Alpine with a dynamic-linker error. This is a different artifact than a glibc build you might also produce for a bare-metal Linux deployment; build once per target you actually deploy to.
 
-You also need geoip-lite's data files staged at `dist/geoip-data` (arch-independent — same for every target), since `bun build --compile` does **not** bundle them (found live, 2026-09-13 — see `src/reporter/run.ts`'s header comment for why):
+You also need geoip-lite's data files staged at `dist/geoip-data` (arch-independent — same for every target), since `bun build --compile` does **not** bundle them (see `src/reporter/run.ts`'s header comment for why):
 
 ```bash
 mkdir -p dist/geoip-data
@@ -99,7 +99,7 @@ networks:
     external: true
 ```
 
-Debug can be toggled at runtime through the admin API: `POST /set {"debug": ["SUBSCRIBER"]}` against whichever port `global.http-port` binds to.
+Log verbosity can be changed at runtime through the admin API: `POST /set {"log-level": "debug"}` (or `{"log-level-role": {"role": "SUBSCRIBER", "value": "debug"}}`) against whichever port `global.http-port` binds to.
 
 With the docker-compose.yml above, use:
 
@@ -216,7 +216,7 @@ A Redis Cluster needs at least 3 master nodes (plus replicas, if you want automa
 
 `global.local-broker` (up to two entries, wired to `PUB1`/`PUB2`) is where `SUBSCRIBER` republishes messages it decided not to download (a Global-Cache `no-cache` flag, an overridelist match) and where `DOWNLOADER` republishes completion notifications once a file has been downloaded and verified. Both roles, when active on the same replica, share the same PUB1/PUB2 connections rather than opening their own — the process's orchestrator (`main.ts`) owns opening and closing them once, for the whole process.
 
-If you don't need a local broker at all (a pure-downloader setup where something else reads completions directly out of Redis), omit `global.local-broker` — this only produces a warning, not an error, at startup. In that case `DOWNLOADER` also skips preparing the cache-topic WNM entirely (2026-09-14 — it's not just left with nothing to publish to), so `downloader.download-url` can be omitted as well; see [`configuration-and-roles.md`](configuration-and-roles.md#downloaderdownload-url--required-only-when-globallocal-broker-is-configured).
+If you don't need a local broker at all (a pure-downloader setup where something else reads completions directly out of Redis), omit `global.local-broker` — this only produces a warning, not an error, at startup. In that case `DOWNLOADER` also skips preparing the cache-topic WNM entirely (it is not just left with nothing to publish to), so `downloader.download-url` can be omitted as well; see [`configuration-and-roles.md`](configuration-and-roles.md#downloaderdownload-url--required-only-when-globallocal-broker-is-configured).
 
 ---
 

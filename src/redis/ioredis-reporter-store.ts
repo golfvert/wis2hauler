@@ -32,7 +32,7 @@ import type { RedisConnection } from './ioredis-store.ts';
 import type { ReporterStore, WindowStats } from '../reporter/store.ts';
 import type { StatsWriteCommand } from '../reporter/stats.ts';
 import { LUA_ACTIVE_IPS } from '../reporter/active-ips.ts';
-import { infoGranuleKey, reporterActiveIpsKey, statsComboKey, statsComboKeyPattern, statsSrcKey, statsSrcKeyPattern, statsTotalKey } from '../wis2/redis-keys.ts';
+import { downloaderHashKey, infoGranuleKey, reporterActiveIpsKey, statsComboKey, statsComboKeyPattern, statsSrcKey, statsSrcKeyPattern, statsTotalKey } from '../wis2/redis-keys.ts';
 
 /**
  * KEYS/SCAN have no derivable Cluster slot from a pattern alone, so a
@@ -107,6 +107,11 @@ export class IoredisReporterStore implements ReporterStore {
 		}));
 
 		return { comboEntries, srcEntries };
+	}
+
+	async readDownloaderRecord(downloaderId: string): Promise<string[]> {
+		const reply = await this.redis.call('HGETALL', downloaderHashKey(downloaderId));
+		return (reply as string[] | null) ?? [];
 	}
 
 	async readGranule(uri: string): Promise<string[]> {

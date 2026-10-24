@@ -1,7 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 import { GET_FIELDS, buildGetResponse } from '../get.ts';
 import { RuntimeConfigStore } from '../runtime-store.ts';
-import { DebugController } from '../../debug.ts';
 import { FakeDownloaderStore } from '../../downloader/__tests__/fakes.ts';
 import type { Config, Role } from '../../config/schema.ts';
 
@@ -19,14 +18,13 @@ const config: Config = {
 	},
 };
 
-function ctx(roles: Role[] = ['SUBSCRIBER', 'DOWNLOADER'], credentialsStore = new FakeDownloaderStore(), debug = new DebugController()) {
+function ctx(roles: Role[] = ['SUBSCRIBER', 'DOWNLOADER'], credentialsStore = new FakeDownloaderStore()) {
 	const store = new RuntimeConfigStore(config);
 	return {
 		activeRoles: new Set<Role>(roles),
-		ctx: { config, store, credentialsStore, debug, warn: () => {} },
+		ctx: { config, store, credentialsStore, warn: () => {} },
 		store,
 		credentialsStore,
-		debug,
 	};
 }
 
@@ -69,11 +67,9 @@ describe('buildGetResponse', () => {
 		expect(result.body['log-level-role']).toEqual({ SUBSCRIBER: 'debug' });
 	});
 
-	test('debug: empty by default, reflects whatever was set dynamically -- not the static CLI baseline', async () => {
-		const { activeRoles, ctx: c, debug } = ctx();
-		expect((await buildGetResponse(GET_FIELDS, activeRoles, c, 'debug')).body.debug).toEqual([]);
-		debug.setDynamic(['SUBSCRIBER']);
+	test('debug key is gone: GET refuses it as unknown', async () => {
+		const { activeRoles, ctx: c } = ctx();
 		const result = await buildGetResponse(GET_FIELDS, activeRoles, c, 'debug');
-		expect(result.body.debug).toEqual(['SUBSCRIBER']);
+		expect(result.status).not.toBe(200);
 	});
 });

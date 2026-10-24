@@ -11,18 +11,12 @@ import { validatePatch, type CredentialOp } from '../config/runtime.ts';
 import type { RuntimeConfigStore, ChangeEntry } from './runtime-store.ts';
 import type { DownloaderStore } from '../downloader/store.ts';
 import { parseCredentials } from '../downloader/credentials.ts';
-import type { DebugController } from '../debug.ts';
 
 export interface SetContext {
 	store: RuntimeConfigStore;
 	// Only present on a replica carrying DOWNLOADER -- see ../get.ts's
 	// GetContext doc comment, same reasoning.
 	credentialsStore: DownloaderStore | null;
-	// Always present -- see ../get.ts's GetContext doc comment. Backs
-	// the 'debug' key below, applied the same way 'credentials' is:
-	// a real side effect on a subsystem RuntimeConfigStore doesn't own,
-	// folded into the same {value,changed} response shape.
-	debug: DebugController;
 	warn: (message: string) => void;
 }
 
@@ -68,18 +62,6 @@ export async function buildSetResponse(body: unknown, activeRoles: ReadonlySet<R
 
 	if (patch.values.credentials) {
 		changes.credentials = await applyCredentialsOp(ctx.credentialsStore, patch.values.credentials, ctx.warn);
-	}
-	if (patch.values.debug !== undefined) {
-		// 'changed' compares as a SET, not by array order/identity --
-		// ctx.debug.setDynamic() replaces the dynamic set wholesale
-		// (../debug.ts), same "before vs. after" comparison shape as
-		// every other key here, just order-insensitive since this one's
-		// fundamentally a set, not a list.
-		const previous = new Set(ctx.debug.getDynamic());
-		const next = new Set(patch.values.debug);
-		ctx.debug.setDynamic(patch.values.debug);
-		const changed = previous.size !== next.size || [...previous].some((v) => !next.has(v));
-		changes.debug = { value: [...next], changed };
 	}
 
 	const hasChanges = Object.keys(changes).length > 0;

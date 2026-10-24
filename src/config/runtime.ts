@@ -21,7 +21,6 @@
 
 import { isValidMqttTopic, isValidCredentialTopic, isValidTopicPattern } from './topics.ts';
 import { VALID_ROLES, type OverrideRule, type Role } from './schema.ts';
-import { DEBUG_CATEGORIES, type DebugCategory } from '../debug.ts';
 
 export type ProcessMode = 'run' | 'halt';
 export type LogLevel = 'info' | 'warn' | 'debug';
@@ -48,16 +47,6 @@ const PATCHABLE_ROLES: Record<string, readonly Role[] | null> = {
 	blacklist: ['SUBSCRIBER'],
 	overridelist: ['SUBSCRIBER'],
 	credentials: ['DOWNLOADER'],
-	// NOT in flows.json -- replaces both the old --debug-file live-
-	// reloaded-file mechanism and, later, a static -d CLI flag (see
-	// ../debug.ts's header, "DELIBERATE CHANGE, 2026-09-12"): the
-	// maintainer wants debug categories controlled the exact same way as
-	// every other piece of live-mutable state, through this same
-	// /get /set API, nothing else. Unrestricted like 'log-level' itself
-	// -- there's no natural role restriction for "which roles' debug
-	// output can be toggled" the way whitelist/blacklist are
-	// SUBSCRIBER-only.
-	debug: null,
 };
 
 export function isKeyAllowed(key: string, activeRoles: ReadonlySet<Role>): boolean {
@@ -84,7 +73,6 @@ export interface ValidatedPatch {
 	blacklist?: string[];
 	overridelist?: OverrideRule[];
 	credentials?: CredentialOp;
-	debug?: DebugCategory[];
 }
 
 export interface PatchResult {
@@ -187,21 +175,6 @@ export function validatePatch(body: unknown, activeRoles: ReadonlySet<Role>): Pa
 				const itemErrors = validateOverridelist(value);
 				if (itemErrors.length > 0) { errors.push(...itemErrors); break; }
 				values.overridelist = value as OverrideRule[];
-				break;
-			}
-			case 'debug': {
-				if (!Array.isArray(value)) { errors.push(`${key}: must be an array of strings.`); break; }
-				// Unlike whitelist/blacklist, an EMPTY array is valid here --
-				// it's the only way to clear every category back to nothing
-				// (there's no static baseline underneath any more -- see
-				// ../debug.ts's header), same as 'log-level-role's
-				// `value: null` clear.
-				const normalized = value.map((v) => (typeof v === 'string' ? v.trim().toUpperCase() : ''));
-				const itemErrors = normalized.flatMap((v, i) =>
-					DEBUG_CATEGORIES.has(v) ? [] : [`debug[${i}]: '${String(value[i])}' — must be one of: ${[...DEBUG_CATEGORIES].join(', ')}`],
-				);
-				if (itemErrors.length > 0) { errors.push(...itemErrors); break; }
-				values.debug = [...new Set(normalized)] as DebugCategory[];
 				break;
 			}
 			case 'credentials': {

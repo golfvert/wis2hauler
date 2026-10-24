@@ -24,7 +24,6 @@ function baseDeps(store: FakeStore, overrides: Partial<IngestDeps> = {}): Ingest
 		sleep: async () => {},
 		now: () => 1_700_000_000_000,
 		log,
-		isDebugEnabled: () => false,
 		...overrides,
 	};
 }
@@ -239,7 +238,7 @@ describe('createIngestHandler', () => {
 
 			await handler('origin/a/wis2/fr-meteofrance/data/foo', payload);
 
-			expect(debugCalls).toEqual([{ source: 'GB2', topic: 'origin/a/wis2/fr-meteofrance/data/foo', bytes: payload.length, wnmId: 'msg-recv-1', dataId: 'x' }]);
+			expect(debugCalls).toEqual([{ source: 'GB2', topic: 'origin/a/wis2/fr-meteofrance/data/foo', bytes: payload.length, wnm_id: 'msg-recv-1', data_id: 'x' }]);
 		});
 
 		// 2026-09-20 (NOT a port): the maintainer, after living with this
@@ -276,7 +275,7 @@ describe('createIngestHandler', () => {
 
 			await handler('origin/a/wis2/fr-meteofrance/data/foo', Buffer.from(wnm('msg-recv-withdebug')));
 
-			expect(debugCalls[0]).toMatchObject({ wnmId: 'msg-recv-withdebug', dataId: 'x' });
+			expect(debugCalls[0]).toMatchObject({ wnm_id: 'msg-recv-withdebug', data_id: 'x' });
 		});
 
 		test('fires for a topic that then gets blacklisted -- this is the only place such a message is individually identifiable', async () => {
@@ -345,8 +344,8 @@ describe('createIngestHandler', () => {
 			await handler('origin/b/wis2/fr-meteofrance/data/foo', padded);
 
 			expect(debugCalls).toHaveLength(2);
-			expect(debugCalls[0]!.wnmId).toBe('msg-recv-fmt');
-			expect(debugCalls[1]!.wnmId).toBe('msg-recv-fmt');
+			expect(debugCalls[0]!.wnm_id).toBe('msg-recv-fmt');
+			expect(debugCalls[1]!.wnm_id).toBe('msg-recv-fmt');
 			expect(debugCalls[0]!.bytes).toBe(debugCalls[1]!.bytes); // same id, same content -> same bytes
 			expect(debugCalls[0]!.bytes).not.toBe(padded.length); // and it's neither raw length, in general
 		});
@@ -379,7 +378,7 @@ describe('createIngestHandler', () => {
 	// this fires once per OUTCOME and carries wnm.id/data_id whenever the
 	// payload was parseable enough to extract them.
 	describe('filterLog', () => {
-		test('an "ingested" message logs source/topic/wnmId/dataId/outcome, unconditionally (no isDebugEnabled needed)', async () => {
+		test('an "ingested" message logs source/topic/wnmId/dataId/outcome, unconditionally', async () => {
 			const store = new FakeStore();
 			const stats = createIngestStats();
 			const { logger, debugCalls } = fakeReceivedLogger();
@@ -391,8 +390,8 @@ describe('createIngestHandler', () => {
 				{
 					source: 'GB1',
 					topic: 'origin/a/wis2/fr-meteofrance/data/foo',
-					wnmId: 'msg-filter-1',
-					dataId: 'x',
+					wnm_id: 'msg-filter-1',
+					data_id: 'x',
 					outcome: 'ingested',
 					wnm: JSON.parse(wnm('msg-filter-1')),
 				},
@@ -429,8 +428,8 @@ describe('createIngestHandler', () => {
 			await handler('origin/a/wis2/fr-meteofrance/data/bar', Buffer.from(wnm('msg-filter-dup')));
 
 			expect(debugCalls).toEqual([
-				{ source: 'GB1', topic: 'origin/a/wis2/fr-meteofrance/data/foo', wnmId: 'msg-filter-dup', dataId: 'x', outcome: 'ingested', wnm: JSON.parse(wnm('msg-filter-dup')) },
-				{ source: 'GB1', topic: 'origin/a/wis2/fr-meteofrance/data/bar', wnmId: 'msg-filter-dup', dataId: 'x', outcome: 'duplicate', wnm: JSON.parse(wnm('msg-filter-dup')) },
+				{ source: 'GB1', topic: 'origin/a/wis2/fr-meteofrance/data/foo', wnm_id: 'msg-filter-dup', data_id: 'x', outcome: 'ingested', wnm: JSON.parse(wnm('msg-filter-dup')) },
+				{ source: 'GB1', topic: 'origin/a/wis2/fr-meteofrance/data/bar', wnm_id: 'msg-filter-dup', data_id: 'x', outcome: 'duplicate', wnm: JSON.parse(wnm('msg-filter-dup')) },
 			]);
 		});
 
@@ -444,8 +443,8 @@ describe('createIngestHandler', () => {
 
 			expect(debugCalls).toHaveLength(1);
 			expect(debugCalls[0]!.outcome).toBe('malformed');
-			expect(debugCalls[0]!.wnmId).toBeUndefined();
-			expect(debugCalls[0]!.dataId).toBeUndefined();
+			expect(debugCalls[0]!.wnm_id).toBeUndefined();
+			expect(debugCalls[0]!.data_id).toBeUndefined();
 			expect(debugCalls[0]!.wnm).toBeUndefined();
 			expect(typeof debugCalls[0]!.error).toBe('string');
 		});
@@ -460,7 +459,7 @@ describe('createIngestHandler', () => {
 			await handler('origin/a/wis2/fr-meteofrance/data/foo', Buffer.from(JSON.stringify(orphan)));
 
 			expect(debugCalls).toHaveLength(1);
-			expect(debugCalls[0]).toEqual(expect.objectContaining({ outcome: 'malformed', dataId: 'orphan-data-id', wnmId: undefined, wnm: orphan }));
+			expect(debugCalls[0]).toEqual(expect.objectContaining({ outcome: 'malformed', data_id: 'orphan-data-id', wnm_id: undefined, wnm: orphan }));
 		});
 
 		// unchanged/blacklisted run BEFORE this handler's own JSON.parse, so
@@ -485,8 +484,8 @@ describe('createIngestHandler', () => {
 			await handler('origin/a/wis2/fr-meteofrance/data/foo', payload);
 
 			expect(debugCalls).toEqual([
-				{ source: 'GB1', topic: 'origin/a/wis2/fr-meteofrance/data/foo', wnmId: 'msg-filter-unchanged', dataId: 'x', outcome: 'ingested', wnm: JSON.parse(wnm('msg-filter-unchanged')) },
-				{ source: 'GB1', topic: 'origin/a/wis2/fr-meteofrance/data/foo', wnmId: 'msg-filter-unchanged', dataId: 'x', outcome: 'unchanged', wnm: JSON.parse(wnm('msg-filter-unchanged')) },
+				{ source: 'GB1', topic: 'origin/a/wis2/fr-meteofrance/data/foo', wnm_id: 'msg-filter-unchanged', data_id: 'x', outcome: 'ingested', wnm: JSON.parse(wnm('msg-filter-unchanged')) },
+				{ source: 'GB1', topic: 'origin/a/wis2/fr-meteofrance/data/foo', wnm_id: 'msg-filter-unchanged', data_id: 'x', outcome: 'unchanged', wnm: JSON.parse(wnm('msg-filter-unchanged')) },
 			]);
 		});
 
@@ -500,7 +499,7 @@ describe('createIngestHandler', () => {
 			await handler('origin/a/wis2/fr-meteofrance/data/recommended/foo', Buffer.from(wnm('msg-filter-bl')));
 
 			expect(debugCalls).toEqual([
-				{ source: 'GB1', topic: 'origin/a/wis2/fr-meteofrance/data/recommended/foo', wnmId: 'msg-filter-bl', dataId: 'x', outcome: 'blacklisted', wnm: JSON.parse(wnm('msg-filter-bl')) },
+				{ source: 'GB1', topic: 'origin/a/wis2/fr-meteofrance/data/recommended/foo', wnm_id: 'msg-filter-bl', data_id: 'x', outcome: 'blacklisted', wnm: JSON.parse(wnm('msg-filter-bl')) },
 			]);
 		});
 
@@ -529,7 +528,7 @@ describe('createIngestHandler', () => {
 			await handler('origin/a/wis2/fr-meteofrance/data/recommended/foo', Buffer.from(wnm('msg-filter-info-level-2'))); // blacklisted -- same, skipped
 
 			expect(debugCalls).toEqual([
-				{ source: 'GB1', topic: 'origin/a/wis2/fr-meteofrance/data/foo', wnmId: 'msg-filter-info-level', dataId: 'x', outcome: 'ingested', wnm: JSON.parse(wnm('msg-filter-info-level')) },
+				{ source: 'GB1', topic: 'origin/a/wis2/fr-meteofrance/data/foo', wnm_id: 'msg-filter-info-level', data_id: 'x', outcome: 'ingested', wnm: JSON.parse(wnm('msg-filter-info-level')) },
 			]);
 		});
 
@@ -546,7 +545,7 @@ describe('createIngestHandler', () => {
 			await handler('origin/a/wis2/fr-meteofrance/data/recommended/foo', Buffer.from(wnm('msg-filter-debug-level-2'))); // blacklisted
 
 			expect(debugCalls.map((c) => c.outcome)).toEqual(['ingested', 'unchanged', 'blacklisted']);
-			expect(debugCalls[1]).toEqual({ source: 'GB1', topic: 'origin/a/wis2/fr-meteofrance/data/foo', wnmId: 'msg-filter-debug-level', dataId: 'x', outcome: 'unchanged', wnm: JSON.parse(wnm('msg-filter-debug-level')) });
+			expect(debugCalls[1]).toEqual({ source: 'GB1', topic: 'origin/a/wis2/fr-meteofrance/data/foo', wnm_id: 'msg-filter-debug-level', data_id: 'x', outcome: 'unchanged', wnm: JSON.parse(wnm('msg-filter-debug-level')) });
 		});
 	});
 });

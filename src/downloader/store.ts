@@ -351,6 +351,13 @@ export interface DownloaderStore {
 	// isAlreadyComplete() checks before ever queuing a download.
 	markDownloadComplete(downloaderId: string): Promise<void>;
 
+	// NOT a port -- deletes the deadline marker SUBSCRIBER set when it
+	// accepted this notification (cacheMarkerKey). Called when the
+	// download completes and when its retries are exhausted, so the marker
+	// only ever expires for a download that is neither done nor failed.
+	// Resolves to whether a marker was actually deleted.
+	deleteCacheMarker(downloaderId: string): Promise<boolean>;
+
 	// Graceful shutdown of the underlying client(s).
 	quit(): Promise<void>;
 }

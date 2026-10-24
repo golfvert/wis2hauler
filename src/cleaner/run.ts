@@ -27,7 +27,6 @@
 // has no owner anywhere yet in this port -- deferred, like the rest of
 // the live-patch HTTP API, to a later phase.
 import type { Config } from '../config/schema.ts';
-import type { DebugController } from '../debug.ts';
 import { createRedisConnection } from '../redis/ioredis-store.ts';
 import { IoredisCleanerStore, IoredisGcStore } from '../redis/ioredis-cleaner-store.ts';
 import { IoredisElectionStore } from '../redis/ioredis-election-store.ts';
@@ -56,7 +55,6 @@ function defaultSleep(ms: number): Promise<void> {
 
 export async function runCleaner(
 	config: Config,
-	debug: DebugController,
 	log: typeof console,
 	signal: AbortSignal,
 	processUuid: string,
@@ -66,8 +64,6 @@ export async function runCleaner(
 	const queue = config.global.queue;
 	if (!queue) throw new Error('runCleaner called without global.queue (validation should have caught this)');
 	const worker = config.global.worker;
-
-	const isDebugEnabled = () => debug.has('CLEANER');
 
 	// "Process Errors" (previous-node fbb02586af0f3189, Debug) and "Clean
 	// Redis" (previous-node 16843fc39d8d2908, Debug) -- see the Poll
@@ -111,7 +107,6 @@ export async function runCleaner(
 			onResult: (priority, workers) => {
 				state.primary = priority === 'primary';
 				state.cleaningNeeded = computeCleaningNeeded(workers, Date.now());
-				if (isDebugEnabled()) log.log(`CLEANER: election -> ${priority}, cleaning-needed=${state.cleaningNeeded}`);
 			},
 			warn: (m) => log.warn(`CLEANER: ${m}`),
 		},
@@ -180,7 +175,6 @@ export async function runCleaner(
 						const result = processErrors(reply as XreadReply);
 						if (result.lastErrorId) lastErrorId = result.lastErrorId;
 						for (const m of result.messages) {
-							if (isDebugEnabled()) log.log(`CLEANER: error ${m.entryId}: ${JSON.stringify(m.payload)}`);
 							processErrorsLog?.debug({ entryId: m.entryId, payload: m.payload });
 						}
 					}
@@ -199,7 +193,7 @@ export async function runCleaner(
 			if (state.primary) {
 				try {
 					const stats = await runGcSweep(gcStore, gcThresholdSeconds, (m) => log.warn(`CLEANER: ${m}`));
-					if (isDebugEnabled() || stats.totalDeleted > 0) log.log(`CLEANER: Clean Redis deleted ${stats.totalDeleted} keys (errors=${stats.errors})`);
+					if (stats.totalDeleted > 0) log.log(`CLEANER: Clean Redis deleted ${stats.totalDeleted} keys (errors=${stats.errors})`);
 					cleanRedisLog?.debug({ totalDeleted: stats.totalDeleted, errors: stats.errors });
 				} catch (err) {
 					log.error(`CLEANER: Clean Redis failed: ${err instanceof Error ? err.message : String(err)}`);

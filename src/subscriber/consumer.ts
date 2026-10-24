@@ -30,6 +30,8 @@ import { compareStreamIds, streamIdMinusMs } from './stream-id.ts';
 // re-deriving as two separate constants).
 export const CLAIM_TTL_SECONDS = 900;
 
+import { DEFAULT_CACHE_DEADLINE_SECONDS } from '../wis2/cache-deadline.ts';
+
 export interface ConsumerDeps {
 	store: SubscriberStore;
 	queue: string;
@@ -43,12 +45,13 @@ export interface ConsumerDeps {
 	/** Injectable Math.random() -- see order-links.ts's computeDelaySeconds() doc comment. */
 	random: () => number;
 	globalCacheMode: boolean;
+	/** global.cache-deadline, in seconds: the TTL of the deadline marker set when a notification is accepted for download. Defaults to DEFAULT_CACHE_DEADLINE_SECONDS when omitted. */
+	cacheDeadlineSeconds?: number;
 	/** global["centre-id"] -- stamped onto the cache-republish's properties["global-cache"] and the monitoring event's "source". */
 	centreId: string;
 	/** PUB1/PUB2 -- used only for the 'publish-only' outcome. Whichever of the original's local-broker[0]/[1] are configured (see run.ts). */
 	publishClients: readonly MqttLike[];
 	log: typeof console;
-	isDebugEnabled: () => boolean;
 	/** Injectable so tests don't have to wait out real stagger delays. */
 	sleep: (ms: number) => Promise<void>;
 	now: () => Date;
@@ -69,7 +72,7 @@ export interface ConsumerDeps {
 	// createSourceLogger() call, routed through global.log's
 	// level/file config -- but until now, THIS role's own "here is what
 	// SUBSCRIBER decided for this notification" event (line below,
-	// `isDebugEnabled()`) only ever went through the separate,
+	// the old plain-console toggle) only ever went through the separate,
 	// unrelated `log: typeof console` parameter (plain stdout, gated by
 	// the DebugController's per-role on/off flag, NOT by global.log.level/
 	// .to at all) -- so turning on `global.log.level: debug` +
@@ -294,7 +297,8 @@ async function checkLineageAndRecord(
 		// carry the raw wnm.id too, not just data_id, so the maintainer can
 		// cross-reference against ingest.ts's own filterLog/receivedLog
 		// entries for the exact same wire message.
-		deps.duplicateLog?.info({ topic: entry.topic, dataId: dataIdRaw, wnmId: wnm.id, pubtime, reason: decision.reason, ...logFields });
+		deps.duplicateLog?.info({ topic: entry.topic, data_id: dataIdRaw, wnm_id: wnm.id, pubtime, reason: decision.reason, ...logFields });
+		deps.decisionLog?.debug({ data_id: dataIdRaw, wnm_id: wnm.id, topic: entry.topic, pubtime, action: 'duplicate', reason: decision.reason });
 		return true;
 	}
 	await record(deps.now().getTime());
@@ -306,7 +310,7 @@ export async function processEntry(entry: RawStreamEntry, deps: ConsumerDeps): P
 	try {
 		wnm = reorderLinks(JSON.parse(entry.payload) as Wnm);
 	} catch (err) {
-		deps.log.error(`consumer: malformed WNM on stream entry ${entry.id} (${entry.topic}): ${err instanceof Error ? err.message : String(err)}`);
+		deps.log.error(`consumer: malformed WNM on stream entry ${entry.id} (${entry.topic}): ${err instanceof Error ? err.message : String(err)}`, { entryId: entry.id, topic: entry.topic });
 		return;
 	}
 
@@ -339,13 +343,12 @@ export async function processEntry(entry: RawStreamEntry, deps: ConsumerDeps): P
 	// is invented here; deps.decisionLog below already records every
 	// classified entry's outcome.
 	if (classification.kind === 'ignore') {
-		if (deps.isDebugEnabled()) deps.log.log(`consumer: ignoring ${dataId ?? '(no data_id)'} on ${entry.topic} (${classification.reason})`);
 		// ENRICHED, 2026-09-20 -- this outcome used to leave NO trace here
 		// at all (see ConsumerDeps.decisionLog's own doc comment): a
 		// classification of 'ignore' is exactly as much "what SUBSCRIBER
 		// decided" as 'drop'/'already-complete' below, and was the single
 		// most likely place for a data_id to vanish without explanation.
-		deps.decisionLog?.debug({ dataId, wnmId, topic: entry.topic, pubtime: wnm.properties?.pubtime, action: 'ignore', reason: classification.reason });
+		deps.decisionLog?.debug({ data_id: dataId, wnm_id: wnmId, topic: entry.topic, pubtime: wnm.properties?.pubtime, action: 'ignore', reason: classification.reason });
 		return;
 	}
 
@@ -418,7 +421,6 @@ export async function processEntry(entry: RawStreamEntry, deps: ConsumerDeps): P
 		globalCacheMode: deps.globalCacheMode,
 	});
 
-	if (deps.isDebugEnabled()) deps.log.log(`consumer: ${downloaderId} (${entry.topic}) -> ${action.kind}`);
 	// See ConsumerDeps.decisionLog's own doc comment: the file-routed
 	// twin of the plain-console line just above, computed once here
 	// (rather than duplicated inside the 'download'/'wait' cases below,
@@ -427,7 +429,7 @@ export async function processEntry(entry: RawStreamEntry, deps: ConsumerDeps): P
 	// which otherwise leave zero trace anywhere -- gets one record of
 	// what SUBSCRIBER decided and why.
 	const href = firstOf(selectLink(wnm)?.href) ?? '';
-	deps.decisionLog?.debug({ downloaderId, dataId, wnmId, topic: entry.topic, pubtime: wnm.properties?.pubtime, href, action: action.kind });
+	deps.decisionLog?.debug({ downloader_id: downloaderId, data_id: dataId, wnm_id: wnmId, topic: entry.topic, pubtime: wnm.properties?.pubtime, href, action: action.kind });
 
 	switch (action.kind) {
 		case 'already-complete':
@@ -443,6 +445,10 @@ export async function processEntry(entry: RawStreamEntry, deps: ConsumerDeps): P
 			// Downloader role to read carries downloader_id embedded,
 			// unlike the publish-only path's republished copy.
 			const wnmJson = JSON.stringify({ ...wnm, downloader_id: downloaderId });
+			// Deadline marker FIRST, before the job exists: DOWNLOADER
+			// deletes it on completion, which cannot happen before the job
+			// is queued. REPORTER logs `missed` if it expires.
+			await deps.store.setCacheMarker(downloaderId, deps.cacheDeadlineSeconds ?? DEFAULT_CACHE_DEADLINE_SECONDS);
 			await Promise.all([
 				deps.store.writeDownloadJob(downloaderId, href, prepared.source, wnmJson, entry.topic, wnm.properties.pubtime, dataId),
 				deps.store.enqueueWork(deps.queue, downloaderId, href, entry.topic, hasContent, dataId),
@@ -514,7 +520,7 @@ export async function processEntry(entry: RawStreamEntry, deps: ConsumerDeps): P
 				// Downloader's own entries in the same shared
 				// `hauler-publish-*` log file.
 				deps.publishLog?.info({
-					downloaderId,
+					downloader_id: downloaderId,
 					role: 'SUBSCRIBER',
 					topic: cacheTopic,
 					wnm: cacheWnm,
@@ -544,6 +550,7 @@ export async function processEntry(entry: RawStreamEntry, deps: ConsumerDeps): P
 					const topics = emitMonitorEvent ? `${cacheTopic}/${monitorTopic}` : cacheTopic;
 					deps.log.error(
 						`consumer: local-broker publish failed (publish-only outcome for ${downloaderId}, topics ${topics}): ${err instanceof Error ? err.message : String(err)} -- releasing claim regardless`,
+						{ data_id: dataId, downloader_id: downloaderId, topic: entry.topic },
 					);
 				}
 			}
@@ -808,7 +815,7 @@ export async function runConsumerLoop(
 				try {
 					await processEntry(entry, deps);
 				} catch (err) {
-					deps.log.error(`consumer: failed processing ${entry.id} (${entry.topic}): ${err instanceof Error ? err.message : String(err)}`);
+					deps.log.error(`consumer: failed processing ${entry.id} (${entry.topic}): ${err instanceof Error ? err.message : String(err)}`, { entryId: entry.id, topic: entry.topic });
 				}
 			}),
 		).finally(() => {

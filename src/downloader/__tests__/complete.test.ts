@@ -146,10 +146,10 @@ describe('runComplete', () => {
 		expect(result?.length).toBe(0);
 	});
 
-	test('"Duplicates" (Debug): a routed RenameIoError/HashReadError logs once with the downloaderId and error message', async () => {
+	test('"File Error" (Debug): a routed RenameIoError/HashReadError logs once with the downloaderId and error message', async () => {
 		const { logger, debugCalls } = fakeSourceLogger();
 		const { deps, store } = makeDeps({
-			duplicatesLog: logger,
+			fileErrorLog: logger,
 			hashConfig: { ...hashConfig, renameToDate: true },
 			hashIo: makeHashIo({
 				mkdirRecursive: () => {
@@ -162,6 +162,6 @@ describe('runComplete', () => {
 		await runComplete(deps, 'wis2:centre:abc', 'gid-1', '/downloads/f.grib2');
 
 		expect(debugCalls).toHaveLength(1);
-		expect(debugCalls[0]).toMatchObject({ downloaderId: 'wis2:centre:abc', filepath: '/downloads/f.grib2', error: expect.stringContaining('EACCES') });
+		expect(debugCalls[0]).toMatchObject({ downloader_id: 'wis2:centre:abc', filepath: '/downloads/f.grib2', error: expect.stringContaining('EACCES') });
 	});
 });

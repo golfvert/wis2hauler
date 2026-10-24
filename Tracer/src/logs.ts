@@ -22,7 +22,7 @@
 // is exactly what happened before this was added.
 //
 // This module deliberately does NOT hardcode which JSON field a data_id
-// or wnm.id lives under for a given source (dataId, wnmId, wnm.id,
+// or wnm.id lives under for a given source (data_id, wnm_id, wnm.id,
 // wnm.properties.data_id, nested inside a "wnm"/"monitor" object on
 // Publish, embedded in an error string, ...). Hauler's own logging shape
 // has changed several times in a single day this session (see its
@@ -31,7 +31,7 @@
 // below walks the WHOLE parsed object looking for the id as a substring
 // of any string value, wherever it lives. This is the same principle as
 // the shell-based runbook this tool replaces (`zgrep -h
-// "\"downloaderId\":\"$id\""`), just correct regardless of which key the
+// "\"downloader_id\":\"$id\""`), just correct regardless of which key the
 // id sits under.
 import { createReadStream } from 'node:fs';
 import { readdir } from 'node:fs/promises';

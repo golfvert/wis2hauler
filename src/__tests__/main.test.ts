@@ -2,10 +2,10 @@ import { describe, expect, test } from 'bun:test';
 import { fileURLToPath } from 'node:url';
 import { parseCli, CliUsageError, main, type RoleRunners } from '../main.ts';
 import type { Config } from '../config/schema.ts';
-import type { DebugController } from '../debug.ts';
 import type { HttpRouter } from '../http/router.ts';
 import type { RuntimeConfigStore } from '../admin/runtime-store.ts';
 import type { MqttLike } from '../mqtt/types.ts';
+import type { LogSink } from '../logging/sink.ts';
 
 const validConfig = fileURLToPath(new URL('../../fixtures/example.valid.yaml', import.meta.url));
 const invalidConfig = fileURLToPath(new URL('../../fixtures/example.invalid.yaml', import.meta.url));
@@ -18,7 +18,18 @@ function fakeLog() {
 		warn: (...args: unknown[]) => lines.warn.push(args.join(' ')),
 		error: (...args: unknown[]) => lines.error.push(args.join(' ')),
 	} as unknown as typeof console;
-	return { log, lines };
+	// Process loggers write through the sink at `info` with a `severity`
+	// and a `message`; mirror them into the same buckets the console
+	// used, so assertions read the same way.
+	const sink: LogSink = {
+		write: (_level, _source, data) => {
+			const message = typeof data.message === 'string' ? data.message : undefined;
+			if (message === undefined) return;
+			const bucket = data.severity === 'error' ? lines.error : data.severity === 'warn' ? lines.warn : lines.log;
+			bucket.push(message);
+		},
+	};
+	return { log, lines, sink };
 }
 
 // A fake MqttLike -- backs every fake connectMqtt/connectMqttBestEffort
@@ -47,30 +58,30 @@ function fakeMqttLike(): MqttLike {
 // do bind a real, empty Bun.serve() for the duration of the main()
 // call.)
 function fakeRunners() {
-	const subscriberCalls: { config: Config; debug: DebugController; signal: AbortSignal }[] = [];
-	const downloaderCalls: { config: Config; debug: DebugController; signal: AbortSignal }[] = [];
-	const cleanerCalls: { config: Config; debug: DebugController; signal: AbortSignal; processUuid: string }[] = [];
-	const reporterCalls: { config: Config; debug: DebugController; signal: AbortSignal; processUuid: string; router: HttpRouter }[] = [];
-	const replayerCalls: { config: Config; debug: DebugController; signal: AbortSignal; processUuid: string; router: HttpRouter; runtimeStore: RuntimeConfigStore }[] = [];
-	const heartbeatCalls: { config: Config; debug: DebugController; signal: AbortSignal; processUuid: string }[] = [];
+	const subscriberCalls: { config: Config; signal: AbortSignal }[] = [];
+	const downloaderCalls: { config: Config; signal: AbortSignal }[] = [];
+	const cleanerCalls: { config: Config; signal: AbortSignal; processUuid: string }[] = [];
+	const reporterCalls: { config: Config; signal: AbortSignal; processUuid: string; router: HttpRouter }[] = [];
+	const replayerCalls: { config: Config; signal: AbortSignal; processUuid: string; router: HttpRouter; runtimeStore: RuntimeConfigStore }[] = [];
+	const heartbeatCalls: { config: Config; signal: AbortSignal; processUuid: string }[] = [];
 	const runners: RoleRunners = {
-		subscriber: async (config, debug, _log, signal) => {
-			subscriberCalls.push({ config, debug, signal });
+		subscriber: async (config, _log, signal) => {
+			subscriberCalls.push({ config, signal });
 		},
-		downloader: async (config, debug, _log, signal) => {
-			downloaderCalls.push({ config, debug, signal });
+		downloader: async (config, _log, signal) => {
+			downloaderCalls.push({ config, signal });
 		},
-		cleaner: async (config, debug, _log, signal, processUuid) => {
-			cleanerCalls.push({ config, debug, signal, processUuid });
+		cleaner: async (config, _log, signal, processUuid) => {
+			cleanerCalls.push({ config, signal, processUuid });
 		},
-		reporter: async (config, debug, _log, signal, processUuid, router) => {
-			reporterCalls.push({ config, debug, signal, processUuid, router });
+		reporter: async (config, _log, signal, processUuid, router) => {
+			reporterCalls.push({ config, signal, processUuid, router });
 		},
-		replayer: async (config, debug, _log, signal, processUuid, router, runtimeStore) => {
-			replayerCalls.push({ config, debug, signal, processUuid, router, runtimeStore });
+		replayer: async (config, _log, signal, processUuid, router, runtimeStore) => {
+			replayerCalls.push({ config, signal, processUuid, router, runtimeStore });
 		},
-		heartbeat: async (config, debug, _log, signal, processUuid) => {
-			heartbeatCalls.push({ config, debug, signal, processUuid });
+		heartbeat: async (config, _log, signal, processUuid) => {
+			heartbeatCalls.push({ config, signal, processUuid });
 		},
 		connectMqtt: async () => fakeMqttLike(),
 		connectMqttBestEffort: async () => fakeMqttLike(),
@@ -91,24 +102,24 @@ describe('parseCli', () => {
 
 describe('main', () => {
 	test('exits 2 with usage on no config path', async () => {
-		const { log, lines } = fakeLog();
-		const code = await main([], log);
+		const { log, lines, sink } = fakeLog();
+		const code = await main([], log, undefined, undefined, sink);
 		expect(code).toBe(2);
 		expect(lines.error[0]).toMatch(/usage:/);
 	});
 
 	test('exits 1 and reports errors for an invalid config', async () => {
-		const { log, lines } = fakeLog();
-		const code = await main([invalidConfig], log);
+		const { log, lines, sink } = fakeLog();
+		const code = await main([invalidConfig], log, undefined, undefined, sink);
 		expect(code).toBe(1);
 		expect(lines.error[0]).toMatch(/config invalid/);
 		expect(lines.error.some((l) => l.includes('global.worker'))).toBe(true);
 	});
 
 	test('exits 0, reports roles, and starts every active role plus the heartbeat via the injected runners', async () => {
-		const { log, lines } = fakeLog();
+		const { log, lines, sink } = fakeLog();
 		const { runners, subscriberCalls, downloaderCalls, cleanerCalls, reporterCalls, replayerCalls, heartbeatCalls } = fakeRunners();
-		const code = await main([validConfig], log, runners);
+		const code = await main([validConfig], log, runners, undefined, sink);
 		expect(code).toBe(0);
 		expect(lines.log.some((l) => l.includes('roles=SUBSCRIBER, DOWNLOADER, CLEANER, REPORTER, REPLAYER'))).toBe(true);
 		expect(lines.log.some((l) => l.includes('SUBSCRIBER role starting'))).toBe(true);
@@ -135,9 +146,9 @@ describe('main', () => {
 	});
 
 	test('cleaner/reporter/replayer/heartbeat all receive the same processUuid, generated once', async () => {
-		const { log } = fakeLog();
+		const { log, sink } = fakeLog();
 		const { runners, cleanerCalls, reporterCalls, replayerCalls, heartbeatCalls } = fakeRunners();
-		await main([validConfig], log, runners);
+		await main([validConfig], log, runners, undefined, sink);
 		const uuid = cleanerCalls[0]!.processUuid;
 		expect(uuid).toMatch(/^[0-9a-f-]{36}$/);
 		expect(reporterCalls[0]!.processUuid).toBe(uuid);
@@ -146,21 +157,21 @@ describe('main', () => {
 	});
 
 	test('reporter and replayer are handed the same shared HTTP router', async () => {
-		const { log } = fakeLog();
+		const { log, sink } = fakeLog();
 		const { runners, reporterCalls, replayerCalls } = fakeRunners();
-		await main([validConfig], log, runners);
+		await main([validConfig], log, runners, undefined, sink);
 		expect(reporterCalls[0]!.router).toBe(replayerCalls[0]!.router);
 	});
 
 	test('config infos are printed unconditionally, on every run', async () => {
-		const { log, lines } = fakeLog();
+		const { log, lines, sink } = fakeLog();
 		const { runners } = fakeRunners();
-		await main([validConfig], log, runners);
+		await main([validConfig], log, runners, undefined, sink);
 		expect(lines.log.some((l) => l.startsWith('config: '))).toBe(true);
 	});
 
 	test('active roles run concurrently, not sequentially: a slow DOWNLOADER does not block CLEANER from starting and finishing', async () => {
-		const { log, lines } = fakeLog();
+		const { log, lines, sink } = fakeLog();
 		let releaseDownloader: () => void = () => {};
 		const runners: RoleRunners = {
 			subscriber: async () => {},
@@ -177,7 +188,7 @@ describe('main', () => {
 			connectMqttBestEffort: async () => fakeMqttLike(),
 		};
 
-		const donePromise = main([validConfig], log, runners);
+		const donePromise = main([validConfig], log, runners, undefined, sink);
 
 		// Let every already-resolved fake's continuation run (microtasks
 		// drain before a macrotask fires), while DOWNLOADER's fake is still
@@ -199,7 +210,7 @@ describe('main', () => {
 	});
 
 	test('one role rejecting is reported and surfaces as exit code 1, without preventing the others from completing', async () => {
-		const { log, lines } = fakeLog();
+		const { log, lines, sink } = fakeLog();
 		const runners: RoleRunners = {
 			subscriber: async () => {},
 			downloader: async () => {
@@ -212,7 +223,7 @@ describe('main', () => {
 			connectMqtt: async () => fakeMqttLike(),
 			connectMqttBestEffort: async () => fakeMqttLike(),
 		};
-		const code = await main([validConfig], log, runners);
+		const code = await main([validConfig], log, runners, undefined, sink);
 		expect(code).toBe(1);
 		expect(lines.error.some((l) => l.includes('boom'))).toBe(true);
 		// Every other role still started and stopped normally.
@@ -221,14 +232,14 @@ describe('main', () => {
 	});
 
 	test('replayer receives the same RuntimeConfigStore that the admin API is wired to', async () => {
-		const { log } = fakeLog();
+		const { log, sink } = fakeLog();
 		const { runners, replayerCalls } = fakeRunners();
-		await main([validConfig], log, runners);
+		await main([validConfig], log, runners, undefined, sink);
 		expect(replayerCalls[0]!.runtimeStore.getLogLevel()).toBe('info');
 	});
 
 	test('the shared HTTP server + admin API (GET /get, POST /set) start even when neither REPORTER nor REPLAYER is active', async () => {
-		const { log } = fakeLog();
+		const { log, sink } = fakeLog();
 		let releaseCleaner: () => void = () => {};
 		const runners: RoleRunners = {
 			subscriber: async () => {},
@@ -245,7 +256,7 @@ describe('main', () => {
 			connectMqttBestEffort: async () => fakeMqttLike(),
 		};
 
-		const donePromise = main([cleanerOnlyConfig], log, runners);
+		const donePromise = main([cleanerOnlyConfig], log, runners, undefined, sink);
 		// Let main() get past config loading and bind the HTTP server
 		// before CLEANER's fake blocks forever.
 		await new Promise((resolve) => setTimeout(resolve, 20));

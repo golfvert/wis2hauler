@@ -144,7 +144,7 @@ export async function startAck(
 	]);
 	for (const result of results) {
 		if (result.status === 'rejected') {
-			ackLog?.debug({ worker, gid, streamId, dataId, error: result.reason instanceof Error ? result.reason.message : String(result.reason) });
+			ackLog?.debug({ worker, gid, streamId, data_id: dataId, error: result.reason instanceof Error ? result.reason.message : String(result.reason) });
 		}
 	}
 

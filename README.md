@@ -24,7 +24,7 @@ A single running instance ("replica" or "worker") performs whichever of these fi
 | `SUBSCRIBER` | Connects to up to two WIS2 Global Brokers (GB1/GB2), applies whitelist/blacklist/override rules, deduplicates, and queues matching notifications for download. |
 | `DOWNLOADER` | Pulls queued work, downloads the referenced file via [aria2](https://aria2.github.io/), verifies its integrity, optionally relocates it (by date, by topic, or to S3), and republishes a completion notification, if local broker are defined. |
 | `CLEANER` | Deletes locally cached files once their retention period (`cleaner.keep-in-cache`) has elapsed. |
-| `REPORTER` | Exposes Prometheus metrics (downloads, errors, active IPs, latency) over HTTP. |
+| `REPORTER` | Exposes Prometheus metrics (downloads, errors, active IPs, latency) over HTTP, and logs one outcome line per accepted notification (`cached`, `late`, `failed`, `missed`) to `hauler-reporter-*.info.log`. |
 | `REPLAYER` | On request, fetches historical WIS2 notifications from a remote WIS2-GREP replay service and re-injects them into the pipeline. |
 
 `CLEANER`, `REPORTER`, and `REPLAYER` are singleton-style roles: every replica carrying one of them participates in a lightweight Redis-backed leader election, but only the elected primary actually acts (schedules deletions, serves `/reporter/primary` metrics, answers replay requests). `SUBSCRIBER` and `DOWNLOADER` are scale-out roles instead — every replica carrying them works concurrently, coordinated through Redis Streams consumer groups rather than an election. Every replica, regardless of which roles it carries, also runs an always-on heartbeat that announces it to the others (this is what the election reads).
@@ -119,12 +119,11 @@ The test suite (55+ test files under `src/**/__tests__/`) exercises the pure dec
 ```
 src/
   main.ts          # process entrypoint / orchestrator — owns every MQTT connection and the HTTP server
-  debug.ts         # runtime debug-category toggling, entirely via the admin API (no CLI flag, no file)
   admin/           # GET /get, POST /set — the runtime admin API
   config/          # YAML loading, schema, validation, the small live-patchable subset
   election/        # shared leader-election + always-on heartbeat primitive
   http/            # the one shared HTTP server every role's routes register onto
-  logging/         # structured logging: sinks (stdout/file), per-role level gating
+  logging/         # structured logging: sinks (stdout/file), per-role level gating, process-log adapter
   mqtt/            # MQTT client wrapper
   redis/           # ioredis-backed store implementations (single-node or Cluster)
   wis2/            # WIS2 notification message type, topic grammar/matching, shared Redis key builders

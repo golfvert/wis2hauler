@@ -11,6 +11,7 @@ import {
 	aria2GidExpireKey,
 	aria2GidKey,
 	cleanerCancelKey,
+	cacheMarkerKey,
 	cleanerReporterKey,
 	downloaderCompleteKey,
 	downloaderCredentialsKey,
@@ -151,6 +152,10 @@ export class IoredisDownloaderStore implements DownloaderStore {
 
 	async unscheduleCleanerCancel(worker: string, gid: string): Promise<void> {
 		await this.redis.zrem(cleanerCancelKey(), `${worker}|${gid}`);
+	}
+
+	async deleteCacheMarker(downloaderId: string): Promise<boolean> {
+		return (await this.redis.del(cacheMarkerKey(downloaderId))) > 0;
 	}
 
 	async publishCleanerReport(worker: string, report: string): Promise<void> {

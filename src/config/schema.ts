@@ -121,6 +121,12 @@ export const GlobalSection = Type.Object(
 		queue: Type.Optional(Type.String({ minLength: 1 })),
 		log: LogConfig,
 		'test-mode-duration': Type.Optional(Type.Number()),
+		// Seconds a notification accepted for download has to be cached
+		// (the WIS2 Guide gives a Global Cache 10 minutes). SUBSCRIBER
+		// sets a marker with this TTL; REPORTER logs `missed` when it
+		// expires and `late` when a download completes after it.
+		// Optional; defaults to 600.
+		'cache-deadline': Type.Optional(Type.Integer({ minimum: 1 })),
 		'global-cache': Type.Optional(Type.Boolean()),
 		'centre-id': Type.Optional(Type.String()),
 		// Missing/empty is a WARNING (PUB1/PUB2 won't connect), not an
@@ -355,7 +361,7 @@ export type Role = (typeof VALID_ROLES)[number];
 // but not used by the flow" warnings — ported verbatim from the
 // original's KNOWN_* arrays.
 export const KNOWN_GLOBAL = [
-	'roles', 'worker', 'queue', 'log', 'global-cache', 'test-mode-duration', 'local-broker', 'centre-id', 'redis', 'http-port',
+	'roles', 'worker', 'queue', 'log', 'global-cache', 'test-mode-duration', 'cache-deadline', 'local-broker', 'centre-id', 'redis', 'http-port',
 ] as const;
 export const KNOWN_REDIS = ['mode', 'nodes', 'password'] as const;
 export const KNOWN_LOG = ['level', 'to', 'size', 'number', 'dir'] as const;

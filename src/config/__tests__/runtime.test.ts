@@ -53,22 +53,10 @@ describe('validatePatch', () => {
 		expect(missingPassword.errors).toContain('credentials.password: missing or empty');
 	});
 
-	test('debug: accepts a list of roles/ALL for any active role, normalizes case, dedupes', () => {
-		const result = validatePatch({ debug: ['subscriber', 'SUBSCRIBER', 'downloader'] }, new Set());
-		expect(result.errors).toEqual([]);
-		expect(result.values.debug).toEqual(['SUBSCRIBER', 'DOWNLOADER']);
-	});
-
-	test('debug: an empty array is valid -- it clears every dynamic category', () => {
-		const result = validatePatch({ debug: [] }, new Set());
-		expect(result.errors).toEqual([]);
-		expect(result.values.debug).toEqual([]);
-	});
-
-	test('debug: rejects a value that is not a known role or ALL', () => {
-		const result = validatePatch({ debug: ['bogus'] }, new Set());
-		expect(result.errors.some((e) => e.startsWith('debug[0]'))).toBe(true);
-		expect(result.values.debug).toBeUndefined();
+	test('debug key is gone: validatePatch rejects it as unknown', () => {
+		const result = validatePatch({ debug: ['subscriber'] }, new Set());
+		expect(result.errors.length).toBeGreaterThan(0);
+		expect(result.values).not.toHaveProperty('debug');
 	});
 
 	test('isKeyAllowed matches the role map directly', () => {

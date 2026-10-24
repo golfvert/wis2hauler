@@ -1,7 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 import { registerAdminRoutes, type AdminRouteDeps } from '../routes.ts';
 import { RuntimeConfigStore } from '../runtime-store.ts';
-import { DebugController } from '../../debug.ts';
 import { FakeDownloaderStore } from '../../downloader/__tests__/fakes.ts';
 import type { Config, Role } from '../../config/schema.ts';
 import type { HttpHandler, HttpRouter } from '../../http/router.ts';
@@ -41,11 +40,10 @@ function setup(overrides: Partial<AdminRouteDeps> = {}) {
 	const { router, handlers } = fakeRouter();
 	const store = new RuntimeConfigStore(config);
 	const credentialsStore = new FakeDownloaderStore();
-	const debug = new DebugController();
 	const activeRoles = new Set<Role>(['SUBSCRIBER', 'DOWNLOADER']);
-	const deps: AdminRouteDeps = { config, store, activeRoles, credentialsStore, debug, log: { ...console, warn: () => {} }, ...overrides };
+	const deps: AdminRouteDeps = { config, store, activeRoles, credentialsStore, log: { ...console, warn: () => {} }, ...overrides };
 	registerAdminRoutes(router, deps);
-	return { handlers, store, debug };
+	return { handlers, store };
 }
 
 function postSet(handlers: Map<string, HttpHandler>, body: unknown): Promise<Response> {
@@ -98,16 +96,12 @@ describe('registerAdminRoutes: POST /set "Change ?" logging', () => {
 	});
 });
 
-describe('registerAdminRoutes: GET /get + POST /set wire the shared DebugController end-to-end', () => {
-	test('POST /set {debug:[...]} is visible immediately via GET /get?key=debug, and on the DebugController itself', async () => {
-		const { handlers, debug } = setup();
-
+describe('registerAdminRoutes: the legacy debug key is gone', () => {
+	test('POST /set {debug:[...]} is rejected as unknown, GET /get?key=debug is refused', async () => {
+		const { handlers } = setup();
 		const setRes = await postSet(handlers, { debug: ['SUBSCRIBER'] });
-		expect(setRes.status).toBe(200);
-		expect(debug.has('SUBSCRIBER')).toBe(true);
-
+		expect(setRes.status).toBe(400);
 		const getRes = await getReq(handlers, '?key=debug');
-		const body = (await getRes.json()) as { debug: string[] };
-		expect(body.debug).toEqual(['SUBSCRIBER']);
+		expect(getRes.status).not.toBe(200);
 	});
 });

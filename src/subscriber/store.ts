@@ -103,6 +103,15 @@ export interface SubscriberStore {
 	// job is for.
 	writeDownloadJob(downloaderId: string, href: string, source: string, wnmJson: string, topic: string, published: string, dataId: string | undefined): Promise<void>;
 
+	// NOT a port -- the deadline marker for a notification accepted for
+	// download: SET cacheMarkerKey(downloaderId) with a TTL of
+	// `ttlSeconds` (global.cache-deadline). DOWNLOADER deletes it when the
+	// download completes or its retries are exhausted; if it expires
+	// first, REPORTER logs `missed`. Must be written BEFORE the job is
+	// queued, otherwise a very fast download could delete a marker that
+	// does not exist yet and the marker would then expire for nothing.
+	setCacheMarker(downloaderId: string, ttlSeconds: number): Promise<void>;
+
 	// "Queue" -> "XADD" (0bb92d3863dcdad7/54710069ff7a89e7): XADD
 	// workQueueStreamKey(queue) * downloader_id=<downloaderId> href=<href>
 	// topic=<topic> content=<hasContent>. Hands the job to the

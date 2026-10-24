@@ -9,19 +9,6 @@
 // "./common.env"+"./<centre_id>.env" convention, since this project's
 // config is one YAML file, not a pair of env files.
 //
-// DELIBERATE CHANGE, 2026-09-12: two earlier debug-toggling mechanisms
-// are both gone now. antiloop's own approach (and this port's first
-// pass at it) reloaded a dynamic set from a live-watched file on disk,
-// polled every 10s -- the maintainer rejected that outright ("No need to
-// read a debug file. Everything is /get /set, and nothing else."). A
-// later static, startup-only -d CLI flag (a repeatable/comma-separated
-// per-role baseline) was removed too, for the same reason: the
-// maintainer wants exactly ONE channel for every piece of runtime-patchable
-// state, debug categories included -- GET /get?key=debug / POST /set
-// {"debug":[...]} (../admin/get.ts, ../admin/set.ts, ../config/
-// runtime.ts, ../debug.ts). There is no CLI flag and no file for
-// debug toggling any more, only that one admin-API channel.
-//
 // Which role(s) this process actually runs comes from the config
 // file's global.roles, not a CLI flag — matches how the system is
 // already run today (see the project's architecture notes, "Process
@@ -29,7 +16,6 @@
 import { randomUUID } from 'node:crypto';
 import { parseArgs } from 'node:util';
 import { ConfigError, loadConfig } from './config/load.ts';
-import { DebugController } from './debug.ts';
 import { type Role, type Config, type BrokerConfig } from './config/schema.ts';
 import { runSubscriber } from './subscriber/run.ts';
 import { runDownloader } from './downloader/run.ts';
@@ -46,6 +32,7 @@ import { createRedisConnection, type RedisConnection } from './redis/ioredis-sto
 import { IoredisDownloaderStore } from './redis/ioredis-downloader-store.ts';
 import type { DownloaderStore } from './downloader/store.ts';
 import { createLogSinkFromConfig } from './logging/from-config.ts';
+import { createProcessLog } from './logging/process-log.ts';
 import { createSourceLogger, type LevelGate } from './logging/logger.ts';
 import { WinstonLogSink, type LogSink } from './logging/sink.ts';
 
@@ -93,12 +80,12 @@ export interface RoleRunners {
 	// any MQTT connection themselves; they only subscribe/publish/wire
 	// handlers on what they're handed. See connectMqtt/connectMqttBestEffort
 	// below for who actually opens these.
-	subscriber: (config: Config, debug: DebugController, log: typeof console, signal: AbortSignal, upstreamClients: MqttLike[], publishClients: MqttLike[], logSink?: LogSink, gate?: LevelGate) => Promise<void>;
-	downloader: (config: Config, debug: DebugController, log: typeof console, signal: AbortSignal, publishClients: MqttLike[], logSink?: LogSink, gate?: LevelGate) => Promise<void>;
-	cleaner: (config: Config, debug: DebugController, log: typeof console, signal: AbortSignal, processUuid: string, logSink?: LogSink, gate?: LevelGate) => Promise<void>;
-	reporter: (config: Config, debug: DebugController, log: typeof console, signal: AbortSignal, processUuid: string, router: HttpRouter) => Promise<void>;
-	replayer: (config: Config, debug: DebugController, log: typeof console, signal: AbortSignal, processUuid: string, router: HttpRouter, runtimeStore: RuntimeConfigStore) => Promise<void>;
-	heartbeat: (config: Config, debug: DebugController, log: typeof console, signal: AbortSignal, processUuid: string) => Promise<void>;
+	subscriber: (config: Config, log: typeof console, signal: AbortSignal, upstreamClients: MqttLike[], publishClients: MqttLike[], logSink?: LogSink, gate?: LevelGate) => Promise<void>;
+	downloader: (config: Config, log: typeof console, signal: AbortSignal, publishClients: MqttLike[], logSink?: LogSink, gate?: LevelGate) => Promise<void>;
+	cleaner: (config: Config, log: typeof console, signal: AbortSignal, processUuid: string, logSink?: LogSink, gate?: LevelGate) => Promise<void>;
+	reporter: (config: Config, log: typeof console, signal: AbortSignal, processUuid: string, router: HttpRouter, logSink?: LogSink, gate?: LevelGate) => Promise<void>;
+	replayer: (config: Config, log: typeof console, signal: AbortSignal, processUuid: string, router: HttpRouter, runtimeStore: RuntimeConfigStore) => Promise<void>;
+	heartbeat: (config: Config, log: typeof console, signal: AbortSignal, processUuid: string) => Promise<void>;
 	// The orchestrator's own MQTT connection primitives (../mqtt/
 	// client.ts) -- REQUIRED (not optional-with-a-real-default) so a
 	// test can't forget to fake one and accidentally dial a real
@@ -165,6 +152,7 @@ export async function main(
 	log: typeof console = console,
 	runners: RoleRunners = defaultRunners,
 	signal: AbortSignal = new AbortController().signal,
+	sinkOverride?: LogSink,
 ): Promise<number> {
 	let cli: Cli;
 	try {
@@ -176,8 +164,6 @@ export async function main(
 		}
 		throw err;
 	}
-
-	const debug = new DebugController();
 
 	let loaded: ReturnType<typeof loadConfig>;
 	try {
@@ -204,15 +190,28 @@ export async function main(
 	}
 
 	const { config, result } = loaded;
-	for (const w of result.warnings) log.warn(`config warning: ${w}`);
-	// Config infos print unconditionally now — 'config' was never a
-	// real role, so there's no role-shaped gate for it any more. The
-	// per-role debug toggle now only governs each role's own runtime
-	// logging once that role's live implementation lands.
-	for (const i of result.infos) log.log(`config: ${i}`);
+
+	// From here on `log` (the raw console) is only the pre-config fallback
+	// above; every message goes through the structured sink so that
+	// global.log.to alone decides where it ends up (see
+	// ../logging/process-log.ts). `sinkOverride` exists for tests.
+	const logSink = sinkOverride ?? createLogSinkFromConfig(config.global.log, config.global.worker);
+	const runtimeStore = new RuntimeConfigStore(config);
+	const procLog = (name: string, role?: Role) => createProcessLog(createSourceLogger(name, logSink, runtimeStore, role));
+	const mainLog = procLog('Main Process');
+	const subscriberLog = procLog('Subscriber Process', 'SUBSCRIBER');
+	const downloaderLog = procLog('Downloader Process', 'DOWNLOADER');
+	const cleanerLog = procLog('Cleaner Process', 'CLEANER');
+	const reporterLog = procLog('Reporter Process', 'REPORTER');
+	const replayerLog = procLog('Replayer Process', 'REPLAYER');
+	const heartbeatLog = procLog('Heartbeat Process');
+	const adminLog = procLog('Admin Process');
+
+	for (const w of result.warnings) mainLog.warn(`config warning: ${w}`);
+	for (const i of result.infos) mainLog.log(`config: ${i}`);
 
 	const roles = config.global.roles.split(',').map((r) => r.trim()) as Role[];
-	log.log(`wis2hauler starting: worker=${config.global.worker} roles=${roles.join(', ')}`);
+	mainLog.log(`wis2hauler starting: worker=${config.global.worker} roles=${roles.join(', ')}`);
 
 	// Per-process, in-memory Setup-tab state (process-mode/log-level/
 	// per-role log-level overrides/whitelist/blacklist/overridelist/
@@ -221,13 +220,6 @@ export async function main(
 	// Constructed here (moved up from further below) since it doubles as
 	// every module logger's ../logging/logger.ts LevelGate from this
 	// point on.
-	const runtimeStore = new RuntimeConfigStore(config);
-
-	// The module-logger's write destination, built once from global.log
-	// (../logging/from-config.ts closes the config->sink gap) and shared
-	// by every createSourceLogger call below and in the role runners
-	// this process starts.
-	const logSink = createLogSinkFromConfig(config.global.log);
 
 	// "Config" (previous-node 1973f1c302d2301a, off the yaml-parsing
 	// node, Info) and "Valid" (previous-node 2e47c9209c1d68f7's
@@ -250,7 +242,7 @@ export async function main(
 	// self-registration step to fall back on for surfacing this (see
 	// DEFAULT_HTTP_PORT's doc comment above), so this line is now the
 	// only place the bound port is reported at all.
-	log.log(`wis2hauler: HTTP admin server listening on port ${httpHandle.port} (worker=${config.global.worker})`);
+	mainLog.log(`wis2hauler: HTTP admin server listening on port ${httpHandle.port} (worker=${config.global.worker})`);
 
 	// The admin API's 'credentials' field (GET /get?key=credentials,
 	// POST /set's credentials CRUD) needs its own Redis connection —
@@ -287,8 +279,8 @@ export async function main(
 		const localBrokers = config.global['local-broker'] ?? [];
 		for (let i = 0; i < localBrokers.length; i++) {
 			const label = `PUB${i + 1}`;
-			log.log(`orchestrator: connecting to ${label} (${localBrokers[i]!.broker})`);
-			const client = await runners.connectMqttBestEffort(localBrokers[i]!, label, `${mqttClientIdBase}-${label}`, log);
+			mainLog.log(`orchestrator: connecting to ${label} (${localBrokers[i]!.broker})`);
+			const client = await runners.connectMqttBestEffort(localBrokers[i]!, label, `${mqttClientIdBase}-${label}`, mainLog);
 			publishClients.push(client);
 		}
 	}
@@ -298,8 +290,7 @@ export async function main(
 		store: runtimeStore,
 		activeRoles,
 		credentialsStore,
-		debug,
-		log,
+		log: adminLog,
 		// "Change ?" (Setup tab, previous-node eeca55e8996b39fc, Info) --
 		// see ../admin/routes.ts's POST /set handler, which logs one Info
 		// call per changed key.
@@ -338,9 +329,9 @@ export async function main(
 	rolePromises.push(
 		(async () => {
 			try {
-				await runners.heartbeat(config, debug, log, signal, processUuid);
+				await runners.heartbeat(config, heartbeatLog, signal, processUuid);
 			} catch (err) {
-				log.error(`HEARTBEAT failed: ${err instanceof Error ? (err.stack ?? err.message) : String(err)}`);
+				heartbeatLog.error(`HEARTBEAT failed: ${err instanceof Error ? (err.stack ?? err.message) : String(err)}`);
 				throw err;
 			}
 		})(),
@@ -349,12 +340,12 @@ export async function main(
 	if (roles.includes('DOWNLOADER')) {
 		rolePromises.push(
 			(async () => {
-				log.log('DOWNLOADER role starting.');
+				downloaderLog.log('DOWNLOADER role starting.');
 				try {
-					await runners.downloader(config, debug, log, signal, publishClients, logSink, runtimeStore);
-					log.log('DOWNLOADER role stopped.');
+					await runners.downloader(config, downloaderLog, signal, publishClients, logSink, runtimeStore);
+					downloaderLog.log('DOWNLOADER role stopped.');
 				} catch (err) {
-					log.error(`DOWNLOADER role failed: ${err instanceof Error ? (err.stack ?? err.message) : String(err)}`);
+					downloaderLog.error(`DOWNLOADER role failed: ${err instanceof Error ? (err.stack ?? err.message) : String(err)}`);
 					throw err;
 				}
 			})(),
@@ -363,12 +354,12 @@ export async function main(
 	if (roles.includes('CLEANER')) {
 		rolePromises.push(
 			(async () => {
-				log.log('CLEANER role starting.');
+				cleanerLog.log('CLEANER role starting.');
 				try {
-					await runners.cleaner(config, debug, log, signal, processUuid, logSink, runtimeStore);
-					log.log('CLEANER role stopped.');
+					await runners.cleaner(config, cleanerLog, signal, processUuid, logSink, runtimeStore);
+					cleanerLog.log('CLEANER role stopped.');
 				} catch (err) {
-					log.error(`CLEANER role failed: ${err instanceof Error ? (err.stack ?? err.message) : String(err)}`);
+					cleanerLog.error(`CLEANER role failed: ${err instanceof Error ? (err.stack ?? err.message) : String(err)}`);
 					throw err;
 				}
 			})(),
@@ -377,12 +368,12 @@ export async function main(
 	if (roles.includes('REPORTER')) {
 		rolePromises.push(
 			(async () => {
-				log.log('REPORTER role starting.');
+				reporterLog.log('REPORTER role starting.');
 				try {
-					await runners.reporter(config, debug, log, signal, processUuid, httpHandle.router);
-					log.log('REPORTER role stopped.');
+					await runners.reporter(config, reporterLog, signal, processUuid, httpHandle.router, logSink, runtimeStore);
+					reporterLog.log('REPORTER role stopped.');
 				} catch (err) {
-					log.error(`REPORTER role failed: ${err instanceof Error ? (err.stack ?? err.message) : String(err)}`);
+					reporterLog.error(`REPORTER role failed: ${err instanceof Error ? (err.stack ?? err.message) : String(err)}`);
 					throw err;
 				}
 			})(),
@@ -391,12 +382,12 @@ export async function main(
 	if (roles.includes('REPLAYER')) {
 		rolePromises.push(
 			(async () => {
-				log.log('REPLAYER role starting.');
+				replayerLog.log('REPLAYER role starting.');
 				try {
-					await runners.replayer(config, debug, log, signal, processUuid, httpHandle.router, runtimeStore);
-					log.log('REPLAYER role stopped.');
+					await runners.replayer(config, replayerLog, signal, processUuid, httpHandle.router, runtimeStore);
+					replayerLog.log('REPLAYER role stopped.');
 				} catch (err) {
-					log.error(`REPLAYER role failed: ${err instanceof Error ? (err.stack ?? err.message) : String(err)}`);
+					replayerLog.error(`REPLAYER role failed: ${err instanceof Error ? (err.stack ?? err.message) : String(err)}`);
 					throw err;
 				}
 			})(),
@@ -405,7 +396,7 @@ export async function main(
 	if (roles.includes('SUBSCRIBER')) {
 		rolePromises.push(
 			(async () => {
-				log.log('SUBSCRIBER role starting.');
+				subscriberLog.log('SUBSCRIBER role starting.');
 				const upstreamClients: MqttLike[] = [];
 				try {
 					// GB1/GB2 -- connected here, inside SUBSCRIBER's own
@@ -422,14 +413,14 @@ export async function main(
 					for (let i = 0; i < sub['global-broker'].length; i++) {
 						const label = `GB${i + 1}`;
 						const broker = sub['global-broker'][i]!;
-						log.log(`orchestrator: connecting to ${label} (${broker.broker})`);
+						mainLog.log(`orchestrator: connecting to ${label} (${broker.broker})`);
 						const client = await runners.connectMqtt(broker, label, `${mqttClientIdBase}-${label}`);
 						upstreamClients.push(client);
 					}
-					await runners.subscriber(config, debug, log, signal, upstreamClients, publishClients, logSink, runtimeStore);
-					log.log('SUBSCRIBER role stopped.');
+					await runners.subscriber(config, subscriberLog, signal, upstreamClients, publishClients, logSink, runtimeStore);
+					subscriberLog.log('SUBSCRIBER role stopped.');
 				} catch (err) {
-					log.error(`SUBSCRIBER role failed: ${err instanceof Error ? (err.stack ?? err.message) : String(err)}`);
+					subscriberLog.error(`SUBSCRIBER role failed: ${err instanceof Error ? (err.stack ?? err.message) : String(err)}`);
 					throw err;
 				} finally {
 					await Promise.allSettled(upstreamClients.map((c) => c.end()));

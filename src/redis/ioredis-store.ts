@@ -10,6 +10,7 @@ import Redis, { Cluster } from 'ioredis';
 import type { RedisConfig } from '../config/schema.ts';
 import type { RawStreamEntry, SubscriberStore } from '../subscriber/store.ts';
 import {
+	cacheMarkerKey,
 	downloaderClaimKey,
 	downloaderCompleteKey,
 	downloaderHashKey,
@@ -208,6 +209,7 @@ export class IoredisStore implements SubscriberStore {
 					published,
 					attempt: '1',
 					data_id: dataId ?? '', // see store.ts's doc comment -- NOT a port, an extra field
+					accepted: String(Date.now()), // when this notification was accepted for download: REPORTER's acceptedAt/latency
 				})
 				.expire(key, 7200)
 				.exec(),
@@ -237,6 +239,10 @@ export class IoredisStore implements SubscriberStore {
 			[href]: 'wait',
 			[`src:${href}`]: source,
 		});
+	}
+
+	async setCacheMarker(downloaderId: string, ttlSeconds: number): Promise<void> {
+		await this.redis.set(cacheMarkerKey(downloaderId), '1', 'EX', ttlSeconds);
 	}
 
 	async releaseClaim(downloaderId: string): Promise<void> {

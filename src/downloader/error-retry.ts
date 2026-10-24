@@ -26,6 +26,7 @@ export interface ErrorRetryDeps {
 	// ErrorRetryDeps in this file's own tests keeps compiling without them.
 	requeueLog?: SourceLogger;
 	updateLog?: SourceLogger;
+	retryFailedLog?: SourceLogger;
 }
 
 // "Bad hash" (e84fcaddef70ece8): PUBLISH cleanerReporterKey(worker)
@@ -42,6 +43,23 @@ export async function reportDownloadError(deps: ErrorRetryDeps, wnmTopic: string
 	await deps.store.publishCleanerReport(deps.worker, JSON.stringify(['type', 'download_error', 'topic', wnmTopic ?? '']));
 }
 
+export type FailureReason = 'integrity' | 'download_error';
+
+// NOT a port -- the "failed" report REPORTER turns into a `failed` log
+// line: sent once, when the retries are exhausted (RETRY_NOK), unlike
+// "Bad hash"/"Error" above which are sent on every failed attempt for
+// the metrics. Fields are listed explicitly (never the whole hash) so
+// that nothing here can look like a completed download to the CLEANER,
+// which listens on the same channel.
+export async function reportFailed(deps: ErrorRetryDeps, downloaderId: string, reason: FailureReason | undefined, flat: readonly string[]): Promise<void> {
+	const rec = parseFlatRecord(flat);
+	const fields: string[] = ['type', 'download_failed', 'downloader_id', downloaderId, 'reason', reason ?? '', 'failed_at', String(Date.now())];
+	for (const key of ['data_id', 'topic', 'published', 'accepted', 'attempt', 'wnm']) {
+		if (rec[key] !== undefined) fields.push(key, rec[key]!);
+	}
+	await deps.store.publishCleanerReport(deps.worker, JSON.stringify(fields));
+}
+
 /**
  * The 30s-delayed retry decision ("30s" delay node, e017d6ebcfd5b26d ->
  * "Extract"/"HGET" -> HGETALL -> "Next" [retry.ts's decideRetry] ->
@@ -51,7 +69,7 @@ export async function reportDownloadError(deps: ErrorRetryDeps, wnmTopic: string
  * job on the error stream; RETRY_NONEED is a silent no-op, matching
  * the original's empty third wire.
  */
-export async function runRetryDecision(deps: ErrorRetryDeps, downloaderId: string): Promise<void> {
+export async function runRetryDecision(deps: ErrorRetryDeps, downloaderId: string, reason?: FailureReason): Promise<void> {
 	await deps.sleep(30000);
 
 	const flat = await deps.store.getDownloaderRecord(downloaderId);
@@ -83,8 +101,8 @@ export async function runRetryDecision(deps: ErrorRetryDeps, downloaderId: strin
 	if (decision.retry === 'RETRY_OK') {
 		const fields = parseFlatRecord(flat);
 		await deps.sleep((decision.delaySeconds ?? 0) * 1000);
-		deps.requeueLog?.warn({ downloaderId, dataId, href: decision.extracted ?? '', topic: fields.topic ?? '' });
-		deps.updateLog?.warn({ downloaderId, dataId, promoteHref: decision.promoteHref, newAttempt: decision.newAttempt });
+		deps.requeueLog?.warn({ downloader_id: downloaderId, data_id: dataId, href: decision.extracted ?? '', topic: fields.topic ?? '' });
+		deps.updateLog?.warn({ downloader_id: downloaderId, data_id: dataId, promoteHref: decision.promoteHref, newAttempt: decision.newAttempt });
 		await Promise.all([
 			// workQueueEntryId deliberately omitted: the original
 			// work-queue entry was already XACK'd/XDEL'd by the startAck()
@@ -102,11 +120,16 @@ export async function runRetryDecision(deps: ErrorRetryDeps, downloaderId: strin
 			deps.store.retryTransition(downloaderId, decision.promoteHref, decision.promoteSource, decision.newAttempt, decision.errorHref, decision.errorSource),
 		]);
 	} else if (decision.retry === 'RETRY_NOK') {
+		deps.retryFailedLog?.warn({ downloader_id: downloaderId, data_id: dataId, hashFound: flat.length > 0 });
 		await deps.store.recordError(
 			deps.queue,
 			deps.worker,
-			JSON.stringify({ downloaderId, dataId, hashFound: flat.length > 0, hash: decision.payload }),
+			JSON.stringify({ downloader_id: downloaderId, data_id: dataId, hashFound: flat.length > 0, hash: decision.payload }),
 		);
+		// Final failure: the deadline marker must not also expire into a
+		// `missed`, and REPORTER logs `failed`.
+		await deps.store.deleteCacheMarker(downloaderId);
+		await reportFailed(deps, downloaderId, reason, flat);
 	}
 	// RETRY_NONEED: no-op -- matches the "Retry ?" switch's empty 3rd wire.
 }

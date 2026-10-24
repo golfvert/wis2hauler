@@ -25,7 +25,6 @@ import * as fs from 'node:fs';
 import * as nodePath from 'node:path';
 import { gunzipSync } from 'node:zlib';
 import type { Config } from '../config/schema.ts';
-import type { DebugController } from '../debug.ts';
 import { createRedisConnection } from '../redis/ioredis-store.ts';
 import { IoredisDownloaderStore } from '../redis/ioredis-downloader-store.ts';
 import type { MqttLike } from '../mqtt/types.ts';
@@ -55,7 +54,6 @@ function randomSixDigits(): string {
 
 export async function runDownloader(
 	config: Config,
-	debug: DebugController,
 	log: typeof console,
 	signal: AbortSignal,
 	publishClients: MqttLike[],
@@ -68,8 +66,6 @@ export async function runDownloader(
 	if (!queue) throw new Error('runDownloader called without global.queue (validation should have caught this)');
 	const worker = config.global.worker;
 
-	const isDebugEnabled = () => debug.has('DOWNLOADER');
-
 	// The 9 module loggers this role's ported logIO call sites need (10
 	// sites -- "Publish" covers 2, its own Warn and Info -- see each Deps
 	// interface's own doc comment for exactly which site each one is).
@@ -81,11 +77,12 @@ export async function runDownloader(
 	const publishLog = logSink && gate ? createSourceLogger('Publish', logSink, gate, 'DOWNLOADER') : undefined;
 	const requeueLog = logSink && gate ? createSourceLogger('Re-queue', logSink, gate, 'DOWNLOADER') : undefined;
 	const updateLog = logSink && gate ? createSourceLogger('Update', logSink, gate, 'DOWNLOADER') : undefined;
+	const retryFailedLog = logSink && gate ? createSourceLogger('Retry Failed', logSink, gate, 'DOWNLOADER') : undefined;
 	const correctLog = logSink && gate ? createSourceLogger('Correct ?', logSink, gate, 'DOWNLOADER') : undefined;
 	const outputCompleteLog = logSink && gate ? createSourceLogger('Output - Complete', logSink, gate, 'DOWNLOADER') : undefined;
 	const outputErrorLog = logSink && gate ? createSourceLogger('Output - Error', logSink, gate, 'DOWNLOADER') : undefined;
 	const ackLog = logSink && gate ? createSourceLogger('Ack', logSink, gate, 'DOWNLOADER') : undefined;
-	const duplicatesLog = logSink && gate ? createSourceLogger('Duplicates', logSink, gate, 'DOWNLOADER') : undefined;
+	const fileErrorLog = logSink && gate ? createSourceLogger('File Error', logSink, gate, 'DOWNLOADER') : undefined;
 	const ariaLog = logSink && gate ? createSourceLogger('Aria', logSink, gate, 'DOWNLOADER') : undefined;
 	// NOT a port (2026-09-20): see consumer.ts's ConsumerDeps.errorLog doc
 	// comment -- a file-backed home for pollOnce()'s per-entry catch,
@@ -267,6 +264,7 @@ export async function runDownloader(
 		mintRequeueId: () => `${Date.now()}-99-${randomSixDigits()}`,
 		requeueLog,
 		updateLog,
+		retryFailedLog,
 	};
 
 	const complete: CompleteDeps = {
@@ -275,7 +273,7 @@ export async function runDownloader(
 		hashConfig,
 		hashIo,
 		newUuid: () => randomUUID(),
-		duplicatesLog,
+		fileErrorLog,
 	};
 
 	const finishing: FinishingDeps = {
@@ -318,7 +316,6 @@ export async function runDownloader(
 		sleep: defaultSleep,
 	};
 
-	if (isDebugEnabled()) log.log(`DOWNLOADER: aria-inqueue=${dl['aria-inqueue']} download-url=${dl['download-url'] ?? 'none'} rename-to=${dl['rename-to'] ?? 'none'}`);
 
 	log.log('DOWNLOADER: consumer + cleaner-ipc loops starting');
 	await Promise.allSettled([runConsumerLoop(consumerDeps, signal, defaultSleep), runCleanerIpcLoop(cleanerIpc, signal)]);
