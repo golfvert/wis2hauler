@@ -22,14 +22,14 @@ export class ConfigError extends Error {
 
 // REMOVED 2026-09-19: this used to call ../config/topics.ts's
 // (now-removed) enforceCoreCacheRule here to rewrite an EXACT
-// 'origin/.../core/...' whitelist/blacklist entry to 'cache/...' --
+// 'origin/.../core/...' subscribe list/exclude list entry to 'cache/...' --
 // see that removal's own comment in topics.ts for why (a broad
 // wildcard subscription bypassed it entirely, and nothing re-checked
-// a message's ACTUAL topic once received). subscriber.mqtt.whitelist/
-// blacklist are no longer touched here; the equivalent protection now
+// a message's ACTUAL topic once received). subscriber.mqtt.subscribe list/
+// exclude list are no longer touched here; the equivalent protection now
 // runs at message-ingest time against the real received topic (see
-// ../subscriber/ingest.ts's ORIGIN_CORE_BLACKLIST_RULE /
-// ORIGIN_METADATA_BLACKLIST_RULE, wired in ../subscriber/run.ts).
+// ../subscriber/ingest.ts's ORIGIN_CORE_EXCLUDE_RULE /
+// ORIGIN_METADATA_EXCLUDE_RULE, wired in ../subscriber/run.ts).
 
 // Parses and validates only — does not read a file. Useful for tests
 // and for validating config received some other way (e.g. handed in

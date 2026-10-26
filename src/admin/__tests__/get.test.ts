@@ -14,7 +14,7 @@ const config: Config = {
 	},
 	subscriber: {
 		'global-broker': [{ broker: 'mqtts://example.com' }],
-		mqtt: { whitelist: ['origin/a/wis2/fr-meteofrance/data/x'], 'global-replay': 'https://replay.example.com' },
+		mqtt: { subscribe: ['origin/a/wis2/fr-meteofrance/data/x'], 'global-replay': 'https://replay.example.com' },
 	},
 };
 
@@ -34,14 +34,14 @@ describe('buildGetResponse', () => {
 		const result = await buildGetResponse(GET_FIELDS, activeRoles, c);
 		expect(result.status).toBe(200);
 		expect(result.body['process-mode']).toBe('run');
-		expect(result.body.whitelist).toEqual(['origin/a/wis2/fr-meteofrance/data/x']);
+		expect(result.body.subscribe).toEqual(['origin/a/wis2/fr-meteofrance/data/x']);
 		// DOWNLOADER-only field absent for a SUBSCRIBER-only replica.
 		expect(result.body.credentials).toBeUndefined();
 	});
 
-	test('?key=whitelist: 403 when SUBSCRIBER is not active', async () => {
+	test('?key=subscribe: 403 when SUBSCRIBER is not active', async () => {
 		const { activeRoles, ctx: c } = ctx(['DOWNLOADER']);
-		const result = await buildGetResponse(GET_FIELDS, activeRoles, c, 'whitelist');
+		const result = await buildGetResponse(GET_FIELDS, activeRoles, c, 'subscribe');
 		expect(result.status).toBe(403);
 	});
 
@@ -71,5 +71,26 @@ describe('buildGetResponse', () => {
 		const { activeRoles, ctx: c } = ctx();
 		const result = await buildGetResponse(GET_FIELDS, activeRoles, c, 'debug');
 		expect(result.status).not.toBe(200);
+	});
+});
+
+describe('buildGetResponse — deprecated whitelist/blacklist keys (ADR 0012)', () => {
+	test('GET ?key=whitelist still answers, under the requested key, and warns', async () => {
+		const { activeRoles, store } = ctx();
+		const warnings: string[] = [];
+		const c = { config, store, credentialsStore: new FakeDownloaderStore(), warn: (m: string) => warnings.push(m) };
+		const result = await buildGetResponse(GET_FIELDS, activeRoles, c, 'whitelist');
+		expect(result.status).toBe(200);
+		expect(result.body).toEqual({ whitelist: ['origin/a/wis2/fr-meteofrance/data/x'] });
+		expect(warnings).toEqual(["whitelist: deprecated, use 'subscribe'."]);
+	});
+
+	test('the full listing shows the new keys only', async () => {
+		const { activeRoles, ctx: c } = ctx();
+		const result = await buildGetResponse(GET_FIELDS, activeRoles, c);
+		expect('subscribe' in result.body).toBe(true);
+		expect('exclude' in result.body).toBe(true);
+		expect('whitelist' in result.body).toBe(false);
+		expect('blacklist' in result.body).toBe(false);
 	});
 });

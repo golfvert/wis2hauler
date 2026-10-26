@@ -2,7 +2,7 @@
 // connection into entries on the shared raw stream the XREAD consumer
 // (consumer.ts) reads from. Ported field-for-field from the Node-RED
 // Subscriber tab's per-connection chain: mqtt-in -> [GB2 only: a fixed
-// 2s per-message delay] -> rbe -> Black & GRep (blacklist) -> Save
+// 2s per-message delay] -> rbe -> Black & GRep (exclude list) -> Save
 // (SETNX dedup key/value) -> SET -> "OK ?" -> Prepare -> XADD.
 //
 // One behavior the original's GB1/GB2 chains do NOT share, preserved
@@ -11,8 +11,8 @@
 // queue/stagger) before rbe even sees it; GB1 has no such delay. See
 // run.ts's preDelayMs.
 //
-// A SECOND asymmetry used to live here too -- GB1's blacklist ("Black
-// & GRep", b1e017aa86e0e4b3) appended RECOMMENDED_TOPIC_BLACKLIST_RULE
+// A SECOND asymmetry used to live here too -- GB1's exclude list ("Black
+// & GRep", b1e017aa86e0e4b3) appended RECOMMENDED_TOPIC_EXCLUDE_RULE
 // when global-cache mode was on; GB2's ("Black &. GRep",
 // 53702cb0bee173b8) did not. FIXED 2026-09-19 (the maintainer, after
 // this was surfaced as a likely bug rather than a deliberate design):
@@ -21,9 +21,9 @@
 // by only a stray typo ("&" vs "&."), the telltale sign of an
 // incomplete copy-paste rather than an intentional divergence. The
 // rule is now applied identically to both connections -- see run.ts's
-// single effectiveBlacklist, which both GB1 and GB2 now share.
+// single effectiveExclude, which both GB1 and GB2 now share.
 import type { Wnm } from '../wis2/wnm.ts';
-import { isBlacklisted, stripReplayPrefix } from '../wis2/topic-match.ts';
+import { isExcluded, stripReplayPrefix } from '../wis2/topic-match.ts';
 import type { SubscriberStore } from './store.ts';
 import type { SourceLogger } from '../logging/logger.ts';
 
@@ -31,15 +31,15 @@ import type { SourceLogger } from '../logging/logger.ts';
 export const MESSAGE_ID_DEDUP_TTL_SECONDS = 900;
 
 // The WIS2-recommended-topic exemption, appended to BOTH GB1's and
-// GB2's blacklist when global-cache mode is on (flows.json's
+// GB2's exclude list when global-cache mode is on (flows.json's
 // b1e017aa86e0e4b3 -- GB1-only there; see this file's header comment
 // for why the port made this symmetric instead of preserving that).
-export const RECOMMENDED_TOPIC_BLACKLIST_RULE = '+/+/+/+/+/recommended/#';
+export const RECOMMENDED_TOPIC_EXCLUDE_RULE = '+/+/+/+/+/recommended/#';
 
 // NOT a port -- added 2026-09-19 after a real report that
 // ../config/topics.ts's enforceCoreCacheRule (since removed, see that
 // file's own comment) was a no-op against anything but the exact
-// literal string 'origin/.../core/...' in the config: a whitelist
+// literal string 'origin/.../core/...' in the config: a subscribe list
 // entry as broad as 'origin/a/wis2/#' subscribed this replica to core
 // data straight from origin regardless, and nothing downstream ever
 // re-checked a message's ACTUAL topic once it arrived -- it downloaded
@@ -49,24 +49,24 @@ export const RECOMMENDED_TOPIC_BLACKLIST_RULE = '+/+/+/+/+/recommended/#';
 // order to republish them under cache/... for everyone else; every
 // other replica should only ever see 'recommended' data straight from
 // origin. These two patterns are appended to every subscriber
-// connection's blacklist below (see run.ts) whenever global-cache mode
-// is off, so isBlacklisted() -- which runs against each message's
-// real, received topic, not the configured whitelist string -- drops
-// them regardless of how broadly the whitelist itself is written. The
-// whitelist/blacklist as configured are no longer auto-rewritten at
+// connection's exclude list below (see run.ts) whenever global-cache mode
+// is off, so isExcluded() -- which runs against each message's
+// real, received topic, not the configured subscribe list string -- drops
+// them regardless of how broadly the subscribe list itself is written. The
+// subscribe list/exclude list as configured are no longer auto-rewritten at
 // all; this is the sole enforcement now, and it's logged once at
 // SUBSCRIBER startup so it's never a silent surprise.
-export const ORIGIN_CORE_BLACKLIST_RULE = 'origin/+/+/+/data/core/#';
-export const ORIGIN_METADATA_BLACKLIST_RULE = 'origin/+/+/+/metadata/#';
+export const ORIGIN_CORE_EXCLUDE_RULE = 'origin/+/+/+/data/core/#';
+export const ORIGIN_METADATA_EXCLUDE_RULE = 'origin/+/+/+/metadata/#';
 
 export interface IngestDeps {
 	store: SubscriberStore;
 	queue: string;
-	/** The connection's effective blacklist -- the configured blacklist plus RECOMMENDED_TOPIC_BLACKLIST_RULE (global-cache mode on) or ORIGIN_CORE_BLACKLIST_RULE/ORIGIN_METADATA_BLACKLIST_RULE (global-cache mode off), identically for GB1 and GB2 -- see run.ts's single effectiveBlacklist. */
-	blacklist: readonly string[];
+	/** The connection's effective exclude list -- the configured exclude list plus RECOMMENDED_TOPIC_EXCLUDE_RULE (global-cache mode on) or ORIGIN_CORE_EXCLUDE_RULE/ORIGIN_METADATA_EXCLUDE_RULE (global-cache mode off), identically for GB1 and GB2 -- see run.ts's single effectiveExclude. */
+	exclude: readonly string[];
 	/** e.g. "GB1" / "GB2" -- for log/debug lines only. */
 	sourceLabel: string;
-	/** GB2's fixed 2s per-message delay in the original; 0 for GB1. Applied before rbe/blacklist/dedup, independently per message (not serialized). */
+	/** GB2's fixed 2s per-message delay in the original; 0 for GB1. Applied before rbe/exclude list/dedup, independently per message (not serialized). */
 	preDelayMs: number;
 	sleep: (ms: number) => Promise<void>;
 	now: () => number;
@@ -76,12 +76,12 @@ export interface IngestDeps {
 	// maintainer confirmed the original had and this port had dropped
 	// (2026-09-13: "in flows.json there was the option to log all
 	// notification message received") -- a debug/log tap wired directly
-	// off the mqtt-in node, ahead of rbe/blacklist/dedup/parsing, so it
+	// off the mqtt-in node, ahead of rbe/exclude list/dedup/parsing, so it
 	// captures literally every message that arrives on the wire
 	// regardless of what happens to it afterward. Distinct from
 	// consumer.ts's own "Decision" log (which only ever sees whatever
 	// SUCCESSFULLY reaches processEntry, downstream of every ingest-side
-	// filter below) -- a message this port blacklists, rbe-dedupes,
+	// filter below) -- a message this port excludes, rbe-dedupes,
 	// fails to parse, or wnm.id-dedupes today leaves NO trace in
 	// consumer.ts's log, in Redis (writeDownloadJob/recordWait never
 	// run for it), or in IngestStats beyond an aggregate counter -- this
@@ -123,7 +123,7 @@ export interface IngestDeps {
 	// filter), so it can never carry a data_id. This is the missing half:
 	// WHY a specific, already-arrived message never made it onto the raw
 	// stream for consumer.ts to see. Every one of this handler's five
-	// outcomes (unchanged/rbe, blacklisted, malformed, duplicate wnm.id,
+	// outcomes (unchanged/rbe, excluded, malformed, duplicate wnm.id,
 	// ingested) logs here, carrying wnm.id/data_id whenever the payload was
 	// parseable enough to extract them (see extractIdsForLogging below --
 	// best-effort, never throws, never affects the real filter decisions,
@@ -147,18 +147,18 @@ export interface IngestDeps {
 	// whether to WRITE. This is correct for THOSE three outcomes (the
 	// message is already parsed regardless, for the real pipeline's own
 	// sake -- logging it costs nothing extra). It is NOT correct for
-	// unchanged/blacklisted specifically: they run BEFORE this handler's
+	// unchanged/excluded specifically: they run BEFORE this handler's
 	// own JSON.parse, so logging them needs an EXTRA parse of a payload
 	// that's about to be discarded regardless -- calling this
 	// unconditionally would pay that parse cost on every single
-	// rbe-suppressed or blacklisted message, at ANY log level, even
+	// rbe-suppressed or excluded message, at ANY log level, even
 	// 'info' -- a real, always-on cost with no way to avoid it, on
 	// exactly the kind of high-volume, easy-to-overlook hot path that
 	// caused the 2026-09-20 production incident above.
 	//
 	// The actual fix: SourceLogger.debugEnabled() (logging/logger.ts) is a
 	// cheap, real check against the CONFIGURED level -- so the extra parse
-	// for unchanged/blacklisted only happens when `filterLog.debugEnabled()`
+	// for unchanged/excluded only happens when `filterLog.debugEnabled()`
 	// is true, i.e. `global.log.level: debug` (or a per-role override) is
 	// actually set. At any other level, it's one boolean check, nothing
 	// more -- safe to ship and run everywhere, not just a special debug
@@ -184,7 +184,7 @@ export interface IngestDeps {
 	// only the full notification answers that.
 	//
 	// The "after deduplication" half of that feedback is what makes this
-	// free rather than a repeat of the unchanged/blacklisted cost problem
+	// free rather than a repeat of the unchanged/excluded cost problem
 	// above: by the time the 'duplicate' or 'ingested' outcome is decided,
 	// this handler has ALREADY parsed the payload into `wnm` for its own
 	// real control flow (the wnm.id dedup check itself needs it) -- so
@@ -194,10 +194,10 @@ export interface IngestDeps {
 	// disk (levelAdmits, in createSourceLogger's emit -- see
 	// logging/logger.ts), same as everything else here.
 	//
-	// unchanged/blacklisted/malformed also switched from returning just
+	// unchanged/excluded/malformed also switched from returning just
 	// {wnmId, dataId} to the full parsed object where one exists (see
 	// parseForLogging below, renamed from extractIdsForLogging) -- for
-	// unchanged/blacklisted this piggybacks on the SAME debugEnabled()-
+	// unchanged/excluded this piggybacks on the SAME debugEnabled()-
 	// gated parse that already existed for the id fields, so it's the same
 	// cost as before, just fuller content once paid for; malformed already
 	// parses unconditionally today (a rare, error-path call), and its
@@ -210,14 +210,14 @@ export interface IngestDeps {
 export interface IngestStats {
 	received: number;
 	unchanged: number;
-	blacklisted: number;
+	excluded: number;
 	duplicate: number;
 	malformed: number;
 	ingested: number;
 }
 
 export function createIngestStats(): IngestStats {
-	return { received: 0, unchanged: 0, blacklisted: 0, duplicate: 0, malformed: 0, ingested: 0 };
+	return { received: 0, unchanged: 0, excluded: 0, duplicate: 0, malformed: 0, ingested: 0 };
 }
 
 export const defaultSleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
@@ -270,7 +270,7 @@ function canonicalContentBytes(value: unknown): number {
 // folded in here as an in-memory Map<topic, lastRawPayload>: the first
 // message on a topic always passes; a later message on the same topic
 // with byte-identical payload is dropped, exactly like the original's
-// rbe node ahead of the blacklist step. The map lives in this
+// rbe node ahead of the exclude list step. The map lives in this
 // closure, one per connection (matching the original's one rbe node
 // per mqtt-in), and is keyed by the RAW (unstripped) topic, since rbe
 // runs before the replay-prefix stripping Black & GRep does.
@@ -312,7 +312,7 @@ export function createIngestHandler(deps: IngestDeps, stats: IngestStats): (topi
 
 		// Unconditional CALL, before EVEN the GB2 fixed pre-delay -- as
 		// close to "the message arrived" as this handler ever gets, and
-		// ahead of every filter below (rbe/blacklist/parse/dedup) that can
+		// ahead of every filter below (rbe/exclude list/parse/dedup) that can
 		// otherwise make a message vanish without individual trace. See
 		// this field's own doc comment (IngestDeps.receivedLog) for why.
 		//
@@ -323,7 +323,7 @@ export function createIngestHandler(deps: IngestDeps, stats: IngestStats): (topi
 		// BODY, never the topic string, so the one file guaranteed to have
 		// a line for every single message that ever arrived was also the
 		// one file useless for the actual investigation this whole effort
-		// is for. Fixed the same way as filterLog's unchanged/blacklisted
+		// is for. Fixed the same way as filterLog's unchanged/excluded
 		// outcomes just above: the extraction only runs when
 		// receivedLog.debugEnabled() says `debug` is actually the
 		// configured level -- this call site fires on EVERY message
@@ -364,7 +364,7 @@ export function createIngestHandler(deps: IngestDeps, stats: IngestStats): (topi
 			// filterLog.debugEnabled() reflects (SourceLogger.debugEnabled's
 			// own doc comment, logging/logger.ts): a cheap, real check
 			// against the ACTUAL configured level, so the extra JSON.parse
-			// this needs (unchanged/blacklisted run before this handler's
+			// this needs (unchanged/excluded run before this handler's
 			// own parse) is only paid when something would actually consume
 			// it -- unlike the first cut of this feature, which paid it
 			// unconditionally regardless of log level. `?? true` if filterLog
@@ -381,14 +381,14 @@ export function createIngestHandler(deps: IngestDeps, stats: IngestStats): (topi
 		}
 
 		const normalisedTopic = stripReplayPrefix(topic);
-		if (isBlacklisted(normalisedTopic, deps.blacklist)) {
-			stats.blacklisted++;
+		if (isExcluded(normalisedTopic, deps.exclude)) {
+			stats.excluded++;
 			const filterLogWantsIt = deps.filterLog !== undefined && (deps.filterLog.debugEnabled?.() ?? true);
 			if (filterLogWantsIt) {
 				const { wnm: parsedWnm } = parseForLogging(raw);
 				const wnmId = typeof parsedWnm?.id === 'string' ? parsedWnm.id : undefined;
 				const dataId = typeof parsedWnm?.properties?.data_id === 'string' ? parsedWnm.properties.data_id : undefined;
-				if (filterLogWantsIt) deps.filterLog!.debug({ source: deps.sourceLabel, topic, wnm_id: wnmId, data_id: dataId, outcome: 'blacklisted', wnm: parsedWnm });
+				if (filterLogWantsIt) deps.filterLog!.debug({ source: deps.sourceLabel, topic, wnm_id: wnmId, data_id: dataId, outcome: 'excluded', wnm: parsedWnm });
 			}
 			return;
 		}

@@ -130,7 +130,7 @@ Controls which sources (the true origin, and/or specific Global Cache repeaters)
 Two default rules govern weight resolution:
 
 1. **`weight-sources` entirely unset** — every source (origin and any recognized cache repeater) gets weight 1. This is the zero-config behavior: everything races on equal footing, matching the old unset-`priority-global-cache` behavior.
-2. **`weight-sources` is set (even with just one entry)** — any source not explicitly listed as a key gets weight 0, meaning it is never used at all (treated the same as an unrecognized `global-cache` label always was). **This includes `origin` if it's omitted** — configuring `weight-sources` without an explicit `origin:` entry silently disables all direct-from-origin downloads for every centre. Always list `origin` explicitly once `weight-sources` is used for anything, unless you deliberately mean to exclude it (e.g. a Subscriber whose `mqtt.whitelist` only subscribes to `cache/...` topics for one centre in the first place — see the worked example below).
+2. **`weight-sources` is set (even with just one entry)** — any source not explicitly listed as a key gets weight 0, meaning it is never used at all (treated the same as an unrecognized `global-cache` label always was). **This includes `origin` if it's omitted** — configuring `weight-sources` without an explicit `origin:` entry silently disables all direct-from-origin downloads for every centre. Always list `origin` explicitly once `weight-sources` is used for anything, unless you deliberately mean to exclude it (e.g. a Subscriber whose `mqtt.subscribe` only subscribes to `cache/...` topics for one centre in the first place — see the worked example below).
 
 A source with weight 0 (whether by rule 2's default or an explicit `0`) is discarded outright, before any claim attempt or download.
 
@@ -159,7 +159,7 @@ weight-delay-seconds = mu * weight_min      # weight_min = 0.2 -> ≈ 5.21s
 
 Every other, higher-weighted source then automatically gets a *smaller* `mu` (faster), since `mu` is inversely proportional to weight — you only ever need to solve this for the lowest weight in your map. Pick `weight-delay-max-seconds` comfortably above that same target percentile (never below it, or the cap distorts the percentile you just solved for), and sanity-check how often it actually triggers with `e^(-weight-delay-max-seconds / mu)`.
 
-Worked example, matching a real `de-dwd`-focused deployment (a Subscriber whose `mqtt.whitelist` only carries `cache/a/wis2/de-dwd-gts-to-wis2/#` — origin is excluded by the whitelist itself, so it's deliberately left out of `weight-sources` rather than given an `origin: 1` entry):
+Worked example, matching a real `de-dwd`-focused deployment (a Subscriber whose `mqtt.subscribe` only carries `cache/a/wis2/de-dwd-gts-to-wis2/#` — origin is excluded by the subscribe list itself, so it's deliberately left out of `weight-sources` rather than given an `origin: 1` entry):
 
 ```yaml
 subscriber:
@@ -174,7 +174,7 @@ subscriber:
     sa-ncm-global-cache: 1
 ```
 
-With these numbers: `de-dwd-global-cache` (weight 0.2, `mu ≈ 26s`) has a median wait around 18s, a 90th percentile around 60s, and virtually never (≈1%) hits the 120s cap. Every other listed source (weight ≥ 1, `mu ≤ 5.2s`) is far faster still (median under 4s, 90th percentile under 12s) and effectively never approaches the cap at all. Any `cache/...` notification whose `global-cache` label isn't one of the six keys above (or is missing the property altogether) is dropped — and since `origin` isn't listed here, so is any `origin/...` notification, which is intentional given this Subscriber's whitelist never subscribes to `origin/...` topics for this centre in the first place.
+With these numbers: `de-dwd-global-cache` (weight 0.2, `mu ≈ 26s`) has a median wait around 18s, a 90th percentile around 60s, and virtually never (≈1%) hits the 120s cap. Every other listed source (weight ≥ 1, `mu ≤ 5.2s`) is far faster still (median under 4s, 90th percentile under 12s) and effectively never approaches the cap at all. Any `cache/...` notification whose `global-cache` label isn't one of the six keys above (or is missing the property altogether) is dropped — and since `origin` isn't listed here, so is any `origin/...` notification, which is intentional given this Subscriber's subscribe list never subscribes to `origin/...` topics for this centre in the first place.
 
 **Choosing values.** A large `weight-delay-seconds` combined with a low weight gives a long delay tail (for example `weight-delay-seconds: 10` with weight `0.2` is a mean of 50 s). The consumer loop never blocks reading the next batch on a batch's delays (a `maxInFlight` cap bounds the number of concurrent in-flight entries), and `weight-delay-max-seconds` bounds every delay outright. The recipe above picks values that keep delays short for every source.
 
@@ -187,14 +187,14 @@ Every log line about a message carries that message's `data_id` (and usually its
 | Stage | Logger | File | Fires |
 | --- | --- | --- | --- |
 | Arrival | `Received` | `hauler-received-*.debug.log` | Every message that arrives on the wire, before any filter. Carries `wnm_id`/`data_id` when the payload parses. Ground truth for "did anything arrive on this topic at all". |
-| Ingest outcome | `Filter` | `hauler-filter-*.debug.log` | One line per message and outcome: `unchanged` (rbe), `blacklisted`, `malformed`, `duplicate` (repeat `wnm.id`), `ingested`. Carries `wnm_id`, `data_id` and the full parsed `wnm` when parseable. |
+| Ingest outcome | `Filter` | `hauler-filter-*.debug.log` | One line per message and outcome: `unchanged` (rbe), `excluded`, `malformed`, `duplicate` (repeat `wnm.id`), `ingested`. Carries `wnm_id`, `data_id` and the full parsed `wnm` when parseable. |
 | Decision | `Decision` | `hauler-decision-*.debug.log` | Once per parsed stream entry: `ignore`, `duplicate` (lineage duplicate), `already-complete`, `download`, `wait`, `drop`, `publish-only`. Carries `data_id`, `wnm_id`, `pubtime`, `action`, plus `href` and `downloader_id` (or `reason` for `ignore` and `duplicate`). |
 | Lineage | `Duplicate` | `hauler-duplicate-*.info.log` | A `data_id` reused without `rel=update` or without a newer `pubtime`. Carries `data_id`, `wnm_id`, `pubtime`, `reason`. |
 | Raw-stream health | `Redis` | `hauler-redis-*.debug.log` / `.info.log` / `.warn.log` | Not per message. Every 5 s the consumer trims the raw stream with `XTRIM … MINID ~ <read cursor − 15 min>`, which cannot remove anything unread. `RAW_STREAM_MAXLEN` (500000) is only a backstop for a dead consumer. Each tick logs the post-trim length at debug, and at info when it is at least 80% of the backstop. A once-per-episode warn/info pair reports a confirmed loss (the oldest surviving entry overtook the consumer's cursor) and its recovery. |
 
 To follow one `data_id`, search all the files for it and order by `timestamp`. No `Received` line on either GB1 or GB2 means the message never reached this replica's broker connection; look upstream. Otherwise the `outcome`, `action` or `reason` of the last line is the answer.
 
-Tracing costs nothing below `debug`. `Received`, `Decision` and `Duplicate` hand a small object to the logger, which does one boolean level check before writing. `Filter` outcomes `duplicate`, `ingested` and `malformed` reuse the already parsed message. For `unchanged`, `blacklisted` and `Received`, the extra best-effort `JSON.parse` that extracts the ids runs only when the logger reports that `debug` is admitted.
+Tracing costs nothing below `debug`. `Received`, `Decision` and `Duplicate` hand a small object to the logger, which does one boolean level check before writing. `Filter` outcomes `duplicate`, `ingested` and `malformed` reuse the already parsed message. For `unchanged`, `excluded` and `Received`, the extra best-effort `JSON.parse` that extracts the ids runs only when the logger reports that `debug` is admitted.
 
 **DOWNLOADER**
 
@@ -209,13 +209,13 @@ Tracing costs nothing below `debug`. `Received`, `Decision` and `Duplicate` hand
 
 Every JSON line carries `logger` (the slug used in the filename) and `worker` (`global.worker`). Operational messages (role start and stop, failures, aria2 or broker connectivity, per-message failures) are written by the process loggers `Main Process`, `Subscriber Process`, `Downloader Process`, `Cleaner Process`, `Reporter Process`, `Replayer Process`, `Heartbeat Process` and `Admin Process`, always at `info`, with `severity` (`info`, `warn`, `error`) and `message`; per-message failures also carry `data_id`, `downloader_id`, `topic` or `entryId` where known. Log verbosity is controlled only by `log.level` and `log-level-role`. Only the pre-config usage and `config invalid` output and the process entrypoint's fatal handler are printed outside the log sink.
 
-### `subscriber.mqtt.whitelist` — required, runtime-settable
+### `subscriber.mqtt.subscribe` — required, runtime-settable
 
 The MQTT topic patterns subscribed to on the global brokers — only messages matching one of these ever reach the download pipeline. Validated against the strict 6-level WIS2 topic grammar (`origin|cache|monitor|+` / `a` / `wis2` / `<centre-id-with-hyphen>|+` / `data|metadata|+` / ...), with `#` only legal as the final level.
 
-### `subscriber.mqtt.blacklist` — optional, runtime-settable
+### `subscriber.mqtt.exclude` — optional, runtime-settable
 
-Patterns applied **after** the whitelist, to drop messages once received. Less strictly validated than the whitelist (any mix of alphanumerics, `-`, `/`, `+`, `#`), which is what lets a pattern like `+/+/+/de-dwd-gts-to-wis2/#` block a centre across every topic prefix at once.
+Patterns applied **after** the subscribe list, to drop messages once received. Less strictly validated than the subscribe list (any mix of alphanumerics, `-`, `/`, `+`, `#`), which is what lets a pattern like `+/+/+/de-dwd-gts-to-wis2/#` block a centre across every topic prefix at once.
 
 ### `subscriber.mqtt.overridelist` — optional, runtime-settable
 
@@ -225,7 +225,7 @@ Each rule is a YAML mapping, and every rule needs at least one of these two keys
 
 | Key | Type | Meaning |
 |---|---|---|
-| `topic` | string | An MQTT-wildcard topic pattern (`+` = exactly one level, `#` = that level and everything after, only legal as the last level). Matched against the message's real topic — a `replay/a/wis2/<centre>/<uuid>/...` wrapper is stripped first, so one rule covers both live and replayed messages. Same alphanumeric/`-`/`+`/`#`/`/` character set as `blacklist`. |
+| `topic` | string | An MQTT-wildcard topic pattern (`+` = exactly one level, `#` = that level and everything after, only legal as the last level). Matched against the message's real topic — a `replay/a/wis2/<centre>/<uuid>/...` wrapper is stripped first, so one rule covers both live and replayed messages. Same alphanumeric/`-`/`+`/`#`/`/` character set as `exclude`. |
 | `max-length` | number | A size ceiling in bytes. The rule matches when the WNM's own declared link length is **strictly greater** than this value. Compared against the size the notification *claims* (`links[].length` on the selected link — `rel: update`, falling back to `rel: canonical`), not the actual downloaded file size, since this decision happens before any download is attempted. A message with no declared length can never match a `max-length` rule. |
 
 Rules are checked in order and the **first match wins**. If a rule sets **both** `topic` and `max-length`, they're ANDed — the topic must match *and* the file must exceed the size ceiling for that rule to fire; put them in separate rules if you want either condition to trigger on its own.
@@ -262,7 +262,7 @@ curl -X POST http://localhost:8080/set -H 'content-type: application/json' \
 
 ### `subscriber.mqtt.qos` — optional, default `0`
 
-The MQTT QoS every whitelist (and replay) subscription is made at.
+The MQTT QoS every subscribe list (and replay) subscription is made at.
 
 ### `subscriber.mqtt.global-replay` — optional, runtime-settable via `POST /replayer`
 
@@ -393,7 +393,7 @@ Without `key`, returns every field the instance's active roles are allowed to se
 | `log-level-role` | any | the per-role log-level override map |
 | `worker` | any | `global.worker` |
 | `queue` | any | `global.queue` |
-| `whitelist` / `blacklist` | `SUBSCRIBER` | the active topic lists |
+| `subscribe` / `exclude` | `SUBSCRIBER` | the active topic lists |
 | `global-replay` | any | the active replay topic, or `null` |
 | `credentials` | `DOWNLOADER` | the current in-memory `{topic: {username, password}}` map |
 
@@ -408,7 +408,7 @@ Body is a JSON object; any subset of these keys may be present in one request. T
 | `process-mode` | any | `"halt"` pauses subscribing/downloading without a restart; `"run"` resumes. |
 | `log-level` | any | Changes the global default level immediately. |
 | `log-level-role` | any | `{"role": "SUBSCRIBER", "value": "debug"}` — per-role override; `value: null` clears it. |
-| `whitelist` / `blacklist` | `SUBSCRIBER` | Replaces the active list; brokers re-subscribe in the background. |
+| `subscribe` / `exclude` | `SUBSCRIBER` | Replaces the active list; brokers re-subscribe in the background. |
 | `overridelist` | `SUBSCRIBER` | Replaces the active rule list wholesale — see `subscriber.mqtt.overridelist` above for the rule shape. Include every rule you want kept, not just the one being added or changed. |
 | `credentials` | `DOWNLOADER` | `{"op": "create"\|"update"\|"delete", "topic": "...", "username"?: "...", "password"?: "..."}` — applied as a real Redis HSET/HDEL, picked up by every `DOWNLOADER` instance within its next 10s sync. |
 

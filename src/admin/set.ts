@@ -22,7 +22,7 @@ export interface SetContext {
 
 export interface SetResult {
 	status: 200 | 400;
-	body: { changes: Record<string, ChangeEntry>; errors?: string[] };
+	body: { changes: Record<string, ChangeEntry>; errors?: string[]; warnings?: string[] };
 }
 
 /**
@@ -58,6 +58,7 @@ async function applyCredentialsOp(store: DownloaderStore | null, op: CredentialO
 
 export async function buildSetResponse(body: unknown, activeRoles: ReadonlySet<Role>, ctx: SetContext): Promise<SetResult> {
 	const patch = validatePatch(body, activeRoles);
+	for (const d of patch.deprecated ?? []) ctx.warn(d);
 	const changes = ctx.store.applyPatch(patch.values);
 
 	if (patch.values.credentials) {
@@ -67,6 +68,10 @@ export async function buildSetResponse(body: unknown, activeRoles: ReadonlySet<R
 	const hasChanges = Object.keys(changes).length > 0;
 	return {
 		status: hasChanges ? 200 : 400,
-		body: { changes, ...(patch.errors.length > 0 ? { errors: patch.errors } : {}) },
+		body: {
+			changes,
+			...(patch.errors.length > 0 ? { errors: patch.errors } : {}),
+			...(patch.deprecated ? { warnings: patch.deprecated } : {}),
+		},
 	};
 }

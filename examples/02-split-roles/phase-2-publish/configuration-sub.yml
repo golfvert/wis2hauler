@@ -31,10 +31,10 @@ subscriber:
       username: everyone
       password: everyone
   mqtt:
-    whitelist:
+    subscribe:
       - "cache/a/wis2/jp-jma-gts-to-wis2/#"
       - "cache/a/wis2/int-eumetsat/#"
-    blacklist: [ "+/+/+/+/+/+/+/experimental/#" ]
+    exclude: [ "+/+/+/+/+/+/+/experimental/#" ]
 
 cleaner:
   keep-in-cache: 600

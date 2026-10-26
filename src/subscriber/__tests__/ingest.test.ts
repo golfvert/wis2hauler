@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { createIngestHandler, createIngestStats, ORIGIN_CORE_BLACKLIST_RULE, ORIGIN_METADATA_BLACKLIST_RULE, type IngestDeps } from '../ingest.ts';
+import { createIngestHandler, createIngestStats, ORIGIN_CORE_EXCLUDE_RULE, ORIGIN_METADATA_EXCLUDE_RULE, type IngestDeps } from '../ingest.ts';
 import { FakeStore } from './fakes.ts';
 import type { SourceLogger } from '../../logging/logger.ts';
 
@@ -18,7 +18,7 @@ function baseDeps(store: FakeStore, overrides: Partial<IngestDeps> = {}): Ingest
 	return {
 		store,
 		queue: 'q1',
-		blacklist: [],
+		exclude: [],
 		sourceLabel: 'GB1',
 		preDelayMs: 0,
 		sleep: async () => {},
@@ -31,7 +31,7 @@ function baseDeps(store: FakeStore, overrides: Partial<IngestDeps> = {}): Ingest
 const wnm = (id: string) => JSON.stringify({ id, links: [], properties: { pubtime: '2026-01-01T00:00:00Z', data_id: 'x' } });
 
 describe('createIngestHandler', () => {
-	test('a new, non-blacklisted message is claimed and appended to the raw stream', async () => {
+	test('a new, non-excluded message is claimed and appended to the raw stream', async () => {
 		const store = new FakeStore();
 		const stats = createIngestStats();
 		const handler = createIngestHandler(baseDeps(store), stats);
@@ -40,10 +40,10 @@ describe('createIngestHandler', () => {
 
 		expect(store.rawStream).toHaveLength(1);
 		expect(store.rawStream[0]!.topic).toBe('origin/a/wis2/fr-meteofrance/data/foo');
-		expect(stats).toEqual({ received: 1, unchanged: 0, blacklisted: 0, duplicate: 0, malformed: 0, ingested: 1 });
+		expect(stats).toEqual({ received: 1, unchanged: 0, excluded: 0, duplicate: 0, malformed: 0, ingested: 1 });
 	});
 
-	test('an unchanged payload on the same topic is dropped by rbe before the blacklist check', async () => {
+	test('an unchanged payload on the same topic is dropped by rbe before the exclude check', async () => {
 		const store = new FakeStore();
 		const stats = createIngestStats();
 		const handler = createIngestHandler(baseDeps(store), stats);
@@ -81,72 +81,72 @@ describe('createIngestHandler', () => {
 		expect(stats.unchanged).toBe(0); // rbe (per-topic, raw-payload) never suppressed either message
 	});
 
-	test('a blacklisted topic is dropped before dedup/append', async () => {
+	test('a excluded topic is dropped before dedup/append', async () => {
 		const store = new FakeStore();
 		const stats = createIngestStats();
-		const handler = createIngestHandler(baseDeps(store, { blacklist: ['+/+/+/+/+/recommended/#'] }), stats);
+		const handler = createIngestHandler(baseDeps(store, { exclude: ['+/+/+/+/+/recommended/#'] }), stats);
 
 		await handler('origin/a/wis2/fr-meteofrance/data/recommended/foo', Buffer.from(wnm('msg-2')));
 
 		expect(store.rawStream).toHaveLength(0);
 		expect(store.messageIds.size).toBe(0); // never got as far as dedup
-		expect(stats.blacklisted).toBe(1);
+		expect(stats.excluded).toBe(1);
 	});
 
-	// ORIGIN_CORE_BLACKLIST_RULE / ORIGIN_METADATA_BLACKLIST_RULE (see
+	// ORIGIN_CORE_EXCLUDE_RULE / ORIGIN_METADATA_EXCLUDE_RULE (see
 	// ingest.ts's own doc comment, wired in run.ts): the message-ingest-time
-	// safeguard that replaced the old config-time whitelist rewrite (see
+	// safeguard that replaced the old config-time subscribe list rewrite (see
 	// ../../config/topics.ts's removal comment). The key property under
 	// test here is that this runs against the topic the message actually
 	// ARRIVED on -- so it drops these messages even though the ingest
-	// handler doesn't otherwise care what the whitelist was subscribed
+	// handler doesn't otherwise care what the subscribe list was subscribed
 	// to (this handler only ever sees what a real broker delivered).
 	describe('the origin core/metadata safeguard (global-cache mode off)', () => {
-		const blacklist = [ORIGIN_CORE_BLACKLIST_RULE, ORIGIN_METADATA_BLACKLIST_RULE];
+		const exclude = [ORIGIN_CORE_EXCLUDE_RULE, ORIGIN_METADATA_EXCLUDE_RULE];
 
 		test('drops a core-data notification received straight from origin', async () => {
 			const store = new FakeStore();
 			const stats = createIngestStats();
-			const handler = createIngestHandler(baseDeps(store, { blacklist }), stats);
+			const handler = createIngestHandler(baseDeps(store, { exclude }), stats);
 
 			await handler('origin/a/wis2/fr-meteofrance/data/core/weather/surface', Buffer.from(wnm('msg-core')));
 
 			expect(store.rawStream).toHaveLength(0);
-			expect(stats.blacklisted).toBe(1);
+			expect(stats.excluded).toBe(1);
 		});
 
 		test('drops a metadata notification received straight from origin', async () => {
 			const store = new FakeStore();
 			const stats = createIngestStats();
-			const handler = createIngestHandler(baseDeps(store, { blacklist }), stats);
+			const handler = createIngestHandler(baseDeps(store, { exclude }), stats);
 
 			await handler('origin/a/wis2/fr-meteofrance/metadata', Buffer.from(wnm('msg-metadata')));
 
 			expect(store.rawStream).toHaveLength(0);
-			expect(stats.blacklisted).toBe(1);
+			expect(stats.excluded).toBe(1);
 		});
 
 		test('still ingests recommended data from origin, and core data already republished under cache/...', async () => {
 			const store = new FakeStore();
 			const stats = createIngestStats();
-			const handler = createIngestHandler(baseDeps(store, { blacklist }), stats);
+			const handler = createIngestHandler(baseDeps(store, { exclude }), stats);
 
 			await handler('origin/a/wis2/fr-meteofrance/data/recommended/x', Buffer.from(wnm('msg-recommended')));
 			await handler('cache/a/wis2/fr-meteofrance/data/core/weather/surface', Buffer.from(wnm('msg-cache-core')));
 
 			expect(store.rawStream).toHaveLength(2);
-			expect(stats.blacklisted).toBe(0);
+			expect(stats.excluded).toBe(0);
 		});
 	});
 
-	test('blacklist matching strips the replay/a/wis2/... wrapper first', async () => {
+	test('exclude matching strips the replay/a/wis2/... wrapper first', async () => {
 		const store = new FakeStore();
 		const stats = createIngestStats();
-		const handler = createIngestHandler(baseDeps(store, { blacklist: ['+/+/+/+/+/recommended/#'] }), stats);
+		const handler = createIngestHandler(baseDeps(store, { exclude: ['+/+/+/+/+/recommended/#'] }), stats);
 
 		await handler('replay/a/wis2/fr-meteofrance/some-uuid/origin/a/wis2/fr-meteofrance/data/recommended/foo', Buffer.from(wnm('msg-3')));
 
-		expect(stats.blacklisted).toBe(1);
+		expect(stats.excluded).toBe(1);
 		expect(store.rawStream).toHaveLength(0);
 	});
 
@@ -187,7 +187,7 @@ describe('createIngestHandler', () => {
 		expect(stats.duplicate).toBe(1);
 	});
 
-	test('preDelayMs (GB2) waits before rbe/blacklist/dedup, via the injectable sleep', async () => {
+	test('preDelayMs (GB2) waits before rbe/exclude/dedup, via the injectable sleep', async () => {
 		const store = new FakeStore();
 		const stats = createIngestStats();
 		const waited: number[] = [];
@@ -226,7 +226,7 @@ describe('createIngestHandler', () => {
 	// filter below) that this port had dropped -- see
 	// IngestDeps.receivedLog's own doc comment. Unconditional means
 	// unconditional: every case here would otherwise leave the message
-	// completely untraceable (blacklisted/malformed never reach
+	// completely untraceable (excluded/malformed never reach
 	// consumer.ts, and rbe/dedup only ever produce an aggregate counter).
 	describe('receivedLog', () => {
 		test('fires for an ordinary ingested message, with topic and byte length', async () => {
@@ -246,7 +246,7 @@ describe('createIngestHandler', () => {
 		// useless" -- true before this fix, since {source, topic, bytes}
 		// alone can't be grepped for a specific missing data_id (a topic
 		// string never contains one). Fixed the same way as filterLog's
-		// unchanged/blacklisted outcomes: the extraction only runs when
+		// unchanged/excluded outcomes: the extraction only runs when
 		// receivedLog.debugEnabled() says debug is the configured level --
 		// this call site fires on EVERY message, unconditionally, so it's
 		// the hottest path this whole tracing effort touches.
@@ -278,16 +278,16 @@ describe('createIngestHandler', () => {
 			expect(debugCalls[0]).toMatchObject({ wnm_id: 'msg-recv-withdebug', data_id: 'x' });
 		});
 
-		test('fires for a topic that then gets blacklisted -- this is the only place such a message is individually identifiable', async () => {
+		test('fires for a topic that then gets excluded -- this is the only place such a message is individually identifiable', async () => {
 			const store = new FakeStore();
 			const stats = createIngestStats();
 			const { logger, debugCalls } = fakeReceivedLogger();
-			const handler = createIngestHandler(baseDeps(store, { receivedLog: logger, blacklist: ['+/+/+/+/+/recommended/#'] }), stats);
+			const handler = createIngestHandler(baseDeps(store, { receivedLog: logger, exclude: ['+/+/+/+/+/recommended/#'] }), stats);
 
 			await handler('origin/a/wis2/fr-meteofrance/data/recommended/foo', Buffer.from(wnm('msg-recv-2')));
 
 			expect(debugCalls).toHaveLength(1);
-			expect(stats.blacklisted).toBe(1);
+			expect(stats.excluded).toBe(1);
 			expect(store.rawStream).toHaveLength(0); // confirms it really was dropped, yet still logged
 		});
 
@@ -462,7 +462,7 @@ describe('createIngestHandler', () => {
 			expect(debugCalls[0]).toEqual(expect.objectContaining({ outcome: 'malformed', data_id: 'orphan-data-id', wnm_id: undefined, wnm: orphan }));
 		});
 
-		// unchanged/blacklisted run BEFORE this handler's own JSON.parse, so
+		// unchanged/excluded run BEFORE this handler's own JSON.parse, so
 		// logging them means an extra, otherwise-unneeded parse -- gated by
 		// filterLog.debugEnabled() (logging/logger.ts), NOT isDebugEnabled()
 		// (see IngestDeps.filterLog's doc comment: the maintainer pushed
@@ -489,17 +489,17 @@ describe('createIngestHandler', () => {
 			]);
 		});
 
-		test('a "blacklisted" drop logs wnmId/dataId/wnm when filterLog has no debugEnabled() (assume yes)', async () => {
+		test('a "excluded" drop logs wnmId/dataId/wnm when filterLog has no debugEnabled() (assume yes)', async () => {
 			const store = new FakeStore();
 			const stats = createIngestStats();
 			const { logger, debugCalls } = fakeReceivedLogger();
-			const blacklist = ['+/+/+/+/+/recommended/#'];
-			const handler = createIngestHandler(baseDeps(store, { filterLog: logger, blacklist }), stats); // isDebugEnabled: () => false (baseDeps default)
+			const exclude = ['+/+/+/+/+/recommended/#'];
+			const handler = createIngestHandler(baseDeps(store, { filterLog: logger, exclude }), stats); // isDebugEnabled: () => false (baseDeps default)
 
 			await handler('origin/a/wis2/fr-meteofrance/data/recommended/foo', Buffer.from(wnm('msg-filter-bl')));
 
 			expect(debugCalls).toEqual([
-				{ source: 'GB1', topic: 'origin/a/wis2/fr-meteofrance/data/recommended/foo', wnm_id: 'msg-filter-bl', data_id: 'x', outcome: 'blacklisted', wnm: JSON.parse(wnm('msg-filter-bl')) },
+				{ source: 'GB1', topic: 'origin/a/wis2/fr-meteofrance/data/recommended/foo', wnm_id: 'msg-filter-bl', data_id: 'x', outcome: 'excluded', wnm: JSON.parse(wnm('msg-filter-bl')) },
 			]);
 		});
 
@@ -508,43 +508,43 @@ describe('createIngestHandler', () => {
 		// real implementation does -- see logging/logger.ts). This is what
 		// makes it safe to run this build everywhere, not just a special
 		// debug release: at any level below 'debug', the extra parse for
-		// unchanged/blacklisted is skipped entirely, matching what a real
+		// unchanged/excluded is skipped entirely, matching what a real
 		// deployment sees.
 		function fakeLevelGatedLogger(debugEnabled: boolean): { logger: SourceLogger; debugCalls: Record<string, unknown>[] } {
 			const debugCalls: Record<string, unknown>[] = [];
 			return { logger: { info: () => {}, warn: () => {}, debug: (d) => debugCalls.push(d), debugEnabled: () => debugEnabled }, debugCalls };
 		}
 
-		test('log.level below debug (debugEnabled: false): unchanged/blacklisted are skipped entirely -- only outcomes that were parsed anyway still log', async () => {
+		test('log.level below debug (debugEnabled: false): unchanged/excluded are skipped entirely -- only outcomes that were parsed anyway still log', async () => {
 			const store = new FakeStore();
 			const stats = createIngestStats();
 			const { logger, debugCalls } = fakeLevelGatedLogger(false);
-			const blacklist = ['+/+/+/+/+/recommended/#'];
-			const handler = createIngestHandler(baseDeps(store, { filterLog: logger, blacklist }), stats);
+			const exclude = ['+/+/+/+/+/recommended/#'];
+			const handler = createIngestHandler(baseDeps(store, { filterLog: logger, exclude }), stats);
 			const payload = Buffer.from(wnm('msg-filter-info-level'));
 
 			await handler('origin/a/wis2/fr-meteofrance/data/foo', payload); // ingested -- already parsed, still logs
 			await handler('origin/a/wis2/fr-meteofrance/data/foo', payload); // unchanged -- would need an EXTRA parse, skipped
-			await handler('origin/a/wis2/fr-meteofrance/data/recommended/foo', Buffer.from(wnm('msg-filter-info-level-2'))); // blacklisted -- same, skipped
+			await handler('origin/a/wis2/fr-meteofrance/data/recommended/foo', Buffer.from(wnm('msg-filter-info-level-2'))); // excluded -- same, skipped
 
 			expect(debugCalls).toEqual([
 				{ source: 'GB1', topic: 'origin/a/wis2/fr-meteofrance/data/foo', wnm_id: 'msg-filter-info-level', data_id: 'x', outcome: 'ingested', wnm: JSON.parse(wnm('msg-filter-info-level')) },
 			]);
 		});
 
-		test('log.level: debug (debugEnabled: true): unchanged/blacklisted log normally', async () => {
+		test('log.level: debug (debugEnabled: true): unchanged/excluded log normally', async () => {
 			const store = new FakeStore();
 			const stats = createIngestStats();
 			const { logger, debugCalls } = fakeLevelGatedLogger(true);
-			const blacklist = ['+/+/+/+/+/recommended/#'];
-			const handler = createIngestHandler(baseDeps(store, { filterLog: logger, blacklist }), stats);
+			const exclude = ['+/+/+/+/+/recommended/#'];
+			const handler = createIngestHandler(baseDeps(store, { filterLog: logger, exclude }), stats);
 			const payload = Buffer.from(wnm('msg-filter-debug-level'));
 
 			await handler('origin/a/wis2/fr-meteofrance/data/foo', payload); // ingested
 			await handler('origin/a/wis2/fr-meteofrance/data/foo', payload); // unchanged
-			await handler('origin/a/wis2/fr-meteofrance/data/recommended/foo', Buffer.from(wnm('msg-filter-debug-level-2'))); // blacklisted
+			await handler('origin/a/wis2/fr-meteofrance/data/recommended/foo', Buffer.from(wnm('msg-filter-debug-level-2'))); // excluded
 
-			expect(debugCalls.map((c) => c.outcome)).toEqual(['ingested', 'unchanged', 'blacklisted']);
+			expect(debugCalls.map((c) => c.outcome)).toEqual(['ingested', 'unchanged', 'excluded']);
 			expect(debugCalls[1]).toEqual({ source: 'GB1', topic: 'origin/a/wis2/fr-meteofrance/data/foo', wnm_id: 'msg-filter-debug-level', data_id: 'x', outcome: 'unchanged', wnm: JSON.parse(wnm('msg-filter-debug-level')) });
 		});
 	});

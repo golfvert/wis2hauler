@@ -22,8 +22,8 @@ subscriber:
       username: everyone
       password: everyone
   mqtt:
-    whitelist: [ "cache/a/wis2/jp-jma-gts-to-wis2/#" ]
-    blacklist: [ "+/+/+/+/+/+/+/experimental/#" ]
+    subscribe: [ "cache/a/wis2/jp-jma-gts-to-wis2/#" ]
+    exclude: [ "+/+/+/+/+/+/+/experimental/#" ]
 downloader:
   aria-secret: secret
   aria-url: ws://aria2:6800/jsonrpc

@@ -21,7 +21,7 @@ A single running instance ("replica" or "worker") performs whichever of these fi
 
 | Role | What it does |
 |---|---|
-| `SUBSCRIBER` | Connects to up to two WIS2 Global Brokers (GB1/GB2), applies whitelist/blacklist/override rules, deduplicates, and queues matching notifications for download. |
+| `SUBSCRIBER` | Connects to up to two WIS2 Global Brokers (GB1/GB2), applies subscribe list/exclude list/override rules, deduplicates, and queues matching notifications for download. |
 | `DOWNLOADER` | Pulls queued work, downloads the referenced file via [aria2](https://aria2.github.io/), verifies its integrity, optionally relocates it (by date, by topic, or to S3), and republishes a completion notification, if local broker are defined. |
 | `CLEANER` | Deletes locally cached files once their retention period (`cleaner.keep-in-cache`) has elapsed. |
 | `REPORTER` | Exposes Prometheus metrics (downloads, errors, active IPs, latency) over HTTP, and logs one outcome line per accepted notification (`cached`, `late`, `failed`, `missed`) to `hauler-reporter-*.info.log`. |

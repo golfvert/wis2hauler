@@ -15,7 +15,7 @@ const config: Config = {
 	},
 	subscriber: {
 		'global-broker': [{ broker: 'mqtts://example.com' }],
-		mqtt: { whitelist: ['origin/a/wis2/fr-meteofrance/data/x'] },
+		mqtt: { subscribe: ['origin/a/wis2/fr-meteofrance/data/x'] },
 	},
 };
 
@@ -82,11 +82,11 @@ describe('registerAdminRoutes: POST /set "Change ?" logging', () => {
 		const { logger, infoCalls } = fakeSourceLogger();
 		const { handlers } = setup({ changeLogger: logger });
 
-		await postSet(handlers, { 'log-level': 'debug', whitelist: ['origin/a/wis2/fr-meteofrance/data/y'] });
+		await postSet(handlers, { 'log-level': 'debug', subscribe: ['origin/a/wis2/fr-meteofrance/data/y'] });
 
 		expect(infoCalls).toHaveLength(2);
 		expect(infoCalls).toContainEqual({ key: 'log-level', value: 'debug' });
-		expect(infoCalls.some((c) => c.key === 'whitelist')).toBe(true);
+		expect(infoCalls.some((c) => c.key === 'subscribe')).toBe(true);
 	});
 
 	test('no changeLogger configured: /set still works (the log call is simply skipped)', async () => {

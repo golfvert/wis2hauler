@@ -1,9 +1,9 @@
 // MQTT wildcard topic matching, and the "replay/a/wis2/..." prefix
 // normalisation applied before matching a replayed message's topic
-// against blacklist/overridelist rules. Ported from the Node-RED
+// against exclude list/overridelist rules. Ported from the Node-RED
 // Subscriber tab, where this exact algorithm appeared independently
 // three times: twice in near-duplicate "Black & GRep" function nodes
-// (blacklist filtering) and once, renamed to `topicMatch`, inside the
+// (exclude list filtering) and once, renamed to `topicMatch`, inside the
 // "Override" function node — same MQTT +/# wildcard semantics all
 // three times. Centralized here per the dedupe principle from the
 // project's architecture notes (C.1) — the same principle that
@@ -34,7 +34,7 @@ export function matchesTopicPattern(topic: string, pattern: string): boolean {
 
 // A replayed message's real topic is wrapped as
 // "replay/a/wis2/<grep-centre-id>/<uuid>/<real-topic...>" — this
-// strips that wrapper (levels 0-4) so blacklist/overridelist rules,
+// strips that wrapper (levels 0-4) so exclude list/overridelist rules,
 // which are written against the real topic, still apply to replayed
 // messages the same way they apply to live ones.
 export function stripReplayPrefix(topic: string): string {
@@ -43,7 +43,7 @@ export function stripReplayPrefix(topic: string): string {
 }
 
 // True if topic (already replay-stripped by the caller — see
-// stripReplayPrefix) matches any pattern in blacklist.
-export function isBlacklisted(topic: string, blacklist: readonly string[]): boolean {
-	return blacklist.some((pattern) => matchesTopicPattern(topic, pattern));
+// stripReplayPrefix) matches any pattern in exclude list.
+export function isExcluded(topic: string, exclude: readonly string[]): boolean {
+	return exclude.some((pattern) => matchesTopicPattern(topic, pattern));
 }

@@ -29,6 +29,8 @@ export interface GetContext {
 
 export interface GetField {
 	roles: readonly Role[] | null;
+	/** Deprecated alias (ADR 0012): answered when asked for by name, left out of the full listing. */
+	deprecatedFor?: string;
 	get: (ctx: GetContext) => unknown | Promise<unknown>;
 }
 
@@ -38,8 +40,10 @@ export const GET_FIELDS: Record<string, GetField> = {
 	'log-level-role': { roles: null, get: (ctx) => ctx.store.getLogLevelByRole() },
 	worker: { roles: null, get: (ctx) => ctx.config.global.worker },
 	queue: { roles: null, get: (ctx) => ctx.config.global.queue ?? null },
-	whitelist: { roles: ['SUBSCRIBER'], get: (ctx) => ctx.store.getWhitelist() },
-	blacklist: { roles: ['SUBSCRIBER'], get: (ctx) => ctx.store.getBlacklist() },
+	subscribe: { roles: ['SUBSCRIBER'], get: (ctx) => ctx.store.getSubscribe() },
+	exclude: { roles: ['SUBSCRIBER'], get: (ctx) => ctx.store.getExclude() },
+	whitelist: { roles: ['SUBSCRIBER'], deprecatedFor: 'subscribe', get: (ctx) => ctx.store.getSubscribe() },
+	blacklist: { roles: ['SUBSCRIBER'], deprecatedFor: 'exclude', get: (ctx) => ctx.store.getExclude() },
 	'global-replay': { roles: null, get: (ctx) => ctx.store.getGlobalReplay() },
 	credentials: {
 		roles: ['DOWNLOADER'],
@@ -65,12 +69,13 @@ export async function buildGetResponse(fields: Record<string, GetField>, activeR
 		const field = fields[key];
 		if (!field) return { status: 400, body: { error: `${key}: unknown key.` } };
 		if (!isFieldAllowed(field, activeRoles)) return { status: 403, body: { error: `${key}: not available for current roles.` } };
+		if (field.deprecatedFor) ctx.warn(`${key}: deprecated, use '${field.deprecatedFor}'.`);
 		return { status: 200, body: { [key]: await field.get(ctx) } };
 	}
 
 	const body: Record<string, unknown> = {};
 	for (const [k, field] of Object.entries(fields)) {
-		if (isFieldAllowed(field, activeRoles)) body[k] = await field.get(ctx);
+		if (!field.deprecatedFor && isFieldAllowed(field, activeRoles)) body[k] = await field.get(ctx);
 	}
 	return { status: 200, body };
 }

@@ -270,9 +270,9 @@ describe('main', () => {
 		const workerRes = await fetch('http://localhost:18724/get?key=worker');
 		expect(await workerRes.json()).toEqual({ worker: 'wis2-cleaner-only' });
 
-		// whitelist is SUBSCRIBER-gated -- 403 on a CLEANER-only replica.
-		const whitelistRes = await fetch('http://localhost:18724/get?key=whitelist');
-		expect(whitelistRes.status).toBe(403);
+		// subscribe list is SUBSCRIBER-gated -- 403 on a CLEANER-only replica.
+		const subscribeRes = await fetch('http://localhost:18724/get?key=subscribe');
+		expect(subscribeRes.status).toBe(403);
 
 		const setRes = await fetch('http://localhost:18724/set', {
 			method: 'POST',

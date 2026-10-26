@@ -14,7 +14,7 @@ except `REPLAYER` (no historical-replay endpoint in this example).
   `globalbroker.inmet.gov.br`) and, as a concrete demo topic, subscribes to
   Japan Meteorological Agency data republished via the Global Cache
   (`cache/a/wis2/jp-jma-gts-to-wis2/#`), skipping anything under
-  `experimental/#`. Swap the whitelist for whatever centre/topic you
+  `experimental/#`. Swap the subscribe list for whatever centre/topic you
   actually need.
 - **DOWNLOADER** pulls matching notifications and downloads the
   referenced files through aria2 into `./downloads`, named by topic

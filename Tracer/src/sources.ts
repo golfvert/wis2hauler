@@ -33,12 +33,12 @@ export const SOURCE_META: Record<string, SourceMeta> = {
 	received: {
 		name: 'Received',
 		role: 'SUBSCRIBER',
-		stage: 'message arrived on the wire (pre-parse, before rbe/blacklist/dedup) -- ground truth for "did this arrive at all"',
+		stage: 'message arrived on the wire (pre-parse, before rbe/exclude/dedup) -- ground truth for "did this arrive at all"',
 	},
 	filter: {
 		name: 'Filter',
 		role: 'SUBSCRIBER',
-		stage: 'per-message ingest outcome: unchanged (rbe) / blacklisted / malformed / duplicate (wnm.id) / ingested -- carries the full parsed WNM',
+		stage: 'per-message ingest outcome: unchanged (rbe) / excluded / malformed / duplicate (wnm.id) / ingested -- carries the full parsed WNM',
 	},
 	decision: {
 		name: 'Decision',

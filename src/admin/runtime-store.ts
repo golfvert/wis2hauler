@@ -9,10 +9,10 @@
 // applied on one replica was never visible on another in flows.json --
 // confirmed by tracing "Updates"' second output (the "Change ?"/
 // "Action ?" switch) and finding no wis2gc:configuration persistence
-// or keyspace-notification broadcast for log-level/blacklist/
+// or keyspace-notification broadcast for log-level/exclude list/
 // overridelist at all (see ../config/runtime.ts's header for the full
 // per-key breakdown of what DOES have a live side effect: process-mode,
-// whitelist, credentials -- the other four are storage-only, here and
+// subscribe list, credentials -- the other four are storage-only, here and
 // in the original alike).
 import type { Config, OverrideRule, Role } from '../config/schema.ts';
 import type { ProcessMode, LogLevel, ValidatedPatch } from '../config/runtime.ts';
@@ -26,12 +26,12 @@ export interface RuntimeConfigState {
 	// Empty by default: every role reads the plain `logLevel` above until
 	// explicitly overridden.
 	logLevelByRole: Partial<Record<Role, LogLevel>>;
-	whitelist: string[];
-	blacklist: string[];
+	subscribe: string[];
+	exclude: string[];
 	overridelist: OverrideRule[];
 	// subscriber.mqtt['global-replay'] at startup, then whatever
 	// POST /replayer's `global-replay` field last set it to (../replayer/
-	// run.ts) -- storage-only in the original, same as logLevel/blacklist/
+	// run.ts) -- storage-only in the original, same as logLevel/exclude list/
 	// overridelist above (no live subscribe/unsubscribe side effect).
 	globalReplay: string | null;
 }
@@ -47,8 +47,8 @@ function seedState(config: Config): RuntimeConfigState {
 		processMode: 'run',
 		logLevel: config.global.log.level,
 		logLevelByRole: {},
-		whitelist: config.subscriber?.mqtt.whitelist ?? [],
-		blacklist: config.subscriber?.mqtt.blacklist ?? [],
+		subscribe: config.subscriber?.mqtt.subscribe ?? [],
+		exclude: config.subscriber?.mqtt.exclude ?? [],
 		overridelist: config.subscriber?.mqtt.overridelist ?? [],
 		globalReplay: config.subscriber?.mqtt['global-replay'] ?? null,
 	};
@@ -90,12 +90,12 @@ export class RuntimeConfigStore implements LevelGate {
 		return { ...this.state.logLevelByRole };
 	}
 
-	getWhitelist(): string[] {
-		return [...this.state.whitelist];
+	getSubscribe(): string[] {
+		return [...this.state.subscribe];
 	}
 
-	getBlacklist(): string[] {
-		return [...this.state.blacklist];
+	getExclude(): string[] {
+		return [...this.state.exclude];
 	}
 
 	getOverridelist(): OverrideRule[] {
@@ -141,15 +141,15 @@ export class RuntimeConfigStore implements LevelGate {
 			else this.state.logLevelByRole[role] = value;
 			changes['log-level-role'] = { value: { role, value }, changed: previous !== value };
 		}
-		if (patch.whitelist !== undefined) {
-			const previous = this.state.whitelist;
-			this.state.whitelist = patch.whitelist;
-			changes.whitelist = { value: patch.whitelist, changed: !sameArray(previous, patch.whitelist) };
+		if (patch.subscribe !== undefined) {
+			const previous = this.state.subscribe;
+			this.state.subscribe = patch.subscribe;
+			changes.subscribe = { value: patch.subscribe, changed: !sameArray(previous, patch.subscribe) };
 		}
-		if (patch.blacklist !== undefined) {
-			const previous = this.state.blacklist;
-			this.state.blacklist = patch.blacklist;
-			changes.blacklist = { value: patch.blacklist, changed: !sameArray(previous, patch.blacklist) };
+		if (patch.exclude !== undefined) {
+			const previous = this.state.exclude;
+			this.state.exclude = patch.exclude;
+			changes.exclude = { value: patch.exclude, changed: !sameArray(previous, patch.exclude) };
 		}
 		if (patch.overridelist !== undefined) {
 			const previous = this.state.overridelist;

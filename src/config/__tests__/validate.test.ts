@@ -14,11 +14,11 @@ describe('validateConfig — valid fixture', () => {
 		expect(result.valid).toBe(true);
 	});
 
-	test('reports the expected infos (roles, whitelist/blacklist/overridelist counts, rename-to)', () => {
+	test('reports the expected infos (roles, subscribe/exclude/overridelist counts, rename-to)', () => {
 		const result = validateConfig(parseYaml(validYaml));
 		expect(result.infos).toContain('global.roles: SUBSCRIBER, DOWNLOADER, CLEANER, REPORTER, REPLAYER');
-		expect(result.infos).toContain('subscriber.mqtt.whitelist: 2 topic(s)');
-		expect(result.infos).toContain('subscriber.mqtt.blacklist: 1 topic(s)');
+		expect(result.infos).toContain('subscriber.mqtt.subscribe: 2 topic(s)');
+		expect(result.infos).toContain('subscriber.mqtt.exclude: 1 topic(s)');
 		expect(result.infos).toContain('subscriber.mqtt.overridelist: 1 rule(s)');
 		expect(result.infos).toContain('downloader.rename-to: s3');
 		expect(result.infos).toContain('downloader.credentials: 1 topic(s) with credentials');
@@ -45,8 +45,8 @@ describe('validateConfig — invalid fixture', () => {
 		expect(result.errors).toContain('global.roles: unknown role(s): FOOBAR');
 		// log.level not a valid enum value (Ajv-level)
 		expect(result.errors.some((e) => e.startsWith('global.log.level'))).toBe(true);
-		// subscriber.mqtt.whitelist empty (Ajv-level, minItems)
-		expect(result.errors.some((e) => e.startsWith('subscriber.mqtt.whitelist'))).toBe(true);
+		// subscriber.mqtt.subscribe list empty (Ajv-level, minItems)
+		expect(result.errors.some((e) => e.startsWith('subscriber.mqtt.subscribe'))).toBe(true);
 		// downloader.aria-url not ws(s)://
 		expect(result.errors.some((e) => e.startsWith('downloader.aria-url'))).toBe(true);
 		// downloader.aria-inqueue not positive
@@ -233,24 +233,66 @@ describe('validateConfig — a leftover global.traefik block (removed feature) w
 
 // The WIS2 core/cache rule used to be applied here, at config-load
 // time, by ../load.ts's parseConfig (applyCoreCacheRule, rewriting an
-// origin/.../core/... whitelist/blacklist entry to cache/...). Removed
+// origin/.../core/... subscribe list/exclude list entry to cache/...). Removed
 // 2026-09-19 -- see ../load.ts's and ../topics.ts's own removal
-// comments: a broad wildcard whitelist entry bypassed the rewrite
+// comments: a broad wildcard subscribe list entry bypassed the rewrite
 // entirely, and nothing downstream ever re-checked a message's ACTUAL
 // topic once it was received over MQTT. The replacement enforcement
-// (a blacklist rule matched against each message's real topic) lives
+// (a exclude list rule matched against each message's real topic) lives
 // in ../../subscriber/ingest.ts and ../../subscriber/run.ts instead,
 // with its own tests there.
-describe('parseConfig — subscriber.mqtt.whitelist/blacklist are left exactly as configured', () => {
-	test('an origin/.../core/... whitelist/blacklist entry is no longer rewritten, regardless of global-cache', () => {
+describe('parseConfig — subscriber.mqtt.subscribe/exclude are left exactly as configured', () => {
+	test('an origin/.../core/... subscribe/exclude entry is no longer rewritten, regardless of global-cache', () => {
 		const cfg = parseYaml(validYaml) as Record<string, any>;
 		cfg.global['global-cache'] = false;
-		cfg.subscriber.mqtt.whitelist.push('origin/a/wis2/fr-meteofrance/data/core/weather/surface');
-		cfg.subscriber.mqtt.blacklist.push('origin/a/wis2/fr-meteofrance/data/core/#');
+		cfg.subscriber.mqtt.subscribe.push('origin/a/wis2/fr-meteofrance/data/core/weather/surface');
+		cfg.subscriber.mqtt.exclude.push('origin/a/wis2/fr-meteofrance/data/core/#');
 
 		const { config, result } = parseConfig(dumpYaml(cfg));
 		expect(result.valid).toBe(true);
-		expect(config.subscriber?.mqtt.whitelist).toContain('origin/a/wis2/fr-meteofrance/data/core/weather/surface');
-		expect(config.subscriber?.mqtt.blacklist).toContain('origin/a/wis2/fr-meteofrance/data/core/#');
+		expect(config.subscriber?.mqtt.subscribe).toContain('origin/a/wis2/fr-meteofrance/data/core/weather/surface');
+		expect(config.subscriber?.mqtt.exclude).toContain('origin/a/wis2/fr-meteofrance/data/core/#');
+	});
+});
+
+describe('validateConfig — deprecated whitelist/blacklist keys (ADR 0012)', () => {
+	const legacyYaml = validYaml.replace(/^(\s+)subscribe:/m, '$1whitelist:').replace(/^(\s+)exclude:/m, '$1blacklist:');
+
+	test('fixture really uses the old spellings in this variant', () => {
+		expect(legacyYaml).toContain('whitelist:');
+		expect(legacyYaml).toContain('blacklist:');
+	});
+
+	test('old keys are accepted, migrated to the new names, and each warns', () => {
+		const { config, result } = parseConfig(legacyYaml);
+		expect(result.valid).toBe(true);
+		expect(result.warnings).toContain('subscriber.mqtt.whitelist is deprecated, rename it to subscriber.mqtt.subscribe');
+		expect(result.warnings).toContain('subscriber.mqtt.blacklist is deprecated, rename it to subscriber.mqtt.exclude');
+		expect(config.subscriber?.mqtt.subscribe.length).toBe(2);
+		expect(config.subscriber?.mqtt.exclude?.length).toBe(1);
+		expect('whitelist' in (config.subscriber!.mqtt as object)).toBe(false);
+		expect('blacklist' in (config.subscriber!.mqtt as object)).toBe(false);
+		expect(result.infos).toContain('subscriber.mqtt.subscribe: 2 topic(s)');
+	});
+
+	test('new keys produce no deprecation warning', () => {
+		const { result } = parseConfig(validYaml);
+		expect(result.warnings.some((w) => w.includes('deprecated'))).toBe(false);
+	});
+
+	test('setting both spellings of one key is an error', () => {
+		const raw = parseYaml(validYaml) as { subscriber: { mqtt: Record<string, unknown> } };
+		raw.subscriber.mqtt.whitelist = ['cache/a/wis2/#'];
+		const result = validateConfig(raw);
+		expect(result.valid).toBe(false);
+		expect(result.errors.some((e) => e.includes('subscriber.mqtt.whitelist and subscriber.mqtt.subscribe are both set'))).toBe(true);
+	});
+
+	test('a config with neither spelling of subscribe is still rejected', () => {
+		const raw = parseYaml(validYaml) as { subscriber: { mqtt: Record<string, unknown> } };
+		delete raw.subscriber.mqtt.subscribe;
+		const result = validateConfig(raw);
+		expect(result.valid).toBe(false);
+		expect(result.errors.some((e) => e.startsWith('subscriber.mqtt.subscribe'))).toBe(true);
 	});
 });

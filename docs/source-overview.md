@@ -38,11 +38,11 @@ Reads the file, parses it as YAML, and calls `validate.ts`. Throws `ConfigError`
 
 ### `src/config/runtime.ts`
 
-Validates a `POST /set` patch body against the small live-mutable subset of config: `process-mode`, `log-level`, `log-level-role`, `whitelist`/`blacklist`/`overridelist` (SUBSCRIBER-only), `credentials` (DOWNLOADER-only), `debug`. Reports what would change and why a key was rejected; does **not** itself mutate any live state (that's `admin/runtime-store.ts`'s job) — a deliberate split from the original, which coupled validation directly to Node-RED's global context.
+Validates a `POST /set` patch body against the small live-mutable subset of config: `process-mode`, `log-level`, `log-level-role`, `subscribe`/`exclude`/`overridelist` (SUBSCRIBER-only), `credentials` (DOWNLOADER-only), `debug`. Reports what would change and why a key was rejected; does **not** itself mutate any live state (that's `admin/runtime-store.ts`'s job) — a deliberate split from the original, which coupled validation directly to Node-RED's global context.
 
 ### `src/config/topics.ts`
 
-The WIS2 topic grammar (`isValidMqttTopic`), a looser blacklist/overridelist pattern check (`isValidTopicPattern`), and the credentials-key check (`isValidCredentialTopic`, requiring `recommended` at level 6). Shared by both the static-config validator and the runtime-patch validator — this exact logic was duplicated three times in the original flow; centralized here.
+The WIS2 topic grammar (`isValidMqttTopic`), a looser exclude list/overridelist pattern check (`isValidTopicPattern`), and the credentials-key check (`isValidCredentialTopic`, requiring `recommended` at level 6). Shared by both the static-config validator and the runtime-patch validator — this exact logic was duplicated three times in the original flow; centralized here.
 
 ---
 
@@ -92,7 +92,7 @@ Wires `GET /get` and `POST /set` onto the shared `HttpRouter`, and logs one info
 
 ### `src/admin/runtime-store.ts`
 
-`RuntimeConfigStore`: the live, per-process, in-memory state every admin-API read/write operates on — `process-mode`, `log-level` (plus per-role overrides), `whitelist`/`blacklist`/`overridelist`, `global-replay`. Deliberately per-process, matching the original (Node-RED's own `global` context was never shared across instances either). Also implements `LevelGate` (see `logging/logger.ts`), since it's the natural single source of truth for "what level should this role log at right now."
+`RuntimeConfigStore`: the live, per-process, in-memory state every admin-API read/write operates on — `process-mode`, `log-level` (plus per-role overrides), `subscribe`/`exclude`/`overridelist`, `global-replay`. Deliberately per-process, matching the original (Node-RED's own `global` context was never shared across instances either). Also implements `LevelGate` (see `logging/logger.ts`), since it's the natural single source of truth for "what level should this role log at right now."
 
 ---
 
@@ -156,7 +156,7 @@ The canonical `Wnm` (WIS2 Notification Message) type, plus `selectLink`/`firstOf
 
 ### `src/wis2/topic-match.ts`
 
-MQTT wildcard topic matching (`+`/`#` semantics) and the `replay/a/wis2/...` prefix-stripping applied before matching a replayed message against blacklist/overridelist rules — this exact algorithm appeared three times independently in the original (two blacklist checks, one override check); centralized here.
+MQTT wildcard topic matching (`+`/`#` semantics) and the `replay/a/wis2/...` prefix-stripping applied before matching a replayed message against exclude list/overridelist rules — this exact algorithm appeared three times independently in the original (two exclude list checks, one override check); centralized here.
 
 ### `src/wis2/cache-deadline.ts`
 
@@ -172,7 +172,7 @@ Every Redis key-name builder shared across roles (`downloaderHashKey`, `download
 
 Ingests WIS2 notifications from GB1/GB2, dedups and filters them, and queues matching ones for download.
 
-- **`ingest.ts`** — the raw MQTT-message-to-stream-entry stage: blacklist filtering, a per-connection SETNX-based dedup (`wnmid`), then XADD onto the shared raw stream. GB1 and GB2 are deliberately asymmetric here (GB2 delays every message 2s; GB1's blacklist gets an extra recommended-topic rule appended in global-cache mode, GB2's doesn't) — both asymmetries are preserved, not "fixed."
+- **`ingest.ts`** — the raw MQTT-message-to-stream-entry stage: exclude list filtering, a per-connection SETNX-based dedup (`wnmid`), then XADD onto the shared raw stream. GB1 and GB2 are deliberately asymmetric here (GB2 delays every message 2s; GB1's exclude list gets an extra recommended-topic rule appended in global-cache mode, GB2's doesn't) — both asymmetries are preserved, not "fixed."
 - **`order-links.ts`** — reorders a WNM's links (canonical/update first) and computes the per-message randomized delay used before the content-dedup claim race, so that when the same content arrives via multiple paths, each source's share of claimed downloads tracks its configured weight (`subscriber.weight-sources`) rather than a fixed priority order.
 - **`content-id.ts`** — derives the content-based `downloader_id` (keyed on integrity hash if present, else publication time) used to dedup a granule across every path it might arrive by.
 - **`override.ts`** — the overridelist rules: force publish-only (no download) by topic match and/or size.
@@ -180,7 +180,7 @@ Ingests WIS2 notifications from GB1/GB2, dedups and filters them, and queues mat
 - **`claim.ts`** — the pure claim decision (already-complete / publish-only / download / wait) given pre-fetched Redis results — the SETNX race and EXISTS check themselves live in `consumer.ts`/`store.ts`, not here.
 - **`consumer.ts`** — the XREAD consumer loop: reads raw-stream entries, runs them through `order-links` → `override` → `prepare` → `content-id` → `claim`, and acts on the result (queue a download, publish-only, or drop).
 - **`store.ts`** — the `SubscriberStore` interface behind all of the above's actual Redis I/O. Real implementation: `redis/ioredis-store.ts`.
-- **`run.ts`** — top-level wiring: subscribes the whitelist on each already-connected GB1/GB2 client (connections themselves are opened by `main.ts`, not here — see its own header comment on that deliberate change), wires messages through `ingest.ts`, and polls the consumer loop every second until shutdown.
+- **`run.ts`** — top-level wiring: subscribes the subscribe list on each already-connected GB1/GB2 client (connections themselves are opened by `main.ts`, not here — see its own header comment on that deliberate change), wires messages through `ingest.ts`, and polls the consumer loop every second until shutdown.
 
 ---
 

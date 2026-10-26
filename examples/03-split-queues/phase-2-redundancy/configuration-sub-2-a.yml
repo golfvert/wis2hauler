@@ -25,5 +25,5 @@ subscriber:
       username: everyone
       password: everyone
   mqtt:
-    whitelist: [ "cache/a/wis2/int-eumetsat/#" ]
-    blacklist: [ "+/+/+/+/+/+/+/experimental/#" ]
+    subscribe: [ "cache/a/wis2/int-eumetsat/#" ]
+    exclude: [ "+/+/+/+/+/+/+/experimental/#" ]

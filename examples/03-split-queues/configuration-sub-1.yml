@@ -23,8 +23,8 @@ subscriber:
       username: everyone
       password: everyone
   mqtt:
-    whitelist: [ "cache/a/wis2/jp-jma-gts-to-wis2/#" ]
-    blacklist: [ "+/+/+/+/+/+/+/experimental/#" ]
+    subscribe: [ "cache/a/wis2/jp-jma-gts-to-wis2/#" ]
+    exclude: [ "+/+/+/+/+/+/+/experimental/#" ]
 
 cleaner:
   keep-in-cache: 600  # the hauler will keep files in the cache for this many seconds before deleting them

@@ -183,13 +183,13 @@ export type OverrideRule = Static<typeof OverrideRule>;
 
 export const SubscriberMqtt = Type.Object(
 	{
-		whitelist: Type.Array(Type.String(), { minItems: 1 }),
-		blacklist: Type.Optional(Type.Array(Type.String())),
+		subscribe: Type.Array(Type.String(), { minItems: 1 }),
+		exclude: Type.Optional(Type.Array(Type.String())),
 		overridelist: Type.Optional(Type.Array(OverrideRule)),
 		'global-replay': Type.Optional(Type.Union([Type.String(), Type.Null()])),
 		// Setup tab's "Configuration" change node (5ebe61e8fc4d96df):
 		// `$type(payload.subscriber.mqtt.qos) = "number" ? payload.subscriber.mqtt.qos : 0`
-		// -- the QoS every whitelist (and replay-wrapper) topic subscribes
+		// -- the QoS every subscribe list (and replay-wrapper) topic subscribes
 		// at, ported for ../election/run.ts's deriveHeartbeatTopics().
 		// Not previously in this schema since nothing consumed it before now.
 		qos: Type.Optional(Type.Number()),
@@ -366,7 +366,7 @@ export const KNOWN_GLOBAL = [
 export const KNOWN_REDIS = ['mode', 'nodes', 'password'] as const;
 export const KNOWN_LOG = ['level', 'to', 'size', 'number', 'dir'] as const;
 export const KNOWN_SUBSCRIBER = ['global-broker', 'weight-sources', 'weight-delay-seconds', 'weight-delay-max-seconds', 'mqtt'] as const;
-export const KNOWN_SUBSCRIBER_MQTT = ['whitelist', 'blacklist', 'overridelist', 'global-replay', 'qos'] as const;
+export const KNOWN_SUBSCRIBER_MQTT = ['subscribe', 'exclude', 'overridelist', 'global-replay', 'qos'] as const;
 export const KNOWN_DOWNLOADER = [
 	'aria-secret', 'aria-url', 'aria-inqueue', 'aria-download', 'aria-check-tls', 'download-url', 'rename-to', 's3access', 'credentials',
 ] as const;

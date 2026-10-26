@@ -1,5 +1,5 @@
 // Top-level wiring for a live SUBSCRIBER role: subscribes the
-// configured whitelist on each already-connected GB1/GB2 client,
+// configured subscribe list on each already-connected GB1/GB2 client,
 // wires each message through ingest.ts into the raw stream, and polls
 // the XREAD consumer loop (consumer.ts) every second until the given
 // AbortSignal fires, publishing through the already-connected
@@ -26,23 +26,23 @@
 // original's "Poll" inject node + "Read" -> "XREAD" (no BLOCK) chain
 // and the Setup tab's lastMqttId = "0-0" initialization.
 //
-// The original ALSO had GB1's blacklist gain an extra global-cache
+// The original ALSO had GB1's exclude list gain an extra global-cache
 // exemption rule GB2's didn't -- an asymmetry with no documented
 // rationale anywhere, traced to a stray typo between two near-duplicate
 // Node-RED node names ("Black & GRep" vs "Black &. GRep"), the
 // signature of an incomplete copy-paste rather than intentional
 // design. FIXED 2026-09-19 (the maintainer, after this was flagged and
 // confirmed to have no rationale): both connections now use the exact
-// same effectiveBlacklist below, computed once and shared -- this is a
+// same effectiveExclude below, computed once and shared -- this is a
 // deliberate departure from the literal port, not an oversight.
 //
 // NOT a port, added 2026-09-19 (same day, separate change): both
-// connections also get ingest.ts's ORIGIN_CORE_BLACKLIST_RULE /
-// ORIGIN_METADATA_BLACKLIST_RULE appended whenever global-cache mode
+// connections also get ingest.ts's ORIGIN_CORE_EXCLUDE_RULE /
+// ORIGIN_METADATA_EXCLUDE_RULE appended whenever global-cache mode
 // is off -- see that file's doc comment for why (replaces the old
-// config-time whitelist/blacklist rewrite, which a broad wildcard
+// config-time subscribe list/exclude list rewrite, which a broad wildcard
 // subscription could bypass entirely). Folded into the same
-// effectiveBlacklist below, so GB1 and GB2 are symmetric on both
+// effectiveExclude below, so GB1 and GB2 are symmetric on both
 // safeguards now, not just the new one.
 import type { Config } from '../config/schema.ts';
 import { createRedisConnection, IoredisStore, RAW_STREAM_MAXLEN } from '../redis/ioredis-store.ts';
@@ -51,9 +51,9 @@ import {
 	createIngestHandler,
 	createIngestStats,
 	defaultSleep,
-	RECOMMENDED_TOPIC_BLACKLIST_RULE,
-	ORIGIN_CORE_BLACKLIST_RULE,
-	ORIGIN_METADATA_BLACKLIST_RULE,
+	RECOMMENDED_TOPIC_EXCLUDE_RULE,
+	ORIGIN_CORE_EXCLUDE_RULE,
+	ORIGIN_METADATA_EXCLUDE_RULE,
 } from './ingest.ts';
 import { runConsumerLoop, type ConsumerDeps } from './consumer.ts';
 import { createSourceLogger, type LevelGate } from '../logging/logger.ts';
@@ -82,9 +82,9 @@ export async function runSubscriber(
 	const redisConn = createRedisConnection(config.global.redis);
 	const store = new IoredisStore(redisConn);
 
-	const whitelist = sub.mqtt.whitelist;
-	const baseBlacklist = sub.mqtt.blacklist ?? [];
-	// One shared blacklist for BOTH GB1 and GB2 -- see this file's
+	const subscribeTopics = sub.mqtt.subscribe;
+	const baseExclude = sub.mqtt.exclude ?? [];
+	// One shared exclude list for BOTH GB1 and GB2 -- see this file's
 	// header comment. global-cache mode on: add the recommended-topic
 	// exemption (this replica IS a Global Cache, so recommended data is
 	// meant to come in via the separate credentials-based pull path, not
@@ -94,23 +94,23 @@ export async function runSubscriber(
 	// see ingest.ts's doc comment on those two constants). The two cases
 	// are mutually exclusive by construction (one gate on the same
 	// globalCacheMode), so this never applies both.
-	const effectiveBlacklist = globalCacheMode
-		? [...baseBlacklist, RECOMMENDED_TOPIC_BLACKLIST_RULE]
-		: [...baseBlacklist, ORIGIN_CORE_BLACKLIST_RULE, ORIGIN_METADATA_BLACKLIST_RULE];
+	const effectiveExclude = globalCacheMode
+		? [...baseExclude, RECOMMENDED_TOPIC_EXCLUDE_RULE]
+		: [...baseExclude, ORIGIN_CORE_EXCLUDE_RULE, ORIGIN_METADATA_EXCLUDE_RULE];
 
 	// Informational, once per SUBSCRIBER startup -- not per connection --
 	// so this is never a silent behavior change: with global-cache mode
-	// off, every GB1/GB2 subscription (however broadly its whitelist is
+	// off, every GB1/GB2 subscription (however broadly its subscribe list is
 	// written) will still never see origin/.../data/core/... or
 	// origin/.../metadata/... notifications; only origin/.../data/
 	// recommended/... (and anything under cache/...) gets through. The
-	// configured whitelist itself is left exactly as written -- this is
+	// configured subscribe list itself is left exactly as written -- this is
 	// no longer a config-rewrite, see ingest.ts's doc comment on why.
 	if (!globalCacheMode) {
 		log.log(
 			'SUBSCRIBER: global.global-cache is not set -- ignoring any origin/.../data/core/... or origin/.../metadata/... ' +
-				'notification regardless of the configured whitelist (only origin/.../data/recommended/... and cache/... are processed); ' +
-				'the whitelist/blacklist themselves are not being modified',
+				'notification regardless of the configured subscribe list (only origin/.../data/recommended/... and cache/... are processed); ' +
+				'the subscribe and exclude lists themselves are not being modified',
 		);
 	}
 
@@ -126,13 +126,13 @@ export async function runSubscriber(
 	for (let i = 0; i < upstreamClients.length; i++) {
 		const label = `GB${i + 1}`;
 		const client = upstreamClients[i]!;
-		await client.subscribe(whitelist);
+		await client.subscribe(subscribeTopics);
 		const stats = createIngestStats();
 		const handler = createIngestHandler(
 			{
 				store,
 				queue,
-				blacklist: effectiveBlacklist,
+				exclude: effectiveExclude,
 				sourceLabel: label,
 				preDelayMs: i === 0 ? 0 : GB2_INGEST_DELAY_MS,
 				sleep: defaultSleep,
@@ -146,7 +146,7 @@ export async function runSubscriber(
 		client.onMessage((topic, payload) => {
 			void handler(topic, payload).catch((err) => log.error(`[${label}] ingest error on ${topic}: ${err instanceof Error ? err.message : String(err)}`, { source: label, topic }));
 		});
-		log.log(`SUBSCRIBER: ${label} subscribed to ${whitelist.length} whitelist pattern(s)`);
+		log.log(`SUBSCRIBER: ${label} subscribed to ${subscribeTopics.length} subscribe pattern(s)`);
 	}
 
 	const consumerDeps: ConsumerDeps = {

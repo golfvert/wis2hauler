@@ -39,10 +39,10 @@ subscriber:
   weight-delay-seconds: 8
   weight-delay-max-seconds: 120
   mqtt:
-    whitelist:
+    subscribe:
       - "origin/a/wis2/fr-meteofrance/data/#"
       - "cache/a/wis2/fr-meteofrance/metadata/#"
-    blacklist:
+    exclude:
       - "+/+/+/+/+/recommended/#"
     overridelist:
       - topic: "origin/a/wis2/fr-meteofrance/data/warnings/#"

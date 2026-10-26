@@ -1,6 +1,6 @@
 // Validation for the small, live-mutable subset of config exposed
-// over the HTTP PATCH-style API — process-mode, log-level, whitelist,
-// blacklist, overridelist, credentials (CRUD). Ported from the
+// over the HTTP PATCH-style API — process-mode, log-level, subscribe list,
+// exclude list, overridelist, credentials (CRUD). Ported from the
 // Node-RED "Updates" function node (Setup tab) in flows.json, which
 // is deliberately a much smaller surface than the static YAML config
 // in schema.ts/validate.ts: only these six keys can be changed without
@@ -14,8 +14,8 @@
 // deliberately split out, since "is this patch valid" and "how does
 // the Subscriber/Downloader role apply it to its own live state" are
 // different concerns once they're not forced into one function node.
-// The whitelist/replay-topic merge behavior in particular (preserving
-// replay/a/wis2/... subscriptions across a whitelist update, carrying
+// The subscribe list/replay-topic merge behavior in particular (preserving
+// replay/a/wis2/... subscriptions across a subscribe list update, carrying
 // over each topic's QoS) is Subscriber-role state, not config-module
 // state, and belongs with that role's own implementation.
 
@@ -43,11 +43,15 @@ const PATCHABLE_ROLES: Record<string, readonly Role[] | null> = {
 	// original behavior to mirror here, so this follows 'log-level's own
 	// precedent rather than inventing a narrower rule).
 	'log-level-role': null,
-	whitelist: ['SUBSCRIBER'],
-	blacklist: ['SUBSCRIBER'],
+	subscribe: ['SUBSCRIBER'],
+	exclude: ['SUBSCRIBER'],
 	overridelist: ['SUBSCRIBER'],
 	credentials: ['DOWNLOADER'],
 };
+
+// Deprecated names still accepted by POST /set until the Maintainer says
+// otherwise (ADR 0012); mapped to the new key before any other check.
+const LEGACY_PATCH_KEYS: Record<string, string> = { whitelist: 'subscribe', blacklist: 'exclude' };
 
 export function isKeyAllowed(key: string, activeRoles: ReadonlySet<Role>): boolean {
 	const allowed = PATCHABLE_ROLES[key];
@@ -69,8 +73,8 @@ export interface ValidatedPatch {
 	'process-mode'?: ProcessMode;
 	'log-level'?: LogLevel;
 	'log-level-role'?: LogLevelRolePatch;
-	whitelist?: string[];
-	blacklist?: string[];
+	subscribe?: string[];
+	exclude?: string[];
 	overridelist?: OverrideRule[];
 	credentials?: CredentialOp;
 }
@@ -78,6 +82,8 @@ export interface ValidatedPatch {
 export interface PatchResult {
 	values: ValidatedPatch;
 	errors: string[];
+	/** Deprecated key names used in the body (ADR 0012); absent when none. */
+	deprecated?: string[];
 }
 
 function validateOverridelist(items: unknown[]): string[] {
@@ -104,11 +110,11 @@ function validateOverridelist(items: unknown[]): string[] {
 // REMOVED 2026-09-19: this used to declare ValidatePatchOptions
 // (globalCacheMode + warn) purely to feed the WIS2 core/cache rule
 // (../config/topics.ts's now-removed enforceCoreCacheRule) applied to
-// a whitelist/blacklist patch below. See topics.ts's removal comment
-// for why that rewrite was replaced with an ingest-time blacklist
+// a subscribe list/exclude list patch below. See topics.ts's removal comment
+// for why that rewrite was replaced with an ingest-time exclude list
 // filter (../subscriber/ingest.ts) instead -- a live POST /set patch
 // gets the same protection for free now, since it runs against every
-// message's real topic regardless of when/how the whitelist was set.
+// message's real topic regardless of when/how the subscribe list was set.
 
 // Validates one PATCH body against every key present in it. Mirrors
 // the original's per-key branch (enum / array / objarray / crud)
@@ -124,7 +130,18 @@ export function validatePatch(body: unknown, activeRoles: ReadonlySet<Role>): Pa
 		return { values, errors: ['Body must be a JSON object.'] };
 	}
 
-	for (const [key, value] of Object.entries(body as Record<string, unknown>)) {
+	const deprecated: string[] = [];
+	const raw = body as Record<string, unknown>;
+	const entries: [string, unknown][] = [];
+	for (const [k, v] of Object.entries(raw)) {
+		const newKey = LEGACY_PATCH_KEYS[k];
+		if (newKey === undefined) { entries.push([k, v]); continue; }
+		if (newKey in raw) { errors.push(`${k}: deprecated name of '${newKey}', which is also present — send only '${newKey}'.`); continue; }
+		deprecated.push(`${k}: deprecated, use '${newKey}'.`);
+		entries.push([newKey, v]);
+	}
+
+	for (const [key, value] of entries) {
 		if (!(key in PATCHABLE_ROLES)) {
 			errors.push(`${key}: unknown key.`);
 			continue;
@@ -158,14 +175,14 @@ export function validatePatch(body: unknown, activeRoles: ReadonlySet<Role>): Pa
 				values['log-level-role'] = { role: role as Role, value: lvl };
 				break;
 			}
-			case 'whitelist':
-			case 'blacklist': {
+			case 'subscribe':
+			case 'exclude': {
 				if (!Array.isArray(value)) { errors.push(`${key}: must be an array of strings.`); break; }
 				const items = value.map((t) => (typeof t === 'string' ? t.trim() : '')).filter((t) => t.length > 0);
 				if (items.length === 0) { errors.push(`${key}: array must not be empty.`); break; }
-				const itemErrors = key === 'whitelist'
-					? items.flatMap((t, i) => { const e = isValidMqttTopic(t); return e ? [`whitelist[${i}]: '${t}' — ${e}`] : []; })
-					: items.flatMap((t, i) => (isValidTopicPattern(t) ? [] : [`blacklist[${i}]: '${t}' — only alphanumeric, -, +, # and / allowed`]));
+				const itemErrors = key === 'subscribe'
+					? items.flatMap((t, i) => { const e = isValidMqttTopic(t); return e ? [`subscribe[${i}]: '${t}' — ${e}`] : []; })
+					: items.flatMap((t, i) => (isValidTopicPattern(t) ? [] : [`exclude[${i}]: '${t}' — only alphanumeric, -, +, # and / allowed`]));
 				if (itemErrors.length > 0) { errors.push(...itemErrors); break; }
 				values[key] = items;
 				break;
@@ -195,5 +212,5 @@ export function validatePatch(body: unknown, activeRoles: ReadonlySet<Role>): Pa
 		}
 	}
 
-	return { values, errors };
+	return deprecated.length > 0 ? { values, errors, deprecated } : { values, errors };
 }

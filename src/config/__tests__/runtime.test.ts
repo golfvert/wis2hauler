@@ -18,20 +18,20 @@ describe('validatePatch', () => {
 		expect(result.errors).toContain('bogus: unknown key.');
 	});
 
-	test('rejects whitelist/blacklist when SUBSCRIBER role is not active', () => {
-		const result = validatePatch({ whitelist: ['origin/a/wis2/fr-meteofrance/data/x'] }, downloaderOnly);
-		expect(result.errors).toContain('whitelist: not available for current roles.');
-		expect(result.values.whitelist).toBeUndefined();
+	test('rejects subscribe/exclude when SUBSCRIBER role is not active', () => {
+		const result = validatePatch({ subscribe: ['origin/a/wis2/fr-meteofrance/data/x'] }, downloaderOnly);
+		expect(result.errors).toContain('subscribe: not available for current roles.');
+		expect(result.values.subscribe).toBeUndefined();
 	});
 
-	test('accepts a valid whitelist for SUBSCRIBER, rejects a malformed topic in it', () => {
-		const good = validatePatch({ whitelist: ['origin/a/wis2/fr-meteofrance/data/x'] }, subscriberOnly);
+	test('accepts a valid subscribe for SUBSCRIBER, rejects a malformed topic in it', () => {
+		const good = validatePatch({ subscribe: ['origin/a/wis2/fr-meteofrance/data/x'] }, subscriberOnly);
 		expect(good.errors).toEqual([]);
-		expect(good.values.whitelist).toEqual(['origin/a/wis2/fr-meteofrance/data/x']);
+		expect(good.values.subscribe).toEqual(['origin/a/wis2/fr-meteofrance/data/x']);
 
-		const bad = validatePatch({ whitelist: ['not-a-valid-topic'] }, subscriberOnly);
-		expect(bad.errors.some((e) => e.startsWith('whitelist[0]'))).toBe(true);
-		expect(bad.values.whitelist).toBeUndefined();
+		const bad = validatePatch({ subscribe: ['not-a-valid-topic'] }, subscriberOnly);
+		expect(bad.errors.some((e) => e.startsWith('subscribe[0]'))).toBe(true);
+		expect(bad.values.subscribe).toBeUndefined();
 	});
 
 	test('credentials CRUD: create requires username/password, delete does not', () => {
@@ -88,38 +88,64 @@ describe('validatePatch', () => {
 });
 
 // The WIS2 core/cache rule used to rewrite an origin/.../core/...
-// whitelist/blacklist entry to cache/... right here (enforceCoreCacheRule,
+// subscribe list/exclude list entry to cache/... right here (enforceCoreCacheRule,
 // removed 2026-09-19 -- see ../topics.ts's removal comment: a broad
 // wildcard entry bypassed it entirely, and nothing downstream ever
 // re-checked a message's ACTUAL topic once received). validatePatch no
-// longer rewrites whitelist/blacklist entries at all -- the equivalent
+// longer rewrites subscribe list/exclude list entries at all -- the equivalent
 // protection now runs at message-ingest time against each message's
-// real topic (../../subscriber/ingest.ts's ORIGIN_CORE_BLACKLIST_RULE /
-// ORIGIN_METADATA_BLACKLIST_RULE), which a POST /set patch benefits
-// from for free since it's applied regardless of how the whitelist was
+// real topic (../../subscriber/ingest.ts's ORIGIN_CORE_EXCLUDE_RULE /
+// ORIGIN_METADATA_EXCLUDE_RULE), which a POST /set patch benefits
+// from for free since it's applied regardless of how the subscribe list was
 // set.
-describe('validatePatch: whitelist/blacklist entries are passed through untouched', () => {
+describe('validatePatch: subscribe/exclude entries are passed through untouched', () => {
 	test('an origin/.../core/... entry is no longer rewritten', () => {
 		const result = validatePatch(
-			{ whitelist: ['origin/a/wis2/fr-meteofrance/data/core/weather/surface'] },
+			{ subscribe: ['origin/a/wis2/fr-meteofrance/data/core/weather/surface'] },
 			subscriberOnly,
 		);
 		expect(result.errors).toEqual([]);
-		expect(result.values.whitelist).toEqual(['origin/a/wis2/fr-meteofrance/data/core/weather/surface']);
+		expect(result.values.subscribe).toEqual(['origin/a/wis2/fr-meteofrance/data/core/weather/surface']);
 	});
 
-	test('a blacklist entry naming origin/.../core/... is no longer rewritten either', () => {
-		const result = validatePatch({ blacklist: ['origin/a/wis2/fr-meteofrance/data/core/#'] }, subscriberOnly);
+	test('a exclude entry naming origin/.../core/... is no longer rewritten either', () => {
+		const result = validatePatch({ exclude: ['origin/a/wis2/fr-meteofrance/data/core/#'] }, subscriberOnly);
 		expect(result.errors).toEqual([]);
-		expect(result.values.blacklist).toEqual(['origin/a/wis2/fr-meteofrance/data/core/#']);
+		expect(result.values.exclude).toEqual(['origin/a/wis2/fr-meteofrance/data/core/#']);
 	});
 
 	test('leaves non-core and already-cache topics untouched too', () => {
 		const result = validatePatch(
-			{ whitelist: ['origin/a/wis2/fr-meteofrance/data/recommended/x', 'cache/a/wis2/us-noaa/data/core/y'] },
+			{ subscribe: ['origin/a/wis2/fr-meteofrance/data/recommended/x', 'cache/a/wis2/us-noaa/data/core/y'] },
 			subscriberOnly,
 		);
 		expect(result.errors).toEqual([]);
-		expect(result.values.whitelist).toEqual(['origin/a/wis2/fr-meteofrance/data/recommended/x', 'cache/a/wis2/us-noaa/data/core/y']);
+		expect(result.values.subscribe).toEqual(['origin/a/wis2/fr-meteofrance/data/recommended/x', 'cache/a/wis2/us-noaa/data/core/y']);
+	});
+});
+
+describe('validatePatch — deprecated whitelist/blacklist keys (ADR 0012)', () => {
+	test('whitelist/blacklist are mapped to subscribe/exclude and reported as deprecated', () => {
+		const result = validatePatch({ whitelist: ['cache/a/wis2/#'], blacklist: ['+/+/+/+/+/+/+/experimental/#'] }, subscriberOnly);
+		expect(result.errors).toEqual([]);
+		expect(result.values.subscribe).toEqual(['cache/a/wis2/#']);
+		expect(result.values.exclude).toEqual(['+/+/+/+/+/+/+/experimental/#']);
+		expect(result.deprecated).toEqual(["whitelist: deprecated, use 'subscribe'.", "blacklist: deprecated, use 'exclude'."]);
+	});
+
+	test('new names alone report no deprecation', () => {
+		const result = validatePatch({ subscribe: ['cache/a/wis2/#'] }, subscriberOnly);
+		expect(result.errors).toEqual([]);
+		expect(result.deprecated).toBeUndefined();
+	});
+
+	test('sending both spellings of one key is an error', () => {
+		const result = validatePatch({ whitelist: ['cache/a/wis2/#'], subscribe: ['cache/a/wis2/#'] }, subscriberOnly);
+		expect(result.errors.some((e) => e.startsWith("whitelist: deprecated name of 'subscribe'"))).toBe(true);
+	});
+
+	test('old names still respect the role gate', () => {
+		const result = validatePatch({ whitelist: ['cache/a/wis2/#'] }, downloaderOnly);
+		expect(result.errors).toContain('subscribe: not available for current roles.');
 	});
 });

@@ -59,7 +59,7 @@ First seen: Received at 2026-09-20T16:08:19.663Z
 Last seen:  Aria at 2026-09-20T16:08:20.100Z -- a real aria2 download was registered (addUri)
 ```
 
-Reading it, same logic as the manual recipe it replaces: no `Received` line anywhere → the message never reached this replica's broker connection at all (check `mqtt.whitelist` for that centre/topic, or look upstream). A `Received` line but the trail stops there → dropped inside `ingest.ts`'s own filters (`Filter`'s `outcome` says which one). A trail that stops at `Decision` → that line's `action`/`reason` is the answer. Past that, DOWNLOADER's own lines (`Aria`/`Ack`/`Correct ?`/`Re-queue`/`Update`/`Output - Error`/`Poll Error`) tell you where a download attempt actually failed.
+Reading it, same logic as the manual recipe it replaces: no `Received` line anywhere → the message never reached this replica's broker connection at all (check `mqtt.subscribe` for that centre/topic, or look upstream). A `Received` line but the trail stops there → dropped inside `ingest.ts`'s own filters (`Filter`'s `outcome` says which one). A trail that stops at `Decision` → that line's `action`/`reason` is the answer. Past that, DOWNLOADER's own lines (`Aria`/`Ack`/`Correct ?`/`Re-queue`/`Update`/`Output - Error`/`Poll Error`) tell you where a download attempt actually failed.
 
 One known gap this tool inherits from Hauler itself (documented there too): a download that exhausts every retry (`RETRY_NOK`) has no dedicated log line — `error-retry.ts` only writes that to a Redis stream, never through a `SourceLogger`. If the trace ends with a `Re-queue`/`Update` pair and then nothing, that's the same "probably exhausted retries" inference the manual runbook already relies on, not a bug in this tool.
 

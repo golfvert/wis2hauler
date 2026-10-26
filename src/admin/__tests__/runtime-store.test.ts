@@ -15,8 +15,8 @@ function makeConfig(overrides: Partial<Config['global']> = {}): Config {
 		subscriber: {
 			'global-broker': [{ broker: 'mqtts://example.com' }],
 			mqtt: {
-				whitelist: ['origin/a/wis2/fr-meteofrance/data/x'],
-				blacklist: ['origin/a/wis2/blocked/#'],
+				subscribe: ['origin/a/wis2/fr-meteofrance/data/x'],
+				exclude: ['origin/a/wis2/blocked/#'],
 				overridelist: [{ topic: 'origin/a/wis2/big/#', 'max-length': 10 }],
 				'global-replay': 'https://replay.example.com',
 			},
@@ -25,12 +25,12 @@ function makeConfig(overrides: Partial<Config['global']> = {}): Config {
 }
 
 describe('RuntimeConfigStore', () => {
-	test('seeds from config: log-level, whitelist/blacklist/overridelist, global-replay', () => {
+	test('seeds from config: log-level, subscribe/exclude/overridelist, global-replay', () => {
 		const store = new RuntimeConfigStore(makeConfig());
 		expect(store.getLogLevel()).toBe('info');
 		expect(store.getProcessMode()).toBe('run');
-		expect(store.getWhitelist()).toEqual(['origin/a/wis2/fr-meteofrance/data/x']);
-		expect(store.getBlacklist()).toEqual(['origin/a/wis2/blocked/#']);
+		expect(store.getSubscribe()).toEqual(['origin/a/wis2/fr-meteofrance/data/x']);
+		expect(store.getExclude()).toEqual(['origin/a/wis2/blocked/#']);
 		expect(store.getOverridelist()).toEqual([{ topic: 'origin/a/wis2/big/#', 'max-length': 10 }]);
 		expect(store.getGlobalReplay()).toBe('https://replay.example.com');
 	});
@@ -68,14 +68,14 @@ describe('RuntimeConfigStore', () => {
 		expect(second['log-level']).toEqual({ value: 'debug', changed: false });
 	});
 
-	test('applyPatch: whitelist/blacklist/overridelist replace wholesale and report changed correctly', () => {
+	test('applyPatch: subscribe/exclude/overridelist replace wholesale and report changed correctly', () => {
 		const store = new RuntimeConfigStore(makeConfig());
-		const changes = store.applyPatch({ whitelist: ['origin/a/wis2/other/data/y'] });
-		expect(store.getWhitelist()).toEqual(['origin/a/wis2/other/data/y']);
-		expect(changes.whitelist).toEqual({ value: ['origin/a/wis2/other/data/y'], changed: true });
+		const changes = store.applyPatch({ subscribe: ['origin/a/wis2/other/data/y'] });
+		expect(store.getSubscribe()).toEqual(['origin/a/wis2/other/data/y']);
+		expect(changes.subscribe).toEqual({ value: ['origin/a/wis2/other/data/y'], changed: true });
 
-		const noop = store.applyPatch({ whitelist: ['origin/a/wis2/other/data/y'] });
-		expect(noop.whitelist?.changed).toBe(false);
+		const noop = store.applyPatch({ subscribe: ['origin/a/wis2/other/data/y'] });
+		expect(noop.subscribe?.changed).toBe(false);
 	});
 
 	test('applyPatch: process-mode', () => {
@@ -101,13 +101,13 @@ describe('RuntimeConfigStore', () => {
 		expect(noop.changed).toBe(false);
 	});
 
-	test('missing subscriber section seeds empty whitelist/blacklist/overridelist and null global-replay', () => {
+	test('missing subscriber section seeds empty subscribe/exclude/overridelist and null global-replay', () => {
 		const config: Config = {
 			global: { roles: 'DOWNLOADER', worker: 'w1', redis: { mode: 'single', nodes: ['localhost:6379'] }, log: { level: 'warn' } },
 		};
 		const store = new RuntimeConfigStore(config);
-		expect(store.getWhitelist()).toEqual([]);
-		expect(store.getBlacklist()).toEqual([]);
+		expect(store.getSubscribe()).toEqual([]);
+		expect(store.getExclude()).toEqual([]);
 		expect(store.getOverridelist()).toEqual([]);
 		expect(store.getGlobalReplay()).toBeNull();
 		expect(store.getLogLevel()).toBe('warn');

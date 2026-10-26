@@ -78,7 +78,7 @@ export function resolveWeight(key: string, weightSources: ReadonlyMap<string, nu
 // and the substring check is what lets origin/cache classification
 // keep working *through* that wrapper without stripping it first (contrast
 // with topic-match.ts's stripReplayPrefix, used where an exact-prefix
-// check is needed instead, e.g. blacklist/override matching).
+// check is needed instead, e.g. exclude list/override matching).
 export function classifyTopic(topic: string, wnm: Wnm, weightSources: ReadonlyMap<string, number> | undefined): TopicClassification {
 	if (topic.includes('origin/a/wis2')) {
 		const weight = resolveWeight('origin', weightSources);

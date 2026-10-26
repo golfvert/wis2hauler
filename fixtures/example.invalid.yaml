@@ -6,7 +6,7 @@ global:
 
 subscriber:
   mqtt:
-    whitelist: []
+    subscribe: []
 
 downloader:
   aria-url: "http://127.0.0.1:6800/jsonrpc"

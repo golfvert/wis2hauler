@@ -13,7 +13,7 @@ const config: Config = {
 	},
 	subscriber: {
 		'global-broker': [{ broker: 'mqtts://example.com' }],
-		mqtt: { whitelist: ['origin/a/wis2/fr-meteofrance/data/x'] },
+		mqtt: { subscribe: ['origin/a/wis2/fr-meteofrance/data/x'] },
 	},
 };
 
@@ -93,14 +93,27 @@ describe('buildSetResponse', () => {
 		expect(result.body.changes.debug).toBeUndefined();
 	});
 
-	test('a POST /set whitelist entry naming origin/.../core/... is no longer rewritten', async () => {
+	test('a POST /set subscribe entry naming origin/.../core/... is no longer rewritten', async () => {
 		const { store, credentialsStore, activeRoles } = setup();
 		const result = await buildSetResponse(
-			{ whitelist: ['origin/a/wis2/fr-meteofrance/data/core/weather/surface'] },
+			{ subscribe: ['origin/a/wis2/fr-meteofrance/data/core/weather/surface'] },
 			activeRoles,
 			{ store, credentialsStore, warn: () => {} },
 		);
 		expect(result.status).toBe(200);
-		expect(result.body.changes.whitelist).toEqual({ value: ['origin/a/wis2/fr-meteofrance/data/core/weather/surface'], changed: true });
+		expect(result.body.changes.subscribe).toEqual({ value: ['origin/a/wis2/fr-meteofrance/data/core/weather/surface'], changed: true });
+	});
+});
+
+describe('buildSetResponse — deprecated whitelist/blacklist keys (ADR 0012)', () => {
+	test('POST {whitelist: [...]} applies to subscribe, reports the change under the new key, and warns', async () => {
+		const { store, credentialsStore, activeRoles } = setup();
+		const warnings: string[] = [];
+		const result = await buildSetResponse({ whitelist: ['cache/a/wis2/#'] }, activeRoles, { store, credentialsStore, warn: (m) => warnings.push(m) });
+		expect(result.status).toBe(200);
+		expect(result.body.changes.subscribe).toEqual({ value: ['cache/a/wis2/#'], changed: true });
+		expect(result.body.warnings).toEqual(["whitelist: deprecated, use 'subscribe'."]);
+		expect(warnings).toEqual(["whitelist: deprecated, use 'subscribe'."]);
+		expect(store.getSubscribe()).toEqual(['cache/a/wis2/#']);
 	});
 });

@@ -76,6 +76,34 @@ function checkUnknown(obj: unknown, known: readonly string[], path: string, warn
 	}
 }
 
+// Deprecated spellings accepted until the Maintainer says otherwise (ADR 0012).
+const LEGACY_MQTT_KEYS = [
+	['whitelist', 'subscribe'],
+	['blacklist', 'exclude'],
+] as const;
+
+/**
+ * Rewrites the deprecated `subscriber.mqtt.whitelist` / `blacklist` keys to
+ * `subscribe` / `exclude` IN PLACE (so the config object handed back by
+ * parseConfig only ever carries the new names), with a deprecation warning.
+ * Setting both spellings of one key is an error.
+ */
+export function migrateLegacyMqttKeys(cfg: Record<string, unknown>, warnings: string[], errors: string[]): void {
+	const sub = cfg.subscriber;
+	if (!isObject(sub) || !isObject(sub.mqtt)) return;
+	const m = sub.mqtt;
+	for (const [oldKey, newKey] of LEGACY_MQTT_KEYS) {
+		if (!(oldKey in m)) continue;
+		if (newKey in m) {
+			errors.push(`subscriber.mqtt.${oldKey} and subscriber.mqtt.${newKey} are both set — remove ${oldKey} (deprecated name of ${newKey})`);
+			continue;
+		}
+		m[newKey] = m[oldKey];
+		delete m[oldKey];
+		warnings.push(`subscriber.mqtt.${oldKey} is deprecated, rename it to subscriber.mqtt.${newKey}`);
+	}
+}
+
 export function validateConfig(input: unknown): ValidationResult {
 	const errors: string[] = [];
 	const warnings: string[] = [];
@@ -85,6 +113,8 @@ export function validateConfig(input: unknown): ValidationResult {
 		errors.push('Configuration root is not a valid YAML object');
 		return { valid: false, errors, warnings, infos };
 	}
+
+	migrateLegacyMqttKeys(input, warnings, errors);
 
 	if (!validateShape(input)) {
 		for (const err of validateShape.errors ?? []) errors.push(formatAjvError(err));
@@ -147,19 +177,19 @@ export function validateConfig(input: unknown): ValidationResult {
 
 		if (isObject(s.mqtt)) {
 			const m = s.mqtt;
-			if (isArray(m.whitelist)) {
-				(m.whitelist as unknown[]).forEach((t, i) => {
+			if (isArray(m.subscribe)) {
+				(m.subscribe as unknown[]).forEach((t, i) => {
 					const err = isValidMqttTopic(t);
-					if (err) errors.push(`subscriber.mqtt.whitelist[${i}]: '${String(t)}' — ${err}`);
+					if (err) errors.push(`subscriber.mqtt.subscribe[${i}]: '${String(t)}' — ${err}`);
 				});
-				infos.push(`subscriber.mqtt.whitelist: ${(m.whitelist as unknown[]).length} topic(s)`);
+				infos.push(`subscriber.mqtt.subscribe: ${(m.subscribe as unknown[]).length} topic(s)`);
 			}
-			if (m.blacklist !== undefined) {
-				if (isArray(m.blacklist)) {
-					(m.blacklist as unknown[]).forEach((t, i) => {
-						if (!isValidTopicPattern(t)) errors.push(`subscriber.mqtt.blacklist[${i}]: '${String(t)}' — only alphanumeric, -, +, # and / allowed`);
+			if (m.exclude !== undefined) {
+				if (isArray(m.exclude)) {
+					(m.exclude as unknown[]).forEach((t, i) => {
+						if (!isValidTopicPattern(t)) errors.push(`subscriber.mqtt.exclude[${i}]: '${String(t)}' — only alphanumeric, -, +, # and / allowed`);
 					});
-					infos.push(`subscriber.mqtt.blacklist: ${(m.blacklist as unknown[]).length} topic(s)`);
+					infos.push(`subscriber.mqtt.exclude: ${(m.exclude as unknown[]).length} topic(s)`);
 				}
 			}
 			if (m.overridelist !== undefined && isArray(m.overridelist)) {

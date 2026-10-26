@@ -182,7 +182,7 @@ async function main(): Promise<void> {
 	if (matches.length === 0) {
 		console.log(`No trace found for "${opts.needle}" (${filesScanned} log file(s) scanned under ${opts.root}).`);
 		console.log('');
-		console.log('If this id should exist, check: is global.log.level actually "debug" for the relevant role (Received/Filter/Decision/Aria/Ack/... are all gated by it); is the SUBSCRIBER container\'s mqtt.whitelist actually subscribed to the topic this centre/content would arrive on; and is --root really pointing at where this deployment writes its logs/ directories.');
+		console.log('If this id should exist, check: is global.log.level actually "debug" for the relevant role (Received/Filter/Decision/Aria/Ack/... are all gated by it); is the SUBSCRIBER container\'s mqtt.subscribe actually subscribed to the topic this centre/content would arrive on; and is --root really pointing at where this deployment writes its logs/ directories.');
 		return;
 	}
 

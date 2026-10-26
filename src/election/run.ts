@@ -20,7 +20,7 @@ export interface HeartbeatTopic {
  * The Setup tab's "Configuration" change node (5ebe61e8fc4d96df, part
  * of the Subscriber-role init chain -- fed by the "Subscriber" link-in,
  * so global.topic is only ever set on a replica that carries
- * SUBSCRIBER). Ported field-for-field: the effective whitelist, each
+ * SUBSCRIBER). Ported field-for-field: the effective subscribe list, each
  * entry trimmed and wrapped with `{topic, qos}`, PLUS -- when
  * subscriber.mqtt['global-replay'] is a non-null string -- one
  * synthetic "replay/a/wis2/<globalReplay>/<uuid>/#" topic appended at
@@ -36,7 +36,7 @@ export function deriveHeartbeatTopics(config: Config, uuid: string): HeartbeatTo
 
 	const qos = typeof sub.mqtt.qos === 'number' ? sub.mqtt.qos : 0;
 	const globalReplay = typeof sub.mqtt['global-replay'] === 'string' ? sub.mqtt['global-replay'] : null;
-	const topics = globalReplay === null ? sub.mqtt.whitelist : [...sub.mqtt.whitelist, `replay/a/wis2/${globalReplay}/${uuid}/#`];
+	const topics = globalReplay === null ? sub.mqtt.subscribe : [...sub.mqtt.subscribe, `replay/a/wis2/${globalReplay}/${uuid}/#`];
 
 	return topics.map((t) => ({ topic: t.trim(), qos }));
 }

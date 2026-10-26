@@ -37,7 +37,7 @@ describe('isValidCredentialTopic', () => {
 });
 
 describe('isValidTopicPattern', () => {
-	test('accepts blacklist-style wildcard patterns', () => {
+	test('accepts exclude-style wildcard patterns', () => {
 		expect(isValidTopicPattern('+/+/+/+/+/recommended/#')).toBe(true);
 	});
 	test('rejects characters outside the allowed set', () => {
@@ -45,10 +45,10 @@ describe('isValidTopicPattern', () => {
 	});
 });
 
-// enforceCoreCacheRule (config-time whitelist/blacklist string rewrite)
+// enforceCoreCacheRule (config-time subscribe list/exclude list string rewrite)
 // was removed 2026-09-19 -- see topics.ts's own removal comment. The
 // WIS2 core/cache protection it used to provide is now covered by
-// ../../subscriber/ingest.ts's ORIGIN_CORE_BLACKLIST_RULE /
-// ORIGIN_METADATA_BLACKLIST_RULE tests instead, since that's where the
+// ../../subscriber/ingest.ts's ORIGIN_CORE_EXCLUDE_RULE /
+// ORIGIN_METADATA_EXCLUDE_RULE tests instead, since that's where the
 // real enforcement now lives (against each message's actual received
-// topic, not the configured whitelist string).
+// topic, not the configured subscribe list string).

@@ -45,9 +45,9 @@ the later, full-redundant example in this series works towards
 
 ### A second subscribed topic
 
-`configuration-sub.yml`'s whitelist now also carries
+`configuration-sub.yml`'s subscribe list now also carries
 `cache/a/wis2/int-eumetsat/#`, alongside example 1's JMA topic —
-demonstrating that `subscriber.mqtt.whitelist` is a plain list, not a
+demonstrating that `subscriber.mqtt.subscribe` is a plain list, not a
 single value, and that one SUBSCRIBER instance is meant to cover
 several centres/topics at once rather than needing one instance per
 topic.

@@ -93,7 +93,7 @@ export interface ConsumerDeps {
 	// receivedLog for that: the maintainer pointed out (2026-09-13, same
 	// conversation) that flows.json had a separate, earlier tap logging
 	// literally every message received on the wire, ahead of
-	// rbe/blacklist/dedup/parsing -- something this log, sitting in
+	// rbe/exclude list/dedup/parsing -- something this log, sitting in
 	// processEntry, can NOT reconstruct on its own, since a message
 	// dropped by any of ingest.ts's own filters never reaches here at
 	// all. The two are complementary, not redundant: ingest.ts's
@@ -629,10 +629,10 @@ export async function processEntry(entry: RawStreamEntry, deps: ConsumerDeps): P
  * A second, independent finding from the same incident, config-only and
  * not something this function can fix: `de-dwd-global-cache` was
  * ALREADY the sole candidate for that centre's content at the time
- * (`origin` blacklisted upstream in `subscriber.mqtt.blacklist`), so its
+ * (`origin` excluded upstream in `subscriber.mqtt.exclude`), so its
  * low weight (0.2) was never actually racing anything -- it was pure
  * added latency (5x weight-delay-seconds, on average) for zero fairness
- * benefit. A source with a blacklisted/absent competitor should be
+ * benefit. A source with a excluded/absent competitor should be
  * weighted the same as everyone else (or left out of weight-sources
  * entirely, if nothing else needs down-weighting for that centre).
  *

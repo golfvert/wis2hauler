@@ -7,13 +7,13 @@ function baseConfig(overrides: Partial<Config['subscriber']> = {}): Config {
 		global: { roles: 'SUBSCRIBER', worker: 'w1', redis: { mode: 'single', nodes: ['localhost:6379'] }, log: { level: 'info' } },
 		subscriber: {
 			'global-broker': [{ broker: 'mqtt://x', username: 'u', password: 'p' }],
-			mqtt: { whitelist: [' origin/a/wis2/centre/data/core/weather '], ...overrides },
+			mqtt: { subscribe: [' origin/a/wis2/centre/data/core/weather '], ...overrides },
 		},
 	} as unknown as Config;
 }
 
 describe('deriveHeartbeatTopics', () => {
-	test('trims and wraps each whitelist entry with qos (default 0)', () => {
+	test('trims and wraps each subscribe entry with qos (default 0)', () => {
 		const topics = deriveHeartbeatTopics(baseConfig(), 'uuid-1');
 		expect(topics).toEqual([{ topic: 'origin/a/wis2/centre/data/core/weather', qos: 0 }]);
 	});

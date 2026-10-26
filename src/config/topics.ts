@@ -77,10 +77,10 @@ export function isValidCredentialTopic(topic: unknown): string | null {
 	return null;
 }
 
-// The plain string-pattern check used for blacklist/overridelist
-// entries, which — unlike whitelist entries — are matched as literal
+// The plain string-pattern check used for exclude list/overridelist
+// entries, which — unlike subscribe list entries — are matched as literal
 // wildcard patterns rather than validated against the strict 6-level
-// WIS2 grammar above (a blacklist entry may legitimately be a partial
+// WIS2 grammar above (a exclude list entry may legitimately be a partial
 // pattern like '+/+/+/+/+/recommended/#').
 const TOPIC_PATTERN_CHARS = /^[a-zA-Z0-9\-/+#]+$/;
 export function isValidTopicPattern(topic: unknown): boolean {
@@ -89,7 +89,7 @@ export function isValidTopicPattern(topic: unknown): boolean {
 
 // REMOVED 2026-09-19 (the maintainer, after tracing a real report of
 // this being bypassed): this file used to export enforceCoreCacheRule,
-// which rewrote an EXACT 'origin/.../core/...' whitelist/blacklist
+// which rewrote an EXACT 'origin/.../core/...' subscribe list/exclude list
 // STRING to 'cache/...' at config-load time (../load.ts) and again on
 // a live POST /set patch (../runtime.ts). That only ever protected an
 // operator who wrote the exact literal string 'core' at level 6 into
@@ -100,10 +100,10 @@ export function isValidTopicPattern(topic: unknown): boolean {
 // received on an origin/.../core/... or origin/.../metadata/... topic
 // was then downloaded completely normally -- nothing downstream ever
 // re-checked the topic a message actually arrived on. The replacement
-// (../subscriber/ingest.ts's ORIGIN_CORE_BLACKLIST_RULE /
-// ORIGIN_METADATA_BLACKLIST_RULE, wired in ../subscriber/run.ts) is a
-// blacklist entry evaluated against each message's REAL received
-// topic instead of the configured whitelist string, so it can't be
+// (../subscriber/ingest.ts's ORIGIN_CORE_EXCLUDE_RULE /
+// ORIGIN_METADATA_EXCLUDE_RULE, wired in ../subscriber/run.ts) is a
+// exclude list entry evaluated against each message's REAL received
+// topic instead of the configured subscribe list string, so it can't be
 // bypassed by a broad wildcard subscription the way this was. The
-// configured whitelist/blacklist is no longer auto-rewritten at all --
+// configured subscribe list/exclude list is no longer auto-rewritten at all --
 // see run.ts's startup log for what's now enforced instead.
