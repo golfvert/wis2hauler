@@ -133,6 +133,13 @@ describe('validatePatch — deprecated whitelist/blacklist keys (ADR 0012)', () 
 		expect(result.deprecated).toEqual(["whitelist: deprecated, use 'subscribe'.", "blacklist: deprecated, use 'exclude'."]);
 	});
 
+	test('overridelist is mapped to override and reported as deprecated', () => {
+		const result = validatePatch({ overridelist: [{ topic: 'cache/a/wis2/#' }] }, subscriberOnly);
+		expect(result.errors).toEqual([]);
+		expect(result.values.override).toEqual([{ topic: 'cache/a/wis2/#' }]);
+		expect(result.deprecated).toEqual(["overridelist: deprecated, use 'override'."]);
+	});
+
 	test('new names alone report no deprecation', () => {
 		const result = validatePatch({ subscribe: ['cache/a/wis2/#'] }, subscriberOnly);
 		expect(result.errors).toEqual([]);

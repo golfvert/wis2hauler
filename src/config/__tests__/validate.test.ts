@@ -14,12 +14,12 @@ describe('validateConfig — valid fixture', () => {
 		expect(result.valid).toBe(true);
 	});
 
-	test('reports the expected infos (roles, subscribe/exclude/overridelist counts, rename-to)', () => {
+	test('reports the expected infos (roles, subscribe/exclude/override counts, rename-to)', () => {
 		const result = validateConfig(parseYaml(validYaml));
 		expect(result.infos).toContain('global.roles: SUBSCRIBER, DOWNLOADER, CLEANER, REPORTER, REPLAYER');
 		expect(result.infos).toContain('subscriber.mqtt.subscribe: 2 topic(s)');
 		expect(result.infos).toContain('subscriber.mqtt.exclude: 1 topic(s)');
-		expect(result.infos).toContain('subscriber.mqtt.overridelist: 1 rule(s)');
+		expect(result.infos).toContain('subscriber.mqtt.override: 1 rule(s)');
 		expect(result.infos).toContain('downloader.rename-to: s3');
 		expect(result.infos).toContain('downloader.credentials: 1 topic(s) with credentials');
 	});
@@ -273,6 +273,22 @@ describe('validateConfig — deprecated whitelist/blacklist keys (ADR 0012)', ()
 		expect('whitelist' in (config.subscriber!.mqtt as object)).toBe(false);
 		expect('blacklist' in (config.subscriber!.mqtt as object)).toBe(false);
 		expect(result.infos).toContain('subscriber.mqtt.subscribe: 2 topic(s)');
+	});
+
+	test('overridelist is accepted, migrated to override, and warns', () => {
+		const { config, result } = parseConfig(validYaml.replace(/^(\s+)override:/m, '$1overridelist:'));
+		expect(result.valid).toBe(true);
+		expect(result.warnings).toContain('subscriber.mqtt.overridelist is deprecated, rename it to subscriber.mqtt.override');
+		expect(config.subscriber?.mqtt.override?.length).toBeGreaterThan(0);
+		expect('overridelist' in (config.subscriber!.mqtt as object)).toBe(false);
+	});
+
+	test('setting both overridelist and override is an error', () => {
+		const raw = parseYaml(validYaml) as { subscriber: { mqtt: Record<string, unknown> } };
+		raw.subscriber.mqtt.overridelist = [{ topic: 'cache/a/wis2/#' }];
+		const result = validateConfig(raw);
+		expect(result.valid).toBe(false);
+		expect(result.errors.some((e) => e.includes('subscriber.mqtt.overridelist and subscriber.mqtt.override are both set'))).toBe(true);
 	});
 
 	test('new keys produce no deprecation warning', () => {

@@ -10,7 +10,7 @@
 // confirmed by tracing "Updates"' second output (the "Change ?"/
 // "Action ?" switch) and finding no wis2gc:configuration persistence
 // or keyspace-notification broadcast for log-level/exclude list/
-// overridelist at all (see ../config/runtime.ts's header for the full
+// override at all (see ../config/runtime.ts's header for the full
 // per-key breakdown of what DOES have a live side effect: process-mode,
 // subscribe list, credentials -- the other four are storage-only, here and
 // in the original alike).
@@ -28,11 +28,11 @@ export interface RuntimeConfigState {
 	logLevelByRole: Partial<Record<Role, LogLevel>>;
 	subscribe: string[];
 	exclude: string[];
-	overridelist: OverrideRule[];
+	override: OverrideRule[];
 	// subscriber.mqtt['global-replay'] at startup, then whatever
 	// POST /replayer's `global-replay` field last set it to (../replayer/
 	// run.ts) -- storage-only in the original, same as logLevel/exclude list/
-	// overridelist above (no live subscribe/unsubscribe side effect).
+	// override above (no live subscribe/unsubscribe side effect).
 	globalReplay: string | null;
 }
 
@@ -49,7 +49,7 @@ function seedState(config: Config): RuntimeConfigState {
 		logLevelByRole: {},
 		subscribe: config.subscriber?.mqtt.subscribe ?? [],
 		exclude: config.subscriber?.mqtt.exclude ?? [],
-		overridelist: config.subscriber?.mqtt.overridelist ?? [],
+		override: config.subscriber?.mqtt.override ?? [],
 		globalReplay: config.subscriber?.mqtt['global-replay'] ?? null,
 	};
 }
@@ -98,8 +98,8 @@ export class RuntimeConfigStore implements LevelGate {
 		return [...this.state.exclude];
 	}
 
-	getOverridelist(): OverrideRule[] {
-		return [...this.state.overridelist];
+	getOverride(): OverrideRule[] {
+		return [...this.state.override];
 	}
 
 	getGlobalReplay(): string | null {
@@ -151,10 +151,10 @@ export class RuntimeConfigStore implements LevelGate {
 			this.state.exclude = patch.exclude;
 			changes.exclude = { value: patch.exclude, changed: !sameArray(previous, patch.exclude) };
 		}
-		if (patch.overridelist !== undefined) {
-			const previous = this.state.overridelist;
-			this.state.overridelist = patch.overridelist;
-			changes.overridelist = { value: patch.overridelist, changed: JSON.stringify(previous) !== JSON.stringify(patch.overridelist) };
+		if (patch.override !== undefined) {
+			const previous = this.state.override;
+			this.state.override = patch.override;
+			changes.override = { value: patch.override, changed: JSON.stringify(previous) !== JSON.stringify(patch.override) };
 		}
 		// 'credentials' is deliberately NOT applied here -- it's a live
 		// Redis HSET/HDEL (../downloader/store.ts's setCredential/

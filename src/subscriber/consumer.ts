@@ -35,7 +35,7 @@ import { DEFAULT_CACHE_DEADLINE_SECONDS } from '../wis2/cache-deadline.ts';
 export interface ConsumerDeps {
 	store: SubscriberStore;
 	queue: string;
-	overridelist: readonly OverrideRule[] | undefined;
+	override: readonly OverrideRule[] | undefined;
 	/** subscriber['weight-sources'], as a Map -- see order-links.ts's resolveWeight() for the two default rules. */
 	weightSources: ReadonlyMap<string, number> | undefined;
 	/** subscriber['weight-delay-seconds'] -- the delay-scale parameter for order-links.ts's computeDelaySeconds(). */
@@ -227,7 +227,7 @@ function buildPublishOnlyMessages(
 	// "WNM": delete wnm.downloader_id; wnm.properties["global-cache"] = centre-id;
 	// wnm.id = uuid_cache (possibly undefined -- see override.ts's header
 	// comment: the original only generates uuid_cache/uuid_monitor inside
-	// a matched overridelist rule, not when nocache came from
+	// a matched override rule, not when nocache came from
 	// properties.cache alone); topic = topic with a LEADING "origin"
 	// replaced by "cache" (a prefix replace, not a full segment swap).
 	const { downloader_id: _drop, ...wnmRest } = wnm;
@@ -408,7 +408,7 @@ export async function processEntry(entry: RawStreamEntry, deps: ConsumerDeps): P
 	const delaySeconds = computeDelaySeconds(classification, deps.weightDelaySeconds, deps.weightDelayMaxSeconds, deps.random);
 	if (delaySeconds > 0) await deps.sleep(delaySeconds * 1000);
 
-	const overrideResult = evaluateOverride(wnm, entry.topic, deps.overridelist);
+	const overrideResult = evaluateOverride(wnm, entry.topic, deps.override);
 	const prepared = prepareMessage(wnm, entry.topic, overrideResult.override);
 	const downloaderId = computeDownloaderId(wnm);
 
@@ -471,7 +471,7 @@ export async function processEntry(entry: RawStreamEntry, deps: ConsumerDeps): P
 			// 2026-09-14 (the maintainer, same request/reasoning as
 			// downloader/finishing.ts's step 1/4 gate: "No WNM here either").
 			// Before this, an empty publishClients still built cacheWnm/
-			// cachePayload and, on an overridelist match, the CloudEvents
+			// cachePayload and, on an override match, the CloudEvents
 			// monitor payload too, for a republish that was never going
 			// anywhere.
 			if (deps.publishClients.length > 0) {
@@ -488,12 +488,12 @@ export async function processEntry(entry: RawStreamEntry, deps: ConsumerDeps): P
 				// several rounds -- see the project notes for the full
 				// back-and-forth): the WIS2 monitoring event ("Data granule
 				// not cached") is emitted ONLY when this GC itself decided
-				// (via an overridelist match) not to cache something an
+				// (via an override match) not to cache something an
 				// origin wanted cached in the first place. It is NOT emitted
 				// when the origin itself already declared
 				// wnm.properties.cache === false -- there's nothing for a
 				// monitor to usefully report there (the origin already said
-				// so), regardless of whether an overridelist rule ALSO
+				// so), regardless of whether an override rule ALSO
 				// happens to match the same message. flows.json's own
 				// "Action ?" rule 1 got this wrong in the original too (the maintainer:
 				// "My flows.json had a bug too" -- it published Monitor

@@ -80,11 +80,12 @@ function checkUnknown(obj: unknown, known: readonly string[], path: string, warn
 const LEGACY_MQTT_KEYS = [
 	['whitelist', 'subscribe'],
 	['blacklist', 'exclude'],
+	['overridelist', 'override'],
 ] as const;
 
 /**
- * Rewrites the deprecated `subscriber.mqtt.whitelist` / `blacklist` keys to
- * `subscribe` / `exclude` IN PLACE (so the config object handed back by
+ * Rewrites the deprecated `subscriber.mqtt.whitelist` / `blacklist` /
+ * `overridelist` keys to `subscribe` / `exclude` / `override` IN PLACE (so the config object handed back by
  * parseConfig only ever carries the new names), with a deprecation warning.
  * Setting both spellings of one key is an error.
  */
@@ -192,14 +193,14 @@ export function validateConfig(input: unknown): ValidationResult {
 					infos.push(`subscriber.mqtt.exclude: ${(m.exclude as unknown[]).length} topic(s)`);
 				}
 			}
-			if (m.overridelist !== undefined && isArray(m.overridelist)) {
-				const list = m.overridelist as Record<string, unknown>[];
+			if (m.override !== undefined && isArray(m.override)) {
+				const list = m.override as Record<string, unknown>[];
 				list.forEach((entry, i) => {
-					const base = `subscriber.mqtt.overridelist[${i}]`;
+					const base = `subscriber.mqtt.override[${i}]`;
 					if (entry.topic !== undefined && !isValidTopicPattern(entry.topic))
 						errors.push(`${base}.topic: '${String(entry.topic)}' — only alphanumeric, -, +, # and / allowed`);
 				});
-				infos.push(`subscriber.mqtt.overridelist: ${list.length} rule(s)`);
+				infos.push(`subscriber.mqtt.override: ${list.length} rule(s)`);
 			}
 			if (m['global-replay'] !== undefined && m['global-replay'] !== null && isString(m['global-replay'])) {
 				infos.push(`subscriber.mqtt.global-replay: ${m['global-replay'] as string}`);

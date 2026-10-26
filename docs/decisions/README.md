@@ -22,3 +22,4 @@ Copy `template.md` for a new one; number sequentially.
 | 0010 | Reject GB1/GB2 split as a CPU fix | rejected (later reused for another reason) |
 | 0011 | Version scheme `YYYY.M.X`, Tracer released separately | accepted |
 | 0012 | Rename `whitelist` / `blacklist` to `subscribe` / `exclude` | accepted |
+| 0013 | Rename `overridelist` to `override` | accepted |

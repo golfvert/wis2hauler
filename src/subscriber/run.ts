@@ -152,7 +152,7 @@ export async function runSubscriber(
 	const consumerDeps: ConsumerDeps = {
 		store,
 		queue,
-		overridelist: sub.mqtt.overridelist,
+		override: sub.mqtt.override,
 		weightSources: sub['weight-sources'] ? new Map(Object.entries(sub['weight-sources'])) : undefined,
 		// DEFAULT_WEIGHT_DELAY_SECONDS: no maintainer-specified default was
 		// ever set for this scale parameter being entirely absent from

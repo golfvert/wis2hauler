@@ -1,6 +1,6 @@
 services:
   wis2hauler-sub:
-    image: ghcr.io/golfvert/wis2hauler:2026.10.1
+    image: ghcr.io/golfvert/wis2hauler:2026.10.2
     user: "1000:1000"
     volumes:
       - ./configuration-sub.yml:/configuration.yml:ro
@@ -12,7 +12,7 @@ services:
       - wis2hauler
 
   wis2hauler-downloader:
-    image: ghcr.io/golfvert/wis2hauler:2026.10.1
+    image: ghcr.io/golfvert/wis2hauler:2026.10.2
     user: "1000:1000"
     volumes:
       - ./configuration-downloader.yml:/configuration.yml:ro

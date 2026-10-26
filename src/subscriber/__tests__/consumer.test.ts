@@ -26,7 +26,7 @@ function baseDeps(store: FakeStore, overrides: Partial<ConsumerDeps> = {}): Cons
 	return {
 		store,
 		queue: 'q1',
-		overridelist: undefined,
+		override: undefined,
 		weightSources: undefined,
 		// 0 by default -- computeDelaySeconds always returns 0 regardless of
 		// weight/random when the scale parameter itself is 0, so tests that
@@ -214,12 +214,12 @@ describe('processEntry', () => {
 
 	// DELIBERATE DEVIATION from the original, confirmed with the maintainer
 	// 2026-09-11 (see override.ts's header comment): a bare
-	// wnm.properties.cache === false, with no overridelist match, still
+	// wnm.properties.cache === false, with no override match, still
 	// republishes the WNM on cache/... (WIS2-Guide-mandatory, still not
 	// downloading the data) but no longer also emits the "Data granule
 	// not cached" monitoring event -- the maintainer asked for that event removed
 	// for this case specifically, having confirmed it WAS faithful to
-	// flows.json. See the next test for the overridelist-match case,
+	// flows.json. See the next test for the override-match case,
 	// where the monitor event is unchanged from the original.
 	test('winning the claim via a bare cache:false (no override) republishes on cache/... but does NOT emit the monitor event', async () => {
 		const store = new FakeStore();
@@ -241,12 +241,12 @@ describe('processEntry', () => {
 		const cacheMsg = JSON.parse(pub1.published[0]!.payload);
 		expect(cacheMsg.downloader_id).toBeUndefined();
 		expect(cacheMsg.properties['global-cache']).toBe('fr-meteofrance');
-		expect(cacheMsg.id).toBeUndefined(); // no overridelist match -> uuid_cache was never generated (see override.ts)
+		expect(cacheMsg.id).toBeUndefined(); // no override match -> uuid_cache was never generated (see override.ts)
 
 		expect(pub2.published).toHaveLength(1);
 	});
 
-	test('winning the claim via an overridelist match on a cache:true/absent message publishes AND emits the monitor event -- this GC decided not to cache something the origin wanted cached', async () => {
+	test('winning the claim via an override match on a cache:true/absent message publishes AND emits the monitor event -- this GC decided not to cache something the origin wanted cached', async () => {
 		const store = new FakeStore();
 		const w = wnm('m6z'); // properties.cache absent -> origin wanted it cached
 		const pub1 = new FakeMqtt();
@@ -254,7 +254,7 @@ describe('processEntry', () => {
 		const deps = baseDeps(store, {
 			globalCacheMode: true,
 			publishClients: [pub1, pub2],
-			overridelist: [{ topic: 'origin/a/wis2/fr-meteofrance/data/#' }],
+			override: [{ topic: 'origin/a/wis2/fr-meteofrance/data/#' }],
 		});
 		const downloaderId = computeDownloaderId(w);
 
@@ -266,7 +266,7 @@ describe('processEntry', () => {
 		expect(pub1.published).toHaveLength(2); // cache-topic republish + monitoring event
 		expect(pub1.published[0]!.topic).toBe('cache/a/wis2/fr-meteofrance/data/foo');
 		const cacheMsg = JSON.parse(pub1.published[0]!.payload);
-		expect(typeof cacheMsg.id).toBe('string'); // overridelist match -> uuid_cache was generated (see override.ts)
+		expect(typeof cacheMsg.id).toBe('string'); // override match -> uuid_cache was generated (see override.ts)
 
 		// originid is $split(wnmtopic,"/")[3] -- the centre-id segment only, NOT the full topic tail.
 		expect(pub1.published[1]!.topic).toBe('monitor/a/wis2/fr-meteofrance');
@@ -285,7 +285,7 @@ describe('processEntry', () => {
 		const store = new FakeStore();
 		const w = wnm('m6x', { cache: false });
 		// publishClients left at baseDeps' default: [].
-		const deps = baseDeps(store, { globalCacheMode: true, overridelist: [{ topic: 'origin/a/wis2/fr-meteofrance/data/#' }] });
+		const deps = baseDeps(store, { globalCacheMode: true, override: [{ topic: 'origin/a/wis2/fr-meteofrance/data/#' }] });
 		const downloaderId = computeDownloaderId(w);
 
 		await processEntry(entry('origin/a/wis2/fr-meteofrance/data/foo', w), deps);
@@ -308,7 +308,7 @@ describe('processEntry', () => {
 		const deps = baseDeps(store, {
 			globalCacheMode: true,
 			publishClients: [pub1],
-			overridelist: [{ topic: 'origin/a/wis2/fr-meteofrance/data/#' }],
+			override: [{ topic: 'origin/a/wis2/fr-meteofrance/data/#' }],
 			publishLog: logger,
 		});
 		const downloaderId = computeDownloaderId(w);
@@ -322,7 +322,7 @@ describe('processEntry', () => {
 		expect(call.topic).toBe('cache/a/wis2/fr-meteofrance/data/foo');
 		expect((call.wnm as Wnm).properties['global-cache']).toBe('fr-meteofrance');
 		expect((call.wnm as { downloader_id?: string }).downloader_id).toBeUndefined();
-		// overridelist matched -> the monitor event is also emitted and logged.
+		// override matched -> the monitor event is also emitted and logged.
 		expect(call.monitorTopic).toBe('monitor/a/wis2/fr-meteofrance');
 		expect((call.monitor as { type: string }).type).toBe('int.wmo.wis.wme.event.item.cache');
 	});
@@ -352,14 +352,14 @@ describe('processEntry', () => {
 		expect(infoCalls).toHaveLength(0);
 	});
 
-	test('winning the claim via an overridelist match on a cache:false message publishes the WNM only -- no monitor event, since the origin already said not-cached', async () => {
+	test('winning the claim via an override match on a cache:false message publishes the WNM only -- no monitor event, since the origin already said not-cached', async () => {
 		const store = new FakeStore();
 		const w = wnm('m6y', { cache: false }); // origin ALSO already declared cache:false
 		const pub1 = new FakeMqtt();
 		const deps = baseDeps(store, {
 			globalCacheMode: true,
 			publishClients: [pub1],
-			overridelist: [{ topic: 'origin/a/wis2/fr-meteofrance/data/#' }],
+			override: [{ topic: 'origin/a/wis2/fr-meteofrance/data/#' }],
 		});
 		const downloaderId = computeDownloaderId(w);
 
@@ -369,7 +369,7 @@ describe('processEntry', () => {
 		expect(pub1.published).toHaveLength(1); // WNM republish only -- no monitor event
 		expect(pub1.published[0]!.topic).toBe('cache/a/wis2/fr-meteofrance/data/foo');
 		const cacheMsg = JSON.parse(pub1.published[0]!.payload);
-		expect(typeof cacheMsg.id).toBe('string'); // overridelist match -> uuid_cache still generated, even though monitor isn't emitted
+		expect(typeof cacheMsg.id).toBe('string'); // override match -> uuid_cache still generated, even though monitor isn't emitted
 	});
 
 	test('a rejecting publish (e.g. a disconnected local-broker client) is logged with explicit "local-broker publish failed" context, but still releases the claim', async () => {
@@ -398,7 +398,7 @@ describe('processEntry', () => {
 			globalCacheMode: true,
 			publishClients: [failingClient],
 			log,
-			overridelist: [{ topic: 'origin/a/wis2/fr-meteofrance/data/#' }],
+			override: [{ topic: 'origin/a/wis2/fr-meteofrance/data/#' }],
 		});
 
 		const topic = 'origin/a/wis2/fr-meteofrance/data/foo';
@@ -443,14 +443,14 @@ describe('processEntry', () => {
 		expect(store.releasedClaims).toContain(downloaderId);
 	});
 
-	test('an overridelist match stamps the republish/monitoring ids from override.ts and sets the reason', async () => {
+	test('an override match stamps the republish/monitoring ids from override.ts and sets the reason', async () => {
 		const store = new FakeStore();
 		const w = wnm('m6b');
 		const pub1 = new FakeMqtt();
 		const deps = baseDeps(store, {
 			globalCacheMode: true,
 			publishClients: [pub1],
-			overridelist: [{ topic: 'origin/a/wis2/fr-meteofrance/data/#' }],
+			override: [{ topic: 'origin/a/wis2/fr-meteofrance/data/#' }],
 		});
 
 		await processEntry(entry('origin/a/wis2/fr-meteofrance/data/foo', w), deps);

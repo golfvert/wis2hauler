@@ -63,7 +63,7 @@ The image expects three mount points:
 ```yaml
 services:
   wis2hauler:
-    image: ghcr.io/golfvert/wis2hauler:2026.10.1
+    image: ghcr.io/golfvert/wis2hauler:2026.10.2
     user: "1000:1000"          # or bake a different default at build time with --build-arg UID=/--build-arg GID=
     volumes:
       - ./configuration.yml:/configuration.yml:ro
@@ -214,7 +214,7 @@ A Redis Cluster needs at least 3 master nodes (plus replicas, if you want automa
 
 ## Local MQTT broker(s) and publish-only outcomes
 
-`global.local-broker` (up to two entries, wired to `PUB1`/`PUB2`) is where `SUBSCRIBER` republishes messages it decided not to download (a Global-Cache `no-cache` flag, an overridelist match) and where `DOWNLOADER` republishes completion notifications once a file has been downloaded and verified. Both roles, when active on the same replica, share the same PUB1/PUB2 connections rather than opening their own — the process's orchestrator (`main.ts`) owns opening and closing them once, for the whole process.
+`global.local-broker` (up to two entries, wired to `PUB1`/`PUB2`) is where `SUBSCRIBER` republishes messages it decided not to download (a Global-Cache `no-cache` flag, an override match) and where `DOWNLOADER` republishes completion notifications once a file has been downloaded and verified. Both roles, when active on the same replica, share the same PUB1/PUB2 connections rather than opening their own — the process's orchestrator (`main.ts`) owns opening and closing them once, for the whole process.
 
 If you don't need a local broker at all (a pure-downloader setup where something else reads completions directly out of Redis), omit `global.local-broker` — this only produces a warning, not an error, at startup. In that case `DOWNLOADER` also skips preparing the cache-topic WNM entirely (it is not just left with nothing to publish to), so `downloader.download-url` can be omitted as well; see [`configuration-and-roles.md`](configuration-and-roles.md#downloaderdownload-url--required-only-when-globallocal-broker-is-configured).
 

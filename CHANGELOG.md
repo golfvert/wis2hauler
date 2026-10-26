@@ -4,7 +4,12 @@ Format: [Keep a Changelog](https://keepachangelog.com/). Versions are `YYYY.M.X`
 
 Entries up to 2026.10.1 were reconstructed on 2026-10-25 from commit messages, so they are terse. Decisions behind them are in `docs/decisions/`. From now on, add an entry with each change.
 
-## [2026.10.2] - unreleased (VERSION not bumped yet)
+## [2026.10.3] - 2026-10-26
+
+### Changed
+- **`subscriber.mqtt.overridelist` renamed to `override`** in the config file and in the admin API (`POST /set`), for consistency with `subscribe` / `exclude`. The old name still works, with a deprecation warning, until the Maintainer removes it; setting both spellings is an error. A `/set` with `overridelist` reports the change under `override` plus a `warnings` entry. Code, tests, fixtures, examples and docs use the new name. See ADR 0013.
+
+## [2026.10.2] - 2026-10-26
 
 ### Changed
 - **`subscriber.mqtt.whitelist` / `blacklist` renamed to `subscribe` / `exclude`** in the config file and in the admin API (`/get`, `/set`). The old names still work, each with a deprecation warning, until the Maintainer removes them; setting both spellings of one key is an error. A `/set` with an old name reports the change under the new key plus a `warnings` entry. See ADR 0012.
@@ -17,7 +22,7 @@ Entries up to 2026.10.1 were reconstructed on 2026-10-25 from commit messages, s
 - ADRs in `docs/decisions/`, `AGENTS.md`, this changelog.
 
 ### Docs
-- Example and deployment images updated: `wis2hauler:2026.10.1`, Valkey 9.1.2, Caddy 2.11, Mosquitto 2.1.2-alpine, Traefik v3.7.
+- Example and deployment images updated: `wis2hauler:2026.10.2`, Valkey 9.1.2, Caddy 2.11, Mosquitto 2.1.2-alpine, Traefik v3.7.
 - Docker deployment option in README; fixes to example READMEs (2e46749, c0b1cb0, 2ec2eae, 91a13b0).
 
 ## [2026.10.1] - 2026-10-03

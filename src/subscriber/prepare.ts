@@ -1,7 +1,7 @@
 // Derives the per-message fields the claim/publish decision (claim.ts)
 // and the eventual job-hash record need: which "source" produced this
 // copy, and the combined nocache flag (an explicit wnm.properties.cache
-// === false OR an overridelist match — see override.ts). Ported from
+// === false OR an override match — see override.ts). Ported from
 // the Node-RED "Prepare" change node (Subscriber tab); the three Redis
 // key expressions it also built are now redis-keys.ts's job instead
 // (downloaderHashKey/downloaderClaimKey/downloaderCompleteKey).

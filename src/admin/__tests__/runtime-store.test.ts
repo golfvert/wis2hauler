@@ -17,7 +17,7 @@ function makeConfig(overrides: Partial<Config['global']> = {}): Config {
 			mqtt: {
 				subscribe: ['origin/a/wis2/fr-meteofrance/data/x'],
 				exclude: ['origin/a/wis2/blocked/#'],
-				overridelist: [{ topic: 'origin/a/wis2/big/#', 'max-length': 10 }],
+				override: [{ topic: 'origin/a/wis2/big/#', 'max-length': 10 }],
 				'global-replay': 'https://replay.example.com',
 			},
 		},
@@ -25,13 +25,13 @@ function makeConfig(overrides: Partial<Config['global']> = {}): Config {
 }
 
 describe('RuntimeConfigStore', () => {
-	test('seeds from config: log-level, subscribe/exclude/overridelist, global-replay', () => {
+	test('seeds from config: log-level, subscribe/exclude/override, global-replay', () => {
 		const store = new RuntimeConfigStore(makeConfig());
 		expect(store.getLogLevel()).toBe('info');
 		expect(store.getProcessMode()).toBe('run');
 		expect(store.getSubscribe()).toEqual(['origin/a/wis2/fr-meteofrance/data/x']);
 		expect(store.getExclude()).toEqual(['origin/a/wis2/blocked/#']);
-		expect(store.getOverridelist()).toEqual([{ topic: 'origin/a/wis2/big/#', 'max-length': 10 }]);
+		expect(store.getOverride()).toEqual([{ topic: 'origin/a/wis2/big/#', 'max-length': 10 }]);
 		expect(store.getGlobalReplay()).toBe('https://replay.example.com');
 	});
 
@@ -68,7 +68,7 @@ describe('RuntimeConfigStore', () => {
 		expect(second['log-level']).toEqual({ value: 'debug', changed: false });
 	});
 
-	test('applyPatch: subscribe/exclude/overridelist replace wholesale and report changed correctly', () => {
+	test('applyPatch: subscribe/exclude/override replace wholesale and report changed correctly', () => {
 		const store = new RuntimeConfigStore(makeConfig());
 		const changes = store.applyPatch({ subscribe: ['origin/a/wis2/other/data/y'] });
 		expect(store.getSubscribe()).toEqual(['origin/a/wis2/other/data/y']);
@@ -101,14 +101,14 @@ describe('RuntimeConfigStore', () => {
 		expect(noop.changed).toBe(false);
 	});
 
-	test('missing subscriber section seeds empty subscribe/exclude/overridelist and null global-replay', () => {
+	test('missing subscriber section seeds empty subscribe/exclude/override and null global-replay', () => {
 		const config: Config = {
 			global: { roles: 'DOWNLOADER', worker: 'w1', redis: { mode: 'single', nodes: ['localhost:6379'] }, log: { level: 'warn' } },
 		};
 		const store = new RuntimeConfigStore(config);
 		expect(store.getSubscribe()).toEqual([]);
 		expect(store.getExclude()).toEqual([]);
-		expect(store.getOverridelist()).toEqual([]);
+		expect(store.getOverride()).toEqual([]);
 		expect(store.getGlobalReplay()).toBeNull();
 		expect(store.getLogLevel()).toBe('warn');
 	});

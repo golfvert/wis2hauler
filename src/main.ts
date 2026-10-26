@@ -214,7 +214,7 @@ export async function main(
 	mainLog.log(`wis2hauler starting: worker=${config.global.worker} roles=${roles.join(', ')}`);
 
 	// Per-process, in-memory Setup-tab state (process-mode/log-level/
-	// per-role log-level overrides/subscribe list/exclude list/overridelist/
+	// per-role log-level overrides/subscribe list/exclude list/override/
 	// global-replay) -- see ../admin/runtime-store.ts's header for why
 	// this is deliberately per-process, not shared across replicas.
 	// Constructed here (moved up from further below) since it doubles as

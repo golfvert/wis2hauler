@@ -77,7 +77,7 @@ export function isValidCredentialTopic(topic: unknown): string | null {
 	return null;
 }
 
-// The plain string-pattern check used for exclude list/overridelist
+// The plain string-pattern check used for exclude list/override
 // entries, which — unlike subscribe list entries — are matched as literal
 // wildcard patterns rather than validated against the strict 6-level
 // WIS2 grammar above (a exclude list entry may legitimately be a partial

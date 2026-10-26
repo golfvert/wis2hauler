@@ -1,6 +1,6 @@
 // Validation for the small, live-mutable subset of config exposed
 // over the HTTP PATCH-style API — process-mode, log-level, subscribe list,
-// exclude list, overridelist, credentials (CRUD). Ported from the
+// exclude list, override, credentials (CRUD). Ported from the
 // Node-RED "Updates" function node (Setup tab) in flows.json, which
 // is deliberately a much smaller surface than the static YAML config
 // in schema.ts/validate.ts: only these six keys can be changed without
@@ -45,13 +45,13 @@ const PATCHABLE_ROLES: Record<string, readonly Role[] | null> = {
 	'log-level-role': null,
 	subscribe: ['SUBSCRIBER'],
 	exclude: ['SUBSCRIBER'],
-	overridelist: ['SUBSCRIBER'],
+	override: ['SUBSCRIBER'],
 	credentials: ['DOWNLOADER'],
 };
 
 // Deprecated names still accepted by POST /set until the Maintainer says
 // otherwise (ADR 0012); mapped to the new key before any other check.
-const LEGACY_PATCH_KEYS: Record<string, string> = { whitelist: 'subscribe', blacklist: 'exclude' };
+const LEGACY_PATCH_KEYS: Record<string, string> = { whitelist: 'subscribe', blacklist: 'exclude', overridelist: 'override' };
 
 export function isKeyAllowed(key: string, activeRoles: ReadonlySet<Role>): boolean {
 	const allowed = PATCHABLE_ROLES[key];
@@ -75,7 +75,7 @@ export interface ValidatedPatch {
 	'log-level-role'?: LogLevelRolePatch;
 	subscribe?: string[];
 	exclude?: string[];
-	overridelist?: OverrideRule[];
+	override?: OverrideRule[];
 	credentials?: CredentialOp;
 }
 
@@ -86,10 +86,10 @@ export interface PatchResult {
 	deprecated?: string[];
 }
 
-function validateOverridelist(items: unknown[]): string[] {
+function validateOverrideRules(items: unknown[]): string[] {
 	const errs: string[] = [];
 	items.forEach((entry, i) => {
-		const base = `overridelist[${i}]`;
+		const base = `override[${i}]`;
 		if (typeof entry !== 'object' || entry === null || Array.isArray(entry)) {
 			errs.push(`${base}: must be an object with 'topic' and/or 'max-length'`);
 			return;
@@ -187,11 +187,11 @@ export function validatePatch(body: unknown, activeRoles: ReadonlySet<Role>): Pa
 				values[key] = items;
 				break;
 			}
-			case 'overridelist': {
+			case 'override': {
 				if (!Array.isArray(value)) { errors.push(`${key}: must be an array.`); break; }
-				const itemErrors = validateOverridelist(value);
+				const itemErrors = validateOverrideRules(value);
 				if (itemErrors.length > 0) { errors.push(...itemErrors); break; }
-				values.overridelist = value as OverrideRule[];
+				values.override = value as OverrideRule[];
 				break;
 			}
 			case 'credentials': {

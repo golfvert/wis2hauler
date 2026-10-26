@@ -1,6 +1,6 @@
 // MQTT wildcard topic matching, and the "replay/a/wis2/..." prefix
 // normalisation applied before matching a replayed message's topic
-// against exclude list/overridelist rules. Ported from the Node-RED
+// against exclude list/override rules. Ported from the Node-RED
 // Subscriber tab, where this exact algorithm appeared independently
 // three times: twice in near-duplicate "Black & GRep" function nodes
 // (exclude list filtering) and once, renamed to `topicMatch`, inside the
@@ -34,7 +34,7 @@ export function matchesTopicPattern(topic: string, pattern: string): boolean {
 
 // A replayed message's real topic is wrapped as
 // "replay/a/wis2/<grep-centre-id>/<uuid>/<real-topic...>" — this
-// strips that wrapper (levels 0-4) so exclude list/overridelist rules,
+// strips that wrapper (levels 0-4) so exclude list/override rules,
 // which are written against the real topic, still apply to replayed
 // messages the same way they apply to live ones.
 export function stripReplayPrefix(topic: string): string {

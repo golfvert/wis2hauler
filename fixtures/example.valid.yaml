@@ -44,7 +44,7 @@ subscriber:
       - "cache/a/wis2/fr-meteofrance/metadata/#"
     exclude:
       - "+/+/+/+/+/recommended/#"
-    overridelist:
+    override:
       - topic: "origin/a/wis2/fr-meteofrance/data/warnings/#"
         max-length: 1048576
     global-replay: null

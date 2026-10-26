@@ -1,4 +1,4 @@
-// The overridelist rules: force "no-cache" (republish only, no
+// The override rules: force "no-cache" (republish only, no
 // download) for a notification that matches by topic and/or exceeds
 // a declared max size. Ported from the Node-RED "Override" function
 // node (Subscriber tab), which must run before the equivalent of
@@ -8,7 +8,7 @@
 // crypto.randomUUID() ONLY inside the branch where a rule actually
 // matches (`msg.uuid_cache = msg.override ? uuid_cache : undefined`) —
 // they are NOT generated when nocache ends up true for some other
-// reason (e.g. wnm.properties.cache === false with no overridelist
+// reason (e.g. wnm.properties.cache === false with no override
 // match at all). That matters because the eventual publish-only
 // outcome's WNM republish sets its own id to uuid_cache and its
 // monitoring event's id to uuid_monitor — so a nocache that came from
@@ -26,7 +26,7 @@
 // report that THIS Global Cache decided not to cache something the
 // origin wanted cached -- if the origin already declared
 // properties.cache === false itself, there's nothing to report, even
-// if an overridelist rule also happens to match. flows.json's own
+// if an override rule also happens to match. flows.json's own
 // "Action ?" rule 1 got this wrong (the maintainer: "My flows.json had a bug
 // too" -- it published Monitor whenever nocache was true for ANY
 // reason, without rechecking properties.cache first); this is a
@@ -47,13 +47,13 @@ export interface OverrideResult {
 	uuidMonitor?: string;
 }
 
-export function evaluateOverride(wnm: Wnm, topic: string, overridelist: readonly OverrideRule[] | undefined): OverrideResult {
-	if (!overridelist || overridelist.length === 0) return { override: false };
+export function evaluateOverride(wnm: Wnm, topic: string, override: readonly OverrideRule[] | undefined): OverrideResult {
+	if (!override || override.length === 0) return { override: false };
 
 	const normalisedTopic = stripReplayPrefix(topic);
 	const length = selectLink(wnm)?.length;
 
-	for (const rule of overridelist) {
+	for (const rule of override) {
 		const hasTopic = rule.topic !== undefined;
 		const hasLength = rule['max-length'] !== undefined;
 		if (!hasTopic && !hasLength) continue; // ignore empty rules, same as the original

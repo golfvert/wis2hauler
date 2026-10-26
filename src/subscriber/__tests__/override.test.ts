@@ -10,7 +10,7 @@ const wnmWithLength = (length: number): Wnm => ({
 });
 
 describe('evaluateOverride', () => {
-	test('no overridelist -> never overridden', () => {
+	test('no override -> never overridden', () => {
 		expect(evaluateOverride(wnmWithLength(10), 'origin/a/wis2/x/data/y', undefined)).toEqual({ override: false });
 	});
 
