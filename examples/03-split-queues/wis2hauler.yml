@@ -7,7 +7,7 @@
 # README.md for why that's sufficient.
 services:
   sub-1:
-    image: ghcr.io/golfvert/wis2hauler:2026.10.2
+    image: ghcr.io/golfvert/wis2hauler:2026.10.3
     user: "1000:1000"
     volumes:
       - ./configuration-sub-1.yml:/configuration.yml:ro
@@ -18,7 +18,7 @@ services:
     networks: [wis2hauler]
 
   down-1:
-    image: ghcr.io/golfvert/wis2hauler:2026.10.2
+    image: ghcr.io/golfvert/wis2hauler:2026.10.3
     user: "1000:1000"
     volumes:
       - ./configuration-downloader-1.yml:/configuration.yml:ro
@@ -30,7 +30,7 @@ services:
     networks: [wis2hauler]
 
   sub-2:
-    image: ghcr.io/golfvert/wis2hauler:2026.10.2
+    image: ghcr.io/golfvert/wis2hauler:2026.10.3
     user: "1000:1000"
     volumes:
       - ./configuration-sub-2.yml:/configuration.yml:ro
@@ -41,7 +41,7 @@ services:
     networks: [wis2hauler]
 
   down-2:
-    image: ghcr.io/golfvert/wis2hauler:2026.10.2
+    image: ghcr.io/golfvert/wis2hauler:2026.10.3
     user: "1000:1000"
     volumes:
       - ./configuration-downloader-2.yml:/configuration.yml:ro

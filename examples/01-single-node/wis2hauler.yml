@@ -1,6 +1,6 @@
 services:
   wis2hauler:
-    image: ghcr.io/golfvert/wis2hauler:2026.10.2
+    image: ghcr.io/golfvert/wis2hauler:2026.10.3
     user: "1000:1000"          # or use different uid/gid - should be based on the user (uid/gid) running the container on a linux host
     volumes:
       - ./configuration.yml:/configuration.yml:ro

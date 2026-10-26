@@ -63,7 +63,7 @@ The image expects three mount points:
 ```yaml
 services:
   wis2hauler:
-    image: ghcr.io/golfvert/wis2hauler:2026.10.2
+    image: ghcr.io/golfvert/wis2hauler:2026.10.3
     user: "1000:1000"          # or bake a different default at build time with --build-arg UID=/--build-arg GID=
     volumes:
       - ./configuration.yml:/configuration.yml:ro
