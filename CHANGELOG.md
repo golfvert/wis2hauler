@@ -13,9 +13,11 @@ Entries up to 2026.10.1 were reconstructed on 2026-10-25 from commit messages, s
 
 ### Added
 - REPORTER logs one outcome line per accepted notification (`cached`, `late`, `failed`, `missed`) to `hauler-reporter-*.info.log`, with `global.cache-deadline` (b088f7f, 98c56a7). See ADR 0006.
+- The REPORTER re-applies `notify-keyspace-events` (`Ex`) each time a Redis connection is re-established.
 - ADRs in `docs/decisions/`, `AGENTS.md`, this changelog.
 
 ### Docs
+- Example and deployment images updated: `wis2hauler:2026.10.1`, Valkey 9.1.2, Caddy 2.11, Mosquitto 2.1.2-alpine, Traefik v3.7.
 - Docker deployment option in README; fixes to example READMEs (2e46749, c0b1cb0, 2ec2eae, 91a13b0).
 
 ## [2026.10.1] - 2026-10-03

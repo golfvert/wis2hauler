@@ -142,7 +142,7 @@ Legend — **Level** is the tag of the call (the minimum configured level that w
 | `Change ?` | `hauler-change-*.info.log` | info | Once per key actually changed by `POST /set` (`changed: true` only) | `key`, `value` |
 | `Invalid` | **stdout only**, never a file | info | Config failed validation, then exit code 1 | `path`, `errors` (count), `warnings` (count) |
 
-`Change ?` values: full lists for `subscribe`/`exclude`/`overridelist`, `{role,value}` for `log-level-role`. For `credentials` only `{op, topic, username}` is logged — **the password is never written**.
+`Change ?` values: full lists for `whitelist`/`blacklist`/`overridelist`, `{role,value}` for `log-level-role`. For `credentials` only `{op, topic, username}` is logged — **the password is never written**.
 
 ### 5.2 SUBSCRIBER
 
@@ -166,7 +166,7 @@ Role-bound loggers: `Received`, `Filter`, `Decision`, `Duplicate`, `Publish`, `R
 | `outcome` | Meaning |
 |---|---|
 | `unchanged` | Payload byte-identical to the previous one on the same topic **on the same connection** (rbe). In-memory, reset at restart. |
-| `excluded` | Topic (replay prefix stripped) matches the effective exclude list: the configured exclude list plus the recommended-topic rule if `global-cache` is on, or the origin core + metadata rules if it is off. |
+| `blacklisted` | Topic (replay prefix stripped) matches the effective blacklist: the configured blacklist plus the recommended-topic rule if `global-cache` is on, or the origin core + metadata rules if it is off. |
 | `malformed` | JSON parse failure or missing/empty `wnm.id`. |
 | `duplicate` | `wnm.id` already claimed in Redis (900 s TTL) — typically the same notification arriving from both GB1 and GB2. |
 | `ingested` | New message appended to the raw stream; this is the only outcome that reaches the consumer. |
@@ -288,7 +288,7 @@ Example (keys are alphabetical in the file):
 
 Notes:
 
-- **Expiry events are best-effort.** Redis `notify-keyspace-events` must include `Ex`; the REPORTER merges `E` and `x` with `CONFIG SET` at start and warns in `Reporter Process` if that is not allowed. Events are not stored: during a REPORTER failover (about 10–18 s without a primary) expiries are not reported. In a Redis Cluster each node publishes its own events; the REPORTER subscribes to every node known at start, so nodes added later are not covered until restart.
+- **Expiry events are best-effort.** Redis `notify-keyspace-events` must include `Ex`; the REPORTER merges `E` and `x` with `CONFIG SET` at start and warns in `Reporter Process` if that is not allowed. The setting is applied again each time a Redis connection is re-established (restart, failover). Events are not stored: during a REPORTER failover (about 10–18 s without a primary) expiries are not reported. In a Redis Cluster each node publishes its own events; the REPORTER subscribes to every node known at start, so nodes added later are not covered until restart.
 - **Volume.** Each line carries the full WNM, roughly 150–300 MB/hour at about 100 000 notifications/hour. Size `global.log.size` and `global.log.number` accordingly, since size rotation applies (§4.2).
 
 ### 5.6 Process loggers (all roles)
@@ -363,7 +363,7 @@ Stages in time order, with where each line lands. Level required in brackets.
 |---|---|---|---|
 | 1 | Message arrives from GB1/GB2 | `received` [debug] | Before any delay or filter. Appears once per source, so a notification published by both brokers shows up twice, distinguished by `source`. |
 | 2 | GB2 only: fixed 2000 ms wait | – | Why `Filter` lines from GB2 trail their `Received` line by ≥ 2 s. |
-| 3 | rbe → exclude list → parse → `wnm.id` claim | `filter` [debug] | Exactly one `outcome` per (source, message). The first source to claim `wnm.id` gets `ingested`, the other gets `duplicate` — GB1 normally wins thanks to GB2's 2 s handicap. |
+| 3 | rbe → blacklist → parse → `wnm.id` claim | `filter` [debug] | Exactly one `outcome` per (source, message). The first source to claim `wnm.id` gets `ingested`, the other gets `duplicate` — GB1 normally wins thanks to GB2's 2 s handicap. |
 | 4 | Consumer reads the raw stream | – | Polls every 1 s when idle, up to 500 entries per read. |
 | 5a | Topic ignored | `decision` [debug] `action: ignore` | Immediate, no delay. Stops here. |
 | 5b | Lineage duplicate | `duplicate` [info] and `decision` [debug] `action: duplicate` | Stops here. |
@@ -378,7 +378,7 @@ Possible traces for a `data_id` (at `debug`):
 | Outcome | Lines, in order |
 |---|---|
 | Never reached us | none in `received` |
-| Dropped at ingest | `received` → `filter` (`unchanged` / `excluded` / `malformed` / `duplicate`) |
+| Dropped at ingest | `received` → `filter` (`unchanged` / `blacklisted` / `malformed` / `duplicate`) |
 | Ignored by classification | `received` → `filter` (`ingested`) → `decision` (`ignore` + `reason`) |
 | Lineage duplicate | `received` → `filter` (`ingested`) → `duplicate` + `decision` (`duplicate`) |
 | Lost the claim | `received` → `filter` (`ingested`) → `decision` (`wait` / `drop`) |
@@ -481,7 +481,7 @@ flowchart TB
     s_in["Message arrives from GB1 / GB2"]
     s_pre["GB2 only: wait 2 s"]
     s_rbe{"Same payload as the previous one on this topic?"}
-    s_bl{"Topic excluded?"}
+    s_bl{"Topic blacklisted?"}
     s_parse{"Valid JSON with a wnm.id?"}
     s_dup{"wnm.id already claimed?"}
     s_ing["Append to the raw stream"]
@@ -634,7 +634,7 @@ flowchart TB
     s_in["Message arrives from GB1 / GB2"]
     s_pre["GB2 only: wait 2 s"]
     s_rbe{"Same payload as the previous one on this topic?"}
-    s_bl{"Topic excluded?"}
+    s_bl{"Topic blacklisted?"}
     s_parse{"Valid JSON with a wnm.id?"}
     s_dup{"wnm.id already claimed?"}
     s_ing["Append to the raw stream"]
@@ -779,7 +779,7 @@ flowchart TB
     s_in["Message arrives from GB1 / GB2"]
     s_pre["GB2 only: wait 2 s"]
     s_rbe{"Same payload as the previous one on this topic?"}
-    s_bl{"Topic excluded?"}
+    s_bl{"Topic blacklisted?"}
     s_parse{"Valid JSON with a wnm.id?"}
     s_dup{"wnm.id already claimed?"}
     s_ing["Append to the raw stream"]
@@ -891,7 +891,7 @@ flowchart TB
   s_in -.->|every message| l_recv
   l_f_unch(["Filter outcome=unchanged<br/>hauler-filter-*.debug.log"]):::debug
   s_rbe -.->|yes| l_f_unch
-  l_f_bl(["Filter outcome=excluded<br/>hauler-filter-*.debug.log"]):::debug
+  l_f_bl(["Filter outcome=blacklisted<br/>hauler-filter-*.debug.log"]):::debug
   s_bl -.->|yes| l_f_bl
   l_f_mal(["Filter outcome=malformed<br/>hauler-filter-*.debug.log"]):::debug
   s_parse -.->|no| l_f_mal

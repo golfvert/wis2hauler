@@ -1,6 +1,6 @@
 services:
   traefik:
-    image: traefik:v3.3
+    image: traefik:v3.7
     command:
       - "--providers.file.directory=/etc/traefik/dynamic"
       - "--providers.file.watch=true"

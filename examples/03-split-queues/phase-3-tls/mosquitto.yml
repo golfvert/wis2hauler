@@ -2,7 +2,7 @@
 # phase-2-publish/README.md for the reasoning (same pattern here).
 services:
   mosquitto:
-    image: eclipse-mosquitto:2.0.20
+    image: eclipse-mosquitto:2.1.2-alpine
     volumes:
       - ./mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
     ports:

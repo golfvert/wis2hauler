@@ -5,7 +5,7 @@
 # needs to be reachable as "caddy" on the shared external network.
 services:
   caddy:
-    image: caddy:2.9-alpine
+    image: caddy:2.11-alpine
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - ./downloads:/srv/downloads:ro

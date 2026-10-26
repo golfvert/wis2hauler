@@ -1,6 +1,6 @@
 services:
   wis2hauler:
-    image: ghcr.io/golfvert/wis2hauler:2026.09.20
+    image: ghcr.io/golfvert/wis2hauler:2026.10.1
     user: "1000:1000"          # or use different uid/gid - should be based on the user (uid/gid) running the container on a linux host
     volumes:
       - ./configuration.yml:/configuration.yml:ro
@@ -29,7 +29,7 @@ services:
       - wis2hauler
 
   valkey:
-    image: valkey/valkey:9.0.6-alpine3.24
+    image: valkey/valkey:9.1.2-alpine3.24
     networks:
       - wis2hauler
     command: valkey-server --save "" --appendonly no

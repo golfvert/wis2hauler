@@ -7,7 +7,7 @@
 # README.md for why that's sufficient.
 services:
   sub-1:
-    image: ghcr.io/golfvert/wis2hauler:2026.09.20
+    image: ghcr.io/golfvert/wis2hauler:2026.10.1
     user: "1000:1000"
     volumes:
       - ./configuration-sub-1.yml:/configuration.yml:ro
@@ -18,7 +18,7 @@ services:
     networks: [wis2hauler]
 
   down-1:
-    image: ghcr.io/golfvert/wis2hauler:2026.09.20
+    image: ghcr.io/golfvert/wis2hauler:2026.10.1
     user: "1000:1000"
     volumes:
       - ./configuration-downloader-1.yml:/configuration.yml:ro
@@ -30,7 +30,7 @@ services:
     networks: [wis2hauler]
 
   sub-2:
-    image: ghcr.io/golfvert/wis2hauler:2026.09.20
+    image: ghcr.io/golfvert/wis2hauler:2026.10.1
     user: "1000:1000"
     volumes:
       - ./configuration-sub-2.yml:/configuration.yml:ro
@@ -41,7 +41,7 @@ services:
     networks: [wis2hauler]
 
   down-2:
-    image: ghcr.io/golfvert/wis2hauler:2026.09.20
+    image: ghcr.io/golfvert/wis2hauler:2026.10.1
     user: "1000:1000"
     volumes:
       - ./configuration-downloader-2.yml:/configuration.yml:ro
@@ -79,7 +79,7 @@ services:
     networks: [wis2hauler]
 
   valkey:
-    image: valkey/valkey:9.0.6-alpine3.24
+    image: valkey/valkey:9.1.2-alpine3.24
     networks: [wis2hauler]
     command: valkey-server --save "" --appendonly no
     restart: unless-stopped

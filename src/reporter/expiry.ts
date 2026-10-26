@@ -8,7 +8,8 @@
 // connection is opened per node (replicas included: only the current
 // master emits, which keeps this correct across a failover). Delivery is
 // plain pub/sub: an expiry that happens while nobody is listening is not
-// replayed.
+// replayed. The notification setting is re-applied each time a connection
+// is re-established.
 import Redis, { Cluster } from 'ioredis';
 import type { RedisConfig } from '../config/schema.ts';
 import { parseCacheMarkerKey } from '../wis2/redis-keys.ts';
@@ -38,7 +39,7 @@ async function clusterAddresses(config: RedisConfig): Promise<{ host: string; po
 }
 
 /** Makes sure the node publishes expired-key events (flags E and x), keeping whatever else is enabled. */
-async function ensureNotifications(conn: Redis, where: string, warn: (message: string) => void): Promise<void> {
+export async function ensureNotifications(conn: Pick<Redis, 'config'>, where: string, warn: (message: string) => void): Promise<void> {
 	try {
 		const reply = (await conn.config('GET', 'notify-keyspace-events')) as string[];
 		const current = reply[1] ?? '';
@@ -61,6 +62,11 @@ export async function startExpiryListener(
 		connections.push(conn);
 		conn.on('error', (err) => warn(`expiry listener ${host}:${port}: ${err.message}`));
 		await ensureNotifications(conn, `${host}:${port}`, warn);
+		// A restarted or failed-over node comes back without the setting: re-apply it
+		// on every reconnect (ioredis re-subscribes the pattern by itself).
+		conn.on('ready', () => {
+			void ensureNotifications(conn, `${host}:${port}`, warn);
+		});
 		conn.on('pmessage', (_pattern: string, _channel: string, key: string) => {
 			const downloaderId = parseCacheMarkerKey(key);
 			if (downloaderId) onExpired(downloaderId);

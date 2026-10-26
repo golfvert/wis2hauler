@@ -63,7 +63,7 @@ The image expects three mount points:
 ```yaml
 services:
   wis2hauler:
-    image: ghcr.io/golfvert/wis2hauler:2026.09.1
+    image: ghcr.io/golfvert/wis2hauler:2026.10.1
     user: "1000:1000"          # or bake a different default at build time with --build-arg UID=/--build-arg GID=
     volumes:
       - ./configuration.yml:/configuration.yml:ro
@@ -90,7 +90,7 @@ services:
       - wis2hauler
 
   valkey:
-    image: valkey/valkey:9.0.6-alpine3.24
+    image: valkey/valkey:9.1.2-alpine3.24
     networks:
       - wis2hauler
 

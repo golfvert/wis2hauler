@@ -39,7 +39,7 @@ authentication before running this anywhere network-reachable.
 Watch it happen live from the host:
 
 ```bash
-docker run --rm --network wis2hauler eclipse-mosquitto:2.0.20 \
+docker run --rm --network wis2hauler eclipse-mosquitto:2.1.2-alpine \
   mosquitto_sub -h mosquitto -t '#' -v
 ```
 

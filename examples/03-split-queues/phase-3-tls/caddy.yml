@@ -5,7 +5,7 @@
 # traefik.yml / dynamic/downloads.yml.
 services:
   caddy:
-    image: caddy:2.9-alpine
+    image: caddy:2.11-alpine
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - ./downloads:/srv/downloads:ro
